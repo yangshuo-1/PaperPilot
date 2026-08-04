@@ -920,6 +920,7 @@ function PaperPage() {
   const [tab, setTab] = useState<"pdf" | "notes" | "translation" | "latex">("pdf");
   const [error, setError] = useState<string | null>(null);
   const [citationOpen, setCitationOpen] = useState(false);
+  const [lastSelection, setLastSelection] = useState<import("./PdfReader").ReaderSelection | null>(null);
 
   async function load() {
     if (!paperId) return;
@@ -1187,7 +1188,13 @@ function PaperPage() {
         </button>
       </div>
 
-      {tab === "pdf" && <PdfReader paper={paper} onPaperChange={patchPaper} />}
+      {tab === "pdf" && (
+        <PdfReader
+          paper={paper}
+          onPaperChange={patchPaper}
+          onSelection={setLastSelection}
+        />
+      )}
 
       {tab === "notes" && (
         <div className="reader">

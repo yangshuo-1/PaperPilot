@@ -1,22 +1,36 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFPageProxy } from "pdfjs-dist";
+import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist";
 import type { Paper, ReaderManifest } from "./api";
 import { api } from "./api";
 import "./pdf-reader.css";
 
 GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
+function isRenderCancellation(reason: unknown): boolean {
+  return reason instanceof Error && /cancel/i.test(reason.name + reason.message);
+}
+
+export type ReaderSelection = {
+  paper_id: string;
+  page: number;
+  quote: string;
+  document_version: string | null;
+};
+
 type Props = {
   paper: Paper;
   onPaperChange: (paper: Paper) => void;
+  onSelection?: (selection: ReaderSelection) => void;
 };
 
 type TextItem = { str: string; transform: number[]; width: number; height: number };
 
-export default function PdfReader({ paper, onPaperChange }: Props) {
+export default function PdfReader({ paper, onPaperChange, onSelection }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
+  const renderTaskRef = useRef<RenderTask | null>(null);
+  const renderGenerationRef = useRef(0);
   const [manifest, setManifest] = useState<ReaderManifest | null>(null);
   const [page, setPage] = useState(paper.current_page || 1);
   const [totalPages, setTotalPages] = useState(paper.total_pages || 0);
@@ -24,7 +38,7 @@ export default function PdfReader({ paper, onPaperChange }: Props) {
   const [scale, setScale] = useState(1.15);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selection, setSelection] = useState<string | null>(null);
+  const [selection, setSelection] = useState<ReaderSelection | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [indexOpen, setIndexOpen] = useState(false);
 
@@ -54,15 +68,30 @@ export default function PdfReader({ paper, onPaperChange }: Props) {
     }).catch((reason) => {
       if (alive) { setLoading(false); setError(reason instanceof Error ? reason.message : "PDF 加载失败"); }
     });
-    return () => { alive = false; void loadingTask.destroy(); pdfRef.current = null; };
+    return () => {
+      alive = false;
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
+      void loadingTask.destroy();
+      pdfRef.current = null;
+    };
   }, [paper.id]);
 
   useEffect(() => {
     const pdf = pdfRef.current;
     if (!pdf || page < 1 || page > pdf.numPages) return;
     let alive = true;
-    void renderPage(pdf, page, scale).catch((reason) => alive && setError(reason instanceof Error ? reason.message : "页面渲染失败"));
-    return () => { alive = false; };
+    const generation = ++renderGenerationRef.current;
+    void renderPage(pdf, page, scale, generation).catch((reason) => {
+      if (!alive || isRenderCancellation(reason)) return;
+      setError(reason instanceof Error ? reason.message : "页面渲染失败");
+    });
+    return () => {
+      alive = false;
+      renderGenerationRef.current += 1;
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
+    };
   }, [page, scale, totalPages, pdfReady]);
 
   useEffect(() => {
@@ -84,8 +113,11 @@ export default function PdfReader({ paper, onPaperChange }: Props) {
     return () => window.clearTimeout(timer);
   }, [page, totalPages, manifest?.document_version, paper.id]);
 
-  async function renderPage(pdf: PDFDocumentProxy, pageNumber: number, zoom: number) {
+  async function renderPage(pdf: PDFDocumentProxy, pageNumber: number, zoom: number, generation: number) {
+    renderTaskRef.current?.cancel();
+    renderTaskRef.current = null;
     const pdfPage: PDFPageProxy = await pdf.getPage(pageNumber);
+    if (generation !== renderGenerationRef.current) return;
     const viewport = pdfPage.getViewport({ scale: zoom });
     const canvas = canvasRef.current;
     const layer = textLayerRef.current;
@@ -99,7 +131,14 @@ export default function PdfReader({ paper, onPaperChange }: Props) {
     layer.style.height = `${viewport.height}px`;
     const context = canvas.getContext("2d");
     if (!context) return;
-    await pdfPage.render({ canvasContext: context, viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined }).promise;
+    if (generation !== renderGenerationRef.current) return;
+    const renderTask = pdfPage.render({ canvasContext: context, viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
+    renderTaskRef.current = renderTask;
+    try {
+      await renderTask.promise;
+    } finally {
+      if (renderTaskRef.current === renderTask) renderTaskRef.current = null;
+    }
     layer.replaceChildren();
     const content = await pdfPage.getTextContent();
     for (const raw of content.items) {
@@ -119,8 +158,19 @@ export default function PdfReader({ paper, onPaperChange }: Props) {
   }
 
   function handleSelection() {
-    const value = window.getSelection()?.toString().trim() || "";
-    setSelection(value ? `第 ${page} 页：${value}` : null);
+    const quote = window.getSelection()?.toString().trim() || "";
+    if (!quote) {
+      setSelection(null);
+      return;
+    }
+    const payload: ReaderSelection = {
+      paper_id: paper.id,
+      page,
+      quote,
+      document_version: manifest?.document_version || paper.document_version || null,
+    };
+    onSelection?.(payload);
+    setSelection(payload);
   }
 
   const pageLabel = useMemo(() => totalPages ? `${page} / ${totalPages}` : `${page} / —`, [page, totalPages]);
@@ -159,7 +209,14 @@ export default function PdfReader({ paper, onPaperChange }: Props) {
             <canvas ref={canvasRef} />
             <div ref={textLayerRef} className="pdfTextLayer" aria-label="PDF 文本层" />
           </div>
-          {selection && <div className="selectionPayload"><strong>选区事件接口</strong><span>{selection}</span><button type="button" onClick={() => setSelection(null)}>关闭</button></div>}
+          {selection && (
+            <div className="selectionPayload" data-reader-selection={JSON.stringify(selection)}>
+              <strong>选区事件接口</strong>
+              <span>第 {selection.page} 页：{selection.quote}</span>
+              <code>{JSON.stringify(selection)}</code>
+              <button type="button" onClick={() => setSelection(null)}>关闭</button>
+            </div>
+          )}
         </div>
       </div>
     </section>
