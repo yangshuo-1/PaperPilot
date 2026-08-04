@@ -22,12 +22,13 @@ type Props = {
   onPaperChange: (paper: Paper) => void;
   onSelection?: (selection: ReaderSelection) => void;
   jumpToPage?: number | null;
-  highlightQuotes?: string[];
+  jumpNonce?: number;
+  highlightAnchors?: Array<{ page: number; quote: string }>;
 };
 
 type TextItem = { str: string; transform: number[]; width: number; height: number };
 
-export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPage, highlightQuotes = [] }: Props) {
+export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPage, jumpNonce, highlightAnchors = [] }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
@@ -46,7 +47,7 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
 
   useEffect(() => {
     if (jumpToPage && jumpToPage >= 1) setPage(jumpToPage);
-  }, [jumpToPage]);
+  }, [jumpToPage, jumpNonce]);
 
   useEffect(() => {
     let alive = true;
@@ -158,7 +159,7 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
       const y = viewport.height - f * zoom;
       const span = document.createElement("span");
       span.textContent = item.str;
-      if (item.str.trim().length > 3 && highlightQuotes.some((quote) => quote.includes(item.str.trim()))) {
+      if (item.str.trim().length > 3 && highlightAnchors.some((anchor) => anchor.page === pageNumber && anchor.quote.includes(item.str.trim()))) {
         span.className = "savedHighlight";
       }
       span.style.left = `${x}px`;

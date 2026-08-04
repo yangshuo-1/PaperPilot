@@ -141,13 +141,8 @@ class AnnotationStore:
         return item
 
     def _current_version(self, paper_dir: Path) -> str | None:
-        cache = paper_dir / "reader_manifest.json"
-        if cache.exists():
-            try:
-                value = json.loads(cache.read_text(encoding="utf-8"))
-                return value.get("document_version")
-            except (OSError, json.JSONDecodeError):
-                return None
+        # Always hash the current PDF. The manifest is only a cache and may be
+        # stale when a PDF is replaced outside the reader endpoint.
         pdf = next(iter(paper_dir.glob("*.pdf")), None)
         if not pdf:
             return None

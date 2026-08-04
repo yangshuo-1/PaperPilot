@@ -922,7 +922,7 @@ function PaperPage() {
   const [citationOpen, setCitationOpen] = useState(false);
   const [lastSelection, setLastSelection] = useState<import("./PdfReader").ReaderSelection | null>(null);
   const [annotations, setAnnotations] = useState<import("./api").AnnotationResponse | null>(null);
-  const [jumpToPage, setJumpToPage] = useState<number | null>(null);
+  const [jumpCommand, setJumpCommand] = useState<{ page: number; nonce: number } | null>(null);
   const [annotationError, setAnnotationError] = useState<string | null>(null);
 
   async function load() {
@@ -1236,13 +1236,17 @@ function PaperPage() {
           paper={paper}
           onPaperChange={patchPaper}
           onSelection={setLastSelection}
-          jumpToPage={jumpToPage}
-          highlightQuotes={annotations?.highlights.map((item) => annotations.anchors.find((anchor) => anchor.id === item.anchor_id)?.quote || "").filter(Boolean) || []}
+          jumpToPage={jumpCommand?.page ?? null}
+          jumpNonce={jumpCommand?.nonce}
+          highlightAnchors={annotations?.highlights.map((item) => {
+            const anchor = annotations.anchors.find((candidate) => candidate.id === item.anchor_id);
+            return anchor && !anchor.needs_relocation ? { page: anchor.page, quote: anchor.quote } : null;
+          }).filter((value): value is { page: number; quote: string } => Boolean(value)) || []}
         />
       )}
 
       {tab === "pdf" && annotations && (
-        <AnnotationSidebar annotations={annotations} onJump={(page) => setJumpToPage(page)} onDelete={removeAnnotation} onEdit={editNote} />
+        <AnnotationSidebar annotations={annotations} onJump={(page) => setJumpCommand({ page, nonce: Date.now() })} onDelete={removeAnnotation} onEdit={editNote} />
       )}
 
       {tab === "notes" && (
@@ -1335,25 +1339,33 @@ function AnnotationSidebar({
   onDelete: (kind: "highlight" | "note", id: string) => void;
   onEdit: (note: import("./api").Note) => void;
 }) {
+  const [filter, setFilter] = useState<"all" | "highlights" | "notes">("all");
   const anchorMap = new Map(annotations.anchors.map((anchor) => [anchor.id, anchor]));
+  const showHighlights = filter !== "notes";
+  const showNotes = filter !== "highlights";
   return (
     <aside className="annotationSidebar">
       <div className="annotationHeader"><strong>Highlights & Notes</strong><span>{annotations.highlights.length + annotations.notes.length}</span></div>
-      {annotations.highlights.map((item) => {
+      <div className="annotationFilters">
+        <button type="button" className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>Highlights & Notes</button>
+        <button type="button" className={filter === "highlights" ? "active" : ""} onClick={() => setFilter("highlights")}>Highlights</button>
+        <button type="button" className={filter === "notes" ? "active" : ""} onClick={() => setFilter("notes")}>Notes</button>
+      </div>
+      {showHighlights && annotations.highlights.map((item) => {
         const anchor = anchorMap.get(item.anchor_id);
         if (!anchor) return null;
         return <div className={`annotationItem ${anchor.needs_relocation ? "stale" : ""}`} key={item.id}>
-          <button type="button" onClick={() => onJump(anchor.page)}><b>高亮 · p.{anchor.page}</b><span>{anchor.quote}</span></button>
-          {anchor.needs_relocation && <em>需要重新定位</em>}
+          <button type="button" disabled={anchor.needs_relocation} onClick={() => onJump(anchor.page)}><b>高亮 · p.{anchor.page}</b><span>{anchor.quote}</span></button>
+          {anchor.needs_relocation && <em>需要重新定位，已禁用跳转</em>}
           <button type="button" className="annotationDelete" onClick={() => onDelete("highlight", item.id)}>删除</button>
         </div>;
       })}
-      {annotations.notes.map((item) => {
+      {showNotes && annotations.notes.map((item) => {
         const anchor = anchorMap.get(item.anchor_id);
         if (!anchor) return null;
         return <div className={`annotationItem ${anchor.needs_relocation ? "stale" : ""}`} key={item.id}>
-          <button type="button" onClick={() => onJump(anchor.page)}><b>笔记 · p.{anchor.page}</b><span>{item.content}</span><small>原文：{anchor.quote}</small></button>
-          {anchor.needs_relocation && <em>需要重新定位</em>}
+          <button type="button" disabled={anchor.needs_relocation} onClick={() => onJump(anchor.page)}><b>笔记 · p.{anchor.page}</b><span>{item.content}</span><small>原文：{anchor.quote}</small></button>
+          {anchor.needs_relocation && <em>需要重新定位，已禁用跳转</em>}
           <button type="button" onClick={() => onEdit(item)}>编辑</button><button type="button" className="annotationDelete" onClick={() => onDelete("note", item.id)}>删除</button>
         </div>;
       })}
