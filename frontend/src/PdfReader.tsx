@@ -139,9 +139,12 @@ export default function PdfReader({ paper, onPaperChange, onSelection }: Props) 
     } finally {
       if (renderTaskRef.current === renderTask) renderTaskRef.current = null;
     }
+    if (generation !== renderGenerationRef.current) return;
     layer.replaceChildren();
     const content = await pdfPage.getTextContent();
+    if (generation !== renderGenerationRef.current) return;
     for (const raw of content.items) {
+      if (generation !== renderGenerationRef.current) return;
       if (!("str" in raw) || !raw.str.trim()) continue;
       const item = raw as unknown as TextItem;
       const [a, b, c, d, e, f] = item.transform;
