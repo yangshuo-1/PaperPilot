@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import textwrap
 import urllib.error
 import urllib.parse
@@ -336,6 +337,21 @@ class PaperStore:
     def refresh(self) -> list[Paper]:
         self._ensure_seed_data()
         return self.list_papers()
+
+    def delete_paper(self, paper_id: str) -> None:
+        paper = self.get_paper(paper_id)
+        records = [record for record in self._read_jsonl(self.paper_index_path) if record.get("id") != paper_id]
+        self._write_jsonl_atomic(self.paper_index_path, records)
+        store = self._read_tag_store()
+        store.get("papers", {}).pop(paper_id, None)
+        self._write_text_atomic(self.tags_path, json.dumps(store, ensure_ascii=False, indent=2) + "\n")
+        paper_dir = self._paper_dir(paper_id).resolve()
+        try:
+            paper_dir.relative_to(self.settings.papers_dir.resolve())
+        except ValueError as exc:
+            raise ValueError("Paper directory is outside the data root") from exc
+        if paper_dir.is_dir():
+            shutil.rmtree(paper_dir)
 
     def _normalize_arxiv_id(self, value: str) -> str:
         raw = value.strip()

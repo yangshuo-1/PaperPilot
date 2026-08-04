@@ -8,6 +8,7 @@ from .codex_jobs import CodexJobRunner
 from . import latex as latex_mod
 from . import llm as llm_mod
 from . import reader as reader_mod
+from .annotations import AnnotationStore
 from .models import (
     CitationResponse,
     CodexAnalysisJob,
@@ -27,6 +28,9 @@ from .models import (
     PaperListResponse,
     QuickviewResponse,
     ReaderManifest,
+    AnnotationCreateRequest,
+    AnnotationResponse,
+    NoteUpdateRequest,
     TagUpdateRequest,
     TranslationGenerateRequest,
     TranslationJob,
@@ -49,6 +53,10 @@ app.add_middleware(
 
 def get_store(settings: Settings = Depends(get_settings)) -> PaperStore:
     return PaperStore(settings)
+
+
+def get_annotations(settings: Settings = Depends(get_settings)) -> AnnotationStore:
+    return AnnotationStore(settings)
 
 
 def _figure_media_type(suffix: str) -> str:
@@ -237,10 +245,112 @@ def import_paper(request: ImportRequest, store: PaperStore = Depends(get_store))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.delete("/api/papers/{paper_id}", status_code=204)
+def delete_paper(
+    paper_id: str,
+    store: PaperStore = Depends(get_store),
+    annotations: AnnotationStore = Depends(get_annotations),
+) -> None:
+    try:
+        store.delete_paper(paper_id)
+        annotations.delete_paper(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/papers/refresh", response_model=PaperListResponse)
 def refresh(store: PaperStore = Depends(get_store)) -> PaperListResponse:
     papers = store.refresh()
     return PaperListResponse(papers=papers, total=len(papers), tags=store.tag_counts(papers))
+
+
+# ---------------------------------------------------------------------------
+# annotations
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/papers/{paper_id}/annotations", response_model=AnnotationResponse)
+def list_annotations(
+    paper_id: str,
+    store: PaperStore = Depends(get_store),
+    annotations: AnnotationStore = Depends(get_annotations),
+) -> AnnotationResponse:
+    try:
+        store.get_paper(paper_id)
+        return AnnotationResponse(**annotations.list_for_paper(paper_id, store.paper_dir(paper_id)))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+
+
+@app.post("/api/papers/{paper_id}/annotations/highlights", response_model=AnnotationResponse)
+def create_highlight(
+    paper_id: str,
+    request: AnnotationCreateRequest,
+    store: PaperStore = Depends(get_store),
+    annotations: AnnotationStore = Depends(get_annotations),
+) -> AnnotationResponse:
+    try:
+        store.get_paper(paper_id)
+        annotations.create_highlight(paper_id, store.paper_dir(paper_id), request.model_dump())
+        return AnnotationResponse(**annotations.list_for_paper(paper_id, store.paper_dir(paper_id)))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/papers/{paper_id}/annotations/notes", response_model=AnnotationResponse)
+def create_note(
+    paper_id: str,
+    request: AnnotationCreateRequest,
+    store: PaperStore = Depends(get_store),
+    annotations: AnnotationStore = Depends(get_annotations),
+) -> AnnotationResponse:
+    try:
+        store.get_paper(paper_id)
+        annotations.create_note(paper_id, store.paper_dir(paper_id), request.model_dump())
+        return AnnotationResponse(**annotations.list_for_paper(paper_id, store.paper_dir(paper_id)))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/papers/{paper_id}/annotations/notes/{note_id}", response_model=AnnotationResponse)
+def update_note(
+    paper_id: str,
+    note_id: str,
+    request: NoteUpdateRequest,
+    store: PaperStore = Depends(get_store),
+    annotations: AnnotationStore = Depends(get_annotations),
+) -> AnnotationResponse:
+    try:
+        store.get_paper(paper_id)
+        annotations.update_note(paper_id, store.paper_dir(paper_id), note_id, request.content)
+        return AnnotationResponse(**annotations.list_for_paper(paper_id, store.paper_dir(paper_id)))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Note not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/papers/{paper_id}/annotations/{kind}/{item_id}", status_code=204)
+def delete_annotation(
+    paper_id: str,
+    kind: str,
+    item_id: str,
+    store: PaperStore = Depends(get_store),
+    annotations: AnnotationStore = Depends(get_annotations),
+) -> None:
+    if kind not in {"highlight", "note", "anchor"}:
+        raise HTTPException(status_code=400, detail="kind must be highlight|note|anchor")
+    try:
+        store.get_paper(paper_id)
+        annotations.delete(paper_id, kind, item_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Annotation not found") from exc
 
 
 # ---------------------------------------------------------------------------

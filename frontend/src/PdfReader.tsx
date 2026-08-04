@@ -21,11 +21,13 @@ type Props = {
   paper: Paper;
   onPaperChange: (paper: Paper) => void;
   onSelection?: (selection: ReaderSelection) => void;
+  jumpToPage?: number | null;
+  highlightQuotes?: string[];
 };
 
 type TextItem = { str: string; transform: number[]; width: number; height: number };
 
-export default function PdfReader({ paper, onPaperChange, onSelection }: Props) {
+export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPage, highlightQuotes = [] }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
@@ -41,6 +43,10 @@ export default function PdfReader({ paper, onPaperChange, onSelection }: Props) 
   const [selection, setSelection] = useState<ReaderSelection | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [indexOpen, setIndexOpen] = useState(false);
+
+  useEffect(() => {
+    if (jumpToPage && jumpToPage >= 1) setPage(jumpToPage);
+  }, [jumpToPage]);
 
   useEffect(() => {
     let alive = true;
@@ -152,6 +158,9 @@ export default function PdfReader({ paper, onPaperChange, onSelection }: Props) 
       const y = viewport.height - f * zoom;
       const span = document.createElement("span");
       span.textContent = item.str;
+      if (item.str.trim().length > 3 && highlightQuotes.some((quote) => quote.includes(item.str.trim()))) {
+        span.className = "savedHighlight";
+      }
       span.style.left = `${x}px`;
       span.style.top = `${y - Math.abs(d || item.height) * zoom}px`;
       span.style.fontSize = `${Math.max(6, Math.abs(d || item.height) * zoom)}px`;

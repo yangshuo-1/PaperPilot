@@ -201,6 +201,24 @@ export type CitationResponse = {
 
 export type ReaderOutlineItem = { title: string; page?: number | null; level: number };
 export type ReaderFigureItem = { name: string; page?: number | null; kind: string; source?: string | null };
+export type ReaderAnchor = {
+  id: string;
+  paper_id: string;
+  source_type: string;
+  document_version?: string | null;
+  page: number;
+  paragraph_id?: string | null;
+  quote: string;
+  start_offset?: number | null;
+  end_offset?: number | null;
+  status: "active" | "stale";
+  needs_relocation: boolean;
+  created_at: string;
+};
+export type Highlight = { id: string; anchor_id: string; color: string; created_at: string };
+export type Note = { id: string; anchor_id: string; content: string; created_at: string; updated_at: string };
+export type AnnotationResponse = { paper_id: string; anchors: ReaderAnchor[]; highlights: Highlight[]; notes: Note[] };
+
 export type ReaderManifest = {
   paper_id: string;
   available: boolean;
@@ -287,6 +305,11 @@ export const api = {
       body: JSON.stringify(fields)
     }),
   getReaderManifest: (paperId: string) => request<ReaderManifest>(`/api/papers/${paperId}/reader`),
+  getAnnotations: (paperId: string) => request<AnnotationResponse>(`/api/papers/${paperId}/annotations`),
+  createHighlight: (paperId: string, payload: Record<string, unknown>) => request<AnnotationResponse>(`/api/papers/${paperId}/annotations/highlights`, { method: "POST", body: JSON.stringify(payload) }),
+  createNote: (paperId: string, payload: Record<string, unknown>) => request<AnnotationResponse>(`/api/papers/${paperId}/annotations/notes`, { method: "POST", body: JSON.stringify(payload) }),
+  updateNote: (paperId: string, noteId: string, content: string) => request<AnnotationResponse>(`/api/papers/${paperId}/annotations/notes/${encodeURIComponent(noteId)}`, { method: "PATCH", body: JSON.stringify({ content }) }),
+  deleteAnnotation: (paperId: string, kind: "highlight" | "note" | "anchor", id: string) => request<void>(`/api/papers/${paperId}/annotations/${kind}/${encodeURIComponent(id)}`, { method: "DELETE" }),
   batchUpdateMetadata: (paperIds: string[], fields: Record<string, boolean | string | number | null>) =>
     request<Paper[]>("/api/papers/metadata", {
       method: "POST",

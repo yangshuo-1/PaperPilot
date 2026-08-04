@@ -921,6 +921,9 @@ function PaperPage() {
   const [error, setError] = useState<string | null>(null);
   const [citationOpen, setCitationOpen] = useState(false);
   const [lastSelection, setLastSelection] = useState<import("./PdfReader").ReaderSelection | null>(null);
+  const [annotations, setAnnotations] = useState<import("./api").AnnotationResponse | null>(null);
+  const [jumpToPage, setJumpToPage] = useState<number | null>(null);
+  const [annotationError, setAnnotationError] = useState<string | null>(null);
 
   async function load() {
     if (!paperId) return;
@@ -936,6 +939,7 @@ function PaperPage() {
       setAnalysis(analysisResponse);
       setDocuments(docsResponse);
       setCodexJob(latestJob);
+      setAnnotations(await api.getAnnotations(paperId).catch(() => null));
       if (docsResponse[0] && !activeDoc) {
         setActiveDoc(docsResponse[0].name);
         setDocumentContent((await api.getDocument(paperId, docsResponse[0].name)).content);
@@ -1074,6 +1078,37 @@ function PaperPage() {
     setPaper(updated);
   }
 
+  async function refreshAnnotations() {
+    if (!paperId) return;
+    setAnnotations(await api.getAnnotations(paperId));
+  }
+
+  async function createAnnotation(kind: "highlight" | "note") {
+    if (!paperId || !lastSelection) return;
+    setAnnotationError(null);
+    try {
+      const payload = { ...lastSelection, content: kind === "note" ? window.prompt("笔记内容", "") || "" : undefined };
+      if (kind === "note" && !payload.content) return;
+      const result = kind === "highlight" ? await api.createHighlight(paperId, payload) : await api.createNote(paperId, payload);
+      setAnnotations(result);
+    } catch (err) {
+      setAnnotationError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeAnnotation(kind: "highlight" | "note", id: string) {
+    if (!paperId) return;
+    await api.deleteAnnotation(paperId, kind, id);
+    await refreshAnnotations();
+  }
+
+  async function editNote(note: import("./api").Note) {
+    if (!paperId) return;
+    const content = window.prompt("编辑笔记", note.content);
+    if (!content?.trim()) return;
+    setAnnotations(await api.updateNote(paperId, note.id, content));
+  }
+
   if (error && !paper) return <AppShell><div className="errorBanner">{error}</div></AppShell>;
   if (!paper || !analysis) {
     return (
@@ -1188,12 +1223,26 @@ function PaperPage() {
         </button>
       </div>
 
+      {tab === "pdf" && lastSelection && (
+        <div className="annotationActionBar">
+          <span>已选第 {lastSelection.page} 页文本：{lastSelection.quote.slice(0, 120)}{lastSelection.quote.length > 120 ? "…" : ""}</span>
+          <button type="button" className="primaryBtn" onClick={() => createAnnotation("highlight")}>创建高亮</button>
+          <button type="button" className="quietBtn" onClick={() => createAnnotation("note")}>添加笔记</button>
+        </div>
+      )}
+      {annotationError && <div className="errorBanner">{annotationError}</div>}
       {tab === "pdf" && (
         <PdfReader
           paper={paper}
           onPaperChange={patchPaper}
           onSelection={setLastSelection}
+          jumpToPage={jumpToPage}
+          highlightQuotes={annotations?.highlights.map((item) => annotations.anchors.find((anchor) => anchor.id === item.anchor_id)?.quote || "").filter(Boolean) || []}
         />
+      )}
+
+      {tab === "pdf" && annotations && (
+        <AnnotationSidebar annotations={annotations} onJump={(page) => setJumpToPage(page)} onDelete={removeAnnotation} onEdit={editNote} />
       )}
 
       {tab === "notes" && (
@@ -1272,6 +1321,44 @@ function PaperPage() {
         </div>
       </details>
     </AppShell>
+  );
+}
+
+function AnnotationSidebar({
+  annotations,
+  onJump,
+  onDelete,
+  onEdit,
+}: {
+  annotations: import("./api").AnnotationResponse;
+  onJump: (page: number) => void;
+  onDelete: (kind: "highlight" | "note", id: string) => void;
+  onEdit: (note: import("./api").Note) => void;
+}) {
+  const anchorMap = new Map(annotations.anchors.map((anchor) => [anchor.id, anchor]));
+  return (
+    <aside className="annotationSidebar">
+      <div className="annotationHeader"><strong>Highlights & Notes</strong><span>{annotations.highlights.length + annotations.notes.length}</span></div>
+      {annotations.highlights.map((item) => {
+        const anchor = anchorMap.get(item.anchor_id);
+        if (!anchor) return null;
+        return <div className={`annotationItem ${anchor.needs_relocation ? "stale" : ""}`} key={item.id}>
+          <button type="button" onClick={() => onJump(anchor.page)}><b>高亮 · p.{anchor.page}</b><span>{anchor.quote}</span></button>
+          {anchor.needs_relocation && <em>需要重新定位</em>}
+          <button type="button" className="annotationDelete" onClick={() => onDelete("highlight", item.id)}>删除</button>
+        </div>;
+      })}
+      {annotations.notes.map((item) => {
+        const anchor = anchorMap.get(item.anchor_id);
+        if (!anchor) return null;
+        return <div className={`annotationItem ${anchor.needs_relocation ? "stale" : ""}`} key={item.id}>
+          <button type="button" onClick={() => onJump(anchor.page)}><b>笔记 · p.{anchor.page}</b><span>{item.content}</span><small>原文：{anchor.quote}</small></button>
+          {anchor.needs_relocation && <em>需要重新定位</em>}
+          <button type="button" onClick={() => onEdit(item)}>编辑</button><button type="button" className="annotationDelete" onClick={() => onDelete("note", item.id)}>删除</button>
+        </div>;
+      })}
+      {!annotations.highlights.length && !annotations.notes.length && <p className="readerMuted">还没有高亮或笔记。选中文本后可创建。</p>}
+    </aside>
   );
 }
 

@@ -373,6 +373,8 @@ p {
   white-space: nowrap;
 }
 
+.annotationActionBar{display:flex;align-items:center;gap:8px;margin:12px 0;padding:10px 12px;background:var(--accent-soft);border:1px solid rgba(196,99,63,.3);border-radius:var(--radius-sm);font-size:12px}.annotationActionBar span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.annotationSidebar{margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:12px}.annotationHeader{display:flex;justify-content:space-between;margin-bottom:8px}.annotationItem{position:relative;padding:8px;border-top:1px solid var(--border);font-size:12px}.annotationItem>button:first-child{display:flex;flex-direction:column;align-items:flex-start;gap:3px;border:0;background:transparent;padding:0;text-align:left;width:100%}.annotationItem span,.annotationItem small{color:var(--ink-soft);display:block}.annotationItem.stale{border-left:3px solid var(--accent);background:var(--accent-soft)}.annotationItem em{display:block;color:var(--accent-ink);font-size:11px;margin:4px 0}.annotationItem button:not(:first-child){padding:3px 6px;font-size:11px;margin:4px 4px 0 0}.annotationDelete{color:var(--accent-ink)}
+
 /* ---------------------------------------------------------------------------
  * Library main pane
  * ------------------------------------------------------------------------- */

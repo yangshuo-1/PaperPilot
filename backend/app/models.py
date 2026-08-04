@@ -259,6 +259,58 @@ class ReaderManifest(BaseModel):
     error: str | None = None
 
 
+class ReaderAnchor(BaseModel):
+    id: str
+    paper_id: str
+    source_type: str = "pdf_text"
+    document_version: str | None = None
+    page: int
+    paragraph_id: str | None = None
+    quote: str
+    start_offset: int | None = None
+    end_offset: int | None = None
+    status: Literal["active", "stale"] = "active"
+    needs_relocation: bool = False
+    created_at: str
+
+
+class Highlight(BaseModel):
+    id: str
+    anchor_id: str
+    color: str = "yellow"
+    created_at: str
+
+
+class Note(BaseModel):
+    id: str
+    anchor_id: str
+    content: str
+    created_at: str
+    updated_at: str
+
+
+class AnnotationResponse(BaseModel):
+    paper_id: str
+    anchors: list[ReaderAnchor] = Field(default_factory=list)
+    highlights: list[Highlight] = Field(default_factory=list)
+    notes: list[Note] = Field(default_factory=list)
+
+
+class AnnotationCreateRequest(BaseModel):
+    page: int = Field(ge=1)
+    quote: str = Field(min_length=1)
+    document_version: str = Field(min_length=1)
+    paragraph_id: str | None = None
+    start_offset: int | None = Field(default=None, ge=0)
+    end_offset: int | None = Field(default=None, ge=0)
+    color: str = "yellow"
+    content: str | None = None
+
+
+class NoteUpdateRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
 # --- LaTeX / translation ---------------------------------------------------
 
 
