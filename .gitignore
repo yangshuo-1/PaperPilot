@@ -25,6 +25,7 @@ papers/**/latex/
 papers/**/latex_parsed.json
 papers/**/latex_plain.txt
 papers/**/latex_source.md
+papers/**/reader_manifest.json
 papers/**/translation_zh.json
 
 # ---- Runtime job artifacts ----

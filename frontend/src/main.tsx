@@ -14,6 +14,7 @@ import type {
   TranslationResponse,
 } from "./api";
 import { api, getQuickview } from "./api";
+import PdfReader from "./PdfReader";
 import "./styles.css";
 
 const READ_LABELS: Record<ReadStatus, string> = {
@@ -1186,11 +1187,7 @@ function PaperPage() {
         </button>
       </div>
 
-      {tab === "pdf" && (
-        <div className="reader">
-          <iframe className="pdfFrame" src={api.pdfUrl(paper.id)} title="PDF preview" />
-        </div>
-      )}
+      {tab === "pdf" && <PdfReader paper={paper} onPaperChange={patchPaper} />}
 
       {tab === "notes" && (
         <div className="reader">

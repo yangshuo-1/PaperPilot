@@ -39,6 +39,9 @@ class Paper(BaseModel):
     read_status: ReadStatus = ReadStatus.unread
     folder_id: str | None = None
     reading_progress: float | None = None
+    current_page: int | None = None
+    total_pages: int | None = None
+    document_version: str | None = None
     last_read_at: str | None = None
     abstract: str | None = None
     primary_category: str | None = None
@@ -227,7 +230,33 @@ class MetadataUpdateRequest(BaseModel):
     read_status: ReadStatus | None = None
     folder_id: str | None = None
     reading_progress: float | None = None
+    current_page: int | None = Field(default=None, ge=1)
+    total_pages: int | None = Field(default=None, ge=1)
+    document_version: str | None = None
     last_read_at: str | None = None
+
+
+class ReaderOutlineItem(BaseModel):
+    title: str
+    page: int | None = None
+    level: int = 1
+
+
+class ReaderFigureItem(BaseModel):
+    name: str
+    page: int | None = None
+    kind: str = "figure"
+    source: str | None = None
+
+
+class ReaderManifest(BaseModel):
+    paper_id: str
+    available: bool = False
+    total_pages: int | None = None
+    document_version: str | None = None
+    outline: list[ReaderOutlineItem] = Field(default_factory=list)
+    figures: list[ReaderFigureItem] = Field(default_factory=list)
+    error: str | None = None
 
 
 # --- LaTeX / translation ---------------------------------------------------

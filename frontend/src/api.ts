@@ -27,6 +27,9 @@ export type Paper = {
   read_status: ReadStatus;
   folder_id?: string | null;
   reading_progress?: number | null;
+  current_page?: number | null;
+  total_pages?: number | null;
+  document_version?: string | null;
   last_read_at?: string | null;
   abstract?: string | null;
   primary_category?: string | null;
@@ -196,6 +199,18 @@ export type CitationResponse = {
   citation: string;
 };
 
+export type ReaderOutlineItem = { title: string; page?: number | null; level: number };
+export type ReaderFigureItem = { name: string; page?: number | null; kind: string; source?: string | null };
+export type ReaderManifest = {
+  paper_id: string;
+  available: boolean;
+  total_pages?: number | null;
+  document_version?: string | null;
+  outline: ReaderOutlineItem[];
+  figures: ReaderFigureItem[];
+  error?: string | null;
+};
+
 export type LatexSourceResponse = {
   title?: string | null;
   plain_text: string;
@@ -266,11 +281,12 @@ export const api = {
       body: JSON.stringify({ arxiv_id_or_url: arxivIdOrUrl })
     }),
   // metadata
-  updateMetadata: (paperId: string, fields: Partial<Record<"starred" | "read_status" | "folder_id" | "reading_progress" | "last_read_at", boolean | string | number | null>>) =>
+  updateMetadata: (paperId: string, fields: Partial<Record<"starred" | "read_status" | "folder_id" | "reading_progress" | "current_page" | "total_pages" | "document_version" | "last_read_at", boolean | string | number | null>>) =>
     request<Paper[]>(`/api/papers/${paperId}/metadata`, {
       method: "PATCH",
       body: JSON.stringify(fields)
     }),
+  getReaderManifest: (paperId: string) => request<ReaderManifest>(`/api/papers/${paperId}/reader`),
   batchUpdateMetadata: (paperIds: string[], fields: Record<string, boolean | string | number | null>) =>
     request<Paper[]>("/api/papers/metadata", {
       method: "POST",

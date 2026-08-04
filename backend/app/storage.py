@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from .config import Settings
 from . import latex as _latex
 from . import llm as _llm
+from . import reader as _reader
 from .models import (
     Critique,
     Document,
@@ -158,6 +159,9 @@ class PaperStore:
             "starred": current.get("starred", False),
             "folder_id": current.get("folder_id"),
             "reading_progress": current.get("reading_progress"),
+            "current_page": current.get("current_page"),
+            "total_pages": current.get("total_pages"),
+            "document_version": current.get("document_version"),
             "last_read_at": current.get("last_read_at"),
         }
         self._write_text_atomic(self.tags_path, json.dumps(store, ensure_ascii=False, indent=2) + "\n")
@@ -619,6 +623,9 @@ class PaperStore:
         "starred": False,
         "folder_id": None,
         "reading_progress": None,
+        "current_page": None,
+        "total_pages": None,
+        "document_version": None,
         "last_read_at": None,
     }
 
@@ -655,6 +662,9 @@ class PaperStore:
                 "starred": bool(meta.get("starred", False)),
                 "folder_id": meta.get("folder_id"),
                 "reading_progress": meta.get("reading_progress"),
+                "current_page": meta.get("current_page"),
+                "total_pages": meta.get("total_pages"),
+                "document_version": meta.get("document_version"),
                 "last_read_at": meta.get("last_read_at"),
             }
         return output
@@ -670,6 +680,9 @@ class PaperStore:
             paper.read_status = ReadStatus.unread
         paper.folder_id = meta.get("folder_id")
         paper.reading_progress = meta.get("reading_progress")
+        paper.current_page = meta.get("current_page")
+        paper.total_pages = meta.get("total_pages")
+        paper.document_version = meta.get("document_version")
         paper.last_read_at = meta.get("last_read_at")
 
     def update_metadata(self, paper_id: str, fields: dict[str, Any]) -> list[Paper]:
@@ -686,7 +699,16 @@ class PaperStore:
             base = dict(self._DEFAULT_METADATA)
             base.update(current)
             # apply only the provided fields
-            for key in ("read_status", "starred", "folder_id", "reading_progress", "last_read_at"):
+            for key in (
+                "read_status",
+                "starred",
+                "folder_id",
+                "reading_progress",
+                "current_page",
+                "total_pages",
+                "document_version",
+                "last_read_at",
+            ):
                 if key in fields:
                     base[key] = fields[key]
             papers[paper_id] = {
@@ -698,6 +720,9 @@ class PaperStore:
                 "starred": base["starred"],
                 "folder_id": base["folder_id"],
                 "reading_progress": base["reading_progress"],
+                "current_page": base["current_page"],
+                "total_pages": base["total_pages"],
+                "document_version": base["document_version"],
                 "last_read_at": base["last_read_at"],
             }
         self._write_text_atomic(self.tags_path, json.dumps(store, ensure_ascii=False, indent=2) + "\n")

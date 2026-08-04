@@ -7,6 +7,7 @@ from .config import Settings, get_settings
 from .codex_jobs import CodexJobRunner
 from . import latex as latex_mod
 from . import llm as llm_mod
+from . import reader as reader_mod
 from .models import (
     CitationResponse,
     CodexAnalysisJob,
@@ -25,6 +26,7 @@ from .models import (
     PaperAnalysis,
     PaperListResponse,
     QuickviewResponse,
+    ReaderManifest,
     TagUpdateRequest,
     TranslationGenerateRequest,
     TranslationJob,
@@ -262,7 +264,16 @@ def update_metadata(
 ) -> list[Paper]:
     fields = request.model_dump(exclude_unset=True)
     fields.pop("paper_ids", None)
-    field_keys = {"starred", "read_status", "folder_id", "reading_progress", "last_read_at"}
+    field_keys = {
+        "starred",
+        "read_status",
+        "folder_id",
+        "reading_progress",
+        "current_page",
+        "total_pages",
+        "document_version",
+        "last_read_at",
+    }
     update = {k: v for k, v in fields.items() if k in field_keys}
     try:
         return store.batch_update_metadata([paper_id], update)
@@ -280,7 +291,16 @@ def batch_update_metadata(
         raise HTTPException(status_code=400, detail="paper_ids is required.")
     fields = request.model_dump(exclude_unset=True)
     fields.pop("paper_ids", None)
-    field_ids = {"starred", "read_status", "folder_id", "reading_progress", "last_read_at"}
+    field_ids = {
+        "starred",
+        "read_status",
+        "folder_id",
+        "reading_progress",
+        "current_page",
+        "total_pages",
+        "document_version",
+        "last_read_at",
+    }
     update = {k: v for k, v in fields.items() if k in field_ids}
     try:
         return store.batch_update_metadata(paper_ids, update)
@@ -314,6 +334,30 @@ def get_latex(paper_id: str, store: PaperStore = Depends(get_store)) -> LatexSou
         downloaded=bool(result.get("downloaded")),
         download_error=result.get("download_error"),
     )
+
+
+@app.get("/api/papers/{paper_id}/reader", response_model=ReaderManifest)
+def get_reader_manifest(paper_id: str, store: PaperStore = Depends(get_store)) -> ReaderManifest:
+    try:
+        paper = store.get_paper(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    if not paper.local_pdf_path:
+        return ReaderManifest(paper_id=paper_id, error="Paper has no local PDF")
+    pdf_path = Path(paper.local_pdf_path).resolve()
+    try:
+        pdf_path.relative_to(store.settings.data_root.resolve())
+    except ValueError:
+        return ReaderManifest(paper_id=paper_id, error="PDF file is outside the data root")
+    try:
+        manifest = reader_mod.load_or_build(
+            pdf_path,
+            paper_id,
+            pdf_path.parent / "reader_manifest.json",
+        )
+        return ReaderManifest(**manifest)
+    except Exception as exc:
+        return ReaderManifest(paper_id=paper_id, error=str(exc))
 
 
 @app.get("/api/papers/{paper_id}/pdf")
