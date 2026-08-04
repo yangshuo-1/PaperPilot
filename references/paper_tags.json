@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "papers": {
+    "qwen3-vl-2511-21631": {
+      "title": "Qwen3-VL Technical Report",
+      "tags": [
+        "cs.CV",
+        "multimodal",
+        "qwen",
+        "vlm"
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# ---- Python ----
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+develop-eggs/
+dist/
+*.log
+
+# ---- Node / Vite ----
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# ---- Data assets (heavy / LLM-cost / reproducible) ----
+# 二进制与可重拉数据，见 docs/DATA_ASSETS.md
+papers/**/*.pdf
+papers/**/latex/
+papers/**/translation_zh.json
+
+# ---- Runtime job artifacts ----
+references/codex_jobs/
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
