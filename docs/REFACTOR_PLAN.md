@@ -47,18 +47,18 @@
 4. **失败模式** — 下载失败（arXiv 无源/anonymous）、解压失败、无法定位 `.tex`，记录到论文状态，不中断后续。
 
 ### 翻译（LLM 后端决策）
-- 用户确认：使用 **DeepSeek**（当前 omp 所用）。DeepSeek 提供 OpenAI 兼容接口。
+- 用户确认：**按 omp 的配置**。实测读取 `~/.config/opencode/opencode.json`：
+  - `baseURL` = `https://rust.cat/v1`（OpenAI 兼容）
+  - `apiKey`   = 该文件中的 apiKey（不写入源码）
+  - `model`    = `gpt-5.2`（默认；omp 配置里的通用模型）
 - 实现 `backend/app/llm.py`：OpenAI 兼容 `POST {base}/chat/completions`，纯标准库 `urllib`（不新增依赖）。
-- 配置环境变量：
-  - `PAPER_LLM_BASE_URL`（默认 `https://api.deepseek.com`）
-  - `PAPER_LLM_MODEL`（默认 `deepseek-chat`）
-  - `PAPER_LLM_API_KEY`（必填）
+- 配置解析优先级：环境变量 `PAPER_LLM_BASE_URL` / `PAPER_LLM_API_KEY` / `PAPER_LLM_MODEL` > 读取 `~/.config/opencode/opencode.json`（与 omp 一致）> 无法配置时返回 `available:false`。
+- ⚠️ 现状：`https://rust.cat/v1` 端点可达，但**账户余额不足**（`INSUFFICIENT_BALANCE`）。客户端逻辑正确、端点可请求，实际翻译暂因余额不可用，需充值或改配端点。优雅降级：无 key / 余额不足 / 网络失败均返回 `available:false`，前端提示而不报错。
 - 翻译策略（设计文档 Bilingual translation 一节）：
-  - 把 `latex_plain.md` 按段落分块（滑窗 ~500 token）。
-  - 逐块调用 DeepSeek 翻译为中文。
+  - 按 `latex_plain.md` 段落分块（滑窗 ~500 token）。
+  - 逐块翻译为中文，**中英文对照**（用户确认第 2 点）。
   - **缓存**：`papers/<dir>/translation_zh.json`，按段落 hash 为 key，命中直接返回。
-  - 前端可展示译文（单栏插行或左右对照）。
-- 无 key 时优雅降级：对外接口返回 `available:false`，前端不报错，仅显示"未配置翻译后端"。
+  - 后端 job 异步生成（用户确认第 4 点），前端轮询。
 
 ---
 

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="paper vault">
+  <!-- background rounded square -->
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#bg)"/>
+
+  <!-- arch / vault doorway silhouette -->
+  <path d="M27 50 V36 a5 5 0 0 1 10 0 V50" fill="#ffffff" opacity="0.16"/>
+
+  <!-- paper sheet -->
+  <g>
+    <path d="M22 12 h14 l8 8 v28 a4 4 0 0 1 -4 4 H22 a4 4 0 0 1 -4 -4 V16 a4 4 0 0 1 4 -4 Z"
+          fill="#fffdf9" stroke="#c9896d" stroke-width="2" stroke-linejoin="round"/>
+    <!-- folded corner -->
+    <path d="M36 12 l8 8 h-8 Z" fill="#f0dcd0"/>
+    <!-- text lines -->
+    <rect x="24" y="24" width="19" height="3" rx="1.5" fill="#d8a48b"/>
+    <rect x="24" y="31" width="15" height="3" rx="1.5" fill="#e3c0ad"/>
+    <rect x="24" y="38" width="17" height="3" rx="1.5" fill="#e3c0ad"/>
+    <!-- bottom fold / vault base -->
+    <path d="M22 46 h20 l-2 4 h-16 Z" fill="#d8a48b" opacity="0.7"/>
+  </g>
+
+  <!-- small lock/key hint on arch -->
+  <g fill="#b0623f">
+    <circle cx="45" cy="17" r="2.4"/>
+  </g>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c4633f"/>
+      <stop offset="1" stop-color="#c9896d"/>
+    </linearGradient>
+  </defs>
+</svg>

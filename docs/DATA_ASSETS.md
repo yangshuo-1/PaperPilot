@@ -66,7 +66,7 @@ v2 增加 per-paper：`read_status`、`starred`、`folder_id`、`reading_progres
 
 - 重拉 PDF：`import_arxiv(<arxiv_id>)`（storage）。
 - 重拉并解析 LaTeX：`download_latex_sources(id, dest)` → `parse_latex(dest)`（`backend/app/latex.py`）。
-- 重生成翻译：实现中，将走 `papers/<id>/translation/generate` 后台 job。
+- 重生成翻译：调用 `POST /api/papers/<id>/translation/generate` 创建后台 job，再轮询 `GET /api/papers/<id>/translation/jobs/<job_id>`。
 
 ## 一致性保障
 

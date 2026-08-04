@@ -5,8 +5,14 @@ import os
 
 class Settings:
     def __init__(self) -> None:
-        self.repo_root = Path(os.getenv("PAPER_VALT_REPO", Path.cwd())).resolve()
-        self.data_root = Path(os.getenv("PAPER_VALT_ROOT", self.repo_root)).resolve()
+        # repo_root is the repository root. Default is derived from this file's
+        # location (<repo>/backend/app/config.py -> <repo>), independent of the
+        # process cwd, so codex --cd and docs/ resolve correctly even when the
+        # backend is launched from backend/.  PAPER_VALT_REPO overrides it.
+        default_repo = Path(__file__).resolve().parent.parent.parent
+        self.repo_root = Path(os.getenv("PAPER_VALT_REPO", str(default_repo))).resolve()
+        # data_root holds papers/ + references/; normally == repo_root.
+        self.data_root = Path(os.getenv("PAPER_VALT_ROOT", str(self.repo_root))).resolve()
         self.papers_dir = self.data_root / "papers"
         self.references_dir = self.data_root / "references"
 

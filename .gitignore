@@ -9,6 +9,10 @@ develop-eggs/
 dist/
 *.log
 
+# ---- LLM secrets ----
+# Self-contained LLM config holds the api_key; only the example is committed.
+backend/llm_config.json
+
 # ---- Node / Vite ----
 frontend/node_modules/
 frontend/dist/
@@ -18,10 +22,14 @@ frontend/dist/
 # 二进制与可重拉数据，见 docs/DATA_ASSETS.md
 papers/**/*.pdf
 papers/**/latex/
+papers/**/latex_parsed.json
+papers/**/latex_plain.txt
+papers/**/latex_source.md
 papers/**/translation_zh.json
 
 # ---- Runtime job artifacts ----
 references/codex_jobs/
+references/translation_jobs/
 
 # ---- OS / editor ----
 .DS_Store

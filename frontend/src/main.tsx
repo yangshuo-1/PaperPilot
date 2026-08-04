@@ -1,11 +1,29 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Link, Route, Routes, useParams } from "react-router-dom";
-import { api, CodexAnalysisJob, DocumentSummary, Paper, PaperAnalysis } from "./api";
+import type {
+  CodexAnalysisJob,
+  DocumentSummary,
+  Folder,
+  LatexSourceResponse,
+  Paper,
+  PaperAnalysis,
+  Quickview,
+  ReadStatus,
+  TranslationJob,
+  TranslationResponse,
+} from "./api";
+import { api, getQuickview } from "./api";
 import "./styles.css";
 
-function statusLabel(status: string): string {
-  return status.replaceAll("_", " ");
+const READ_LABELS: Record<ReadStatus, string> = {
+  unread: "未读",
+  reading: "阅读中",
+  read: "已读",
+};
+
+function cls(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
 }
 
 function statusTone(status: string): string {
@@ -15,32 +33,262 @@ function statusTone(status: string): string {
   return "neutral";
 }
 
-function Chip({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
-  return (
-    <button className={onClick ? "chip chipButton" : "chip"} onClick={onClick} type="button">
-      {children}
-    </button>
-  );
+function statusLabel(status: string): string {
+  return status.replaceAll("_", " ");
 }
 
 function StatusBadge({ status }: { status: string }) {
   return <span className={`statusBadge ${statusTone(status)}`}>{statusLabel(status)}</span>;
 }
 
-function AppShell({ children }: { children: React.ReactNode }) {
+function useClickOutside(onClose: () => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function handle(event: MouseEvent | TouchEvent) {
+      if (ref.current && !ref.current.contains(event.target as Node)) onClose();
+    }
+    document.addEventListener("mousedown", handle);
+    document.addEventListener("touchstart", handle);
+    return () => {
+      document.removeEventListener("mousedown", handle);
+      document.removeEventListener("touchstart", handle);
+    };
+  }, [onClose]);
+  return ref;
+}
+
+function Star({ on, onClick }: { on: boolean; onClick: (e: React.MouseEvent) => void }) {
   return (
-    <div className="appShell">
-      <aside className="rail">
-        <div className="brandMark">pv</div>
-        <nav>
-          <Link to="/">Library</Link>
-          <a href="/api/health">API</a>
-        </nav>
-      </aside>
-      {children}
+    <button
+      type="button"
+      className={cls("star", on && "on")}
+      title={on ? "取消星标" : "星标"}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(e);
+      }}
+    >
+      {on ? "★" : "☆"}
+    </button>
+  );
+}
+
+function StarToggle({ paper, onChange }: { paper: Paper; onChange: (p: Paper) => void }) {
+  return (
+    <Star
+      on={paper.starred}
+      onClick={async () => {
+        const updated = await api.updateMetadata(paper.id, { starred: !paper.starred });
+        onChange(updated[0] ?? paper);
+      }}
+    />
+  );
+}
+
+function StatusControl({ paper, onChange }: { paper: Paper; onChange: (p: Paper) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useClickOutside(() => setOpen(false));
+  const statuses: ReadStatus[] = ["unread", "reading", "read"];
+  return (
+    <div className="popover-wrap" ref={ref}>
+      <button type="button" className={cls("statusBadge", paper.read_status)} onClick={() => setOpen((v) => !v)}>
+        <span className="statusDot" />
+        {READ_LABELS[paper.read_status]}
+      </button>
+      {open && (
+        <div className="popover right">
+          {statuses.map((s) => (
+            <button
+              type="button"
+              key={s}
+              className={cls("statusOption", paper.read_status === s && "selected")}
+              onClick={async () => {
+                const updated = await api.updateMetadata(paper.id, { read_status: s });
+                onChange(updated[0] ?? paper);
+                setOpen(false);
+              }}
+            >
+              <span className="statusDot" />
+              {READ_LABELS[s]}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
+
+function TagEditor({ paper, allTags, onChange }: { paper: Paper; allTags: string[]; onChange: (p: Paper) => void }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState("");
+  const ref = useClickOutside(() => setOpen(false));
+  return (
+    <div className="popover-wrap" ref={ref}>
+      <button type="button" className="addTagBtn" onClick={() => setOpen((v) => !v)}>
+        + 标签
+      </button>
+      {open && (
+        <div className="popover">
+          <h4>添加标签</h4>
+          {allTags
+            .filter((t) => !paper.tags.includes(t))
+            .map((tag) => (
+              <button
+                type="button"
+                key={tag}
+                className="tagOption"
+                onClick={async () => {
+                  const updated = await api.updateTags(paper.id, [...paper.tags, tag]);
+                  onChange(updated);
+                  setOpen(false);
+                }}
+              >
+                <span>{tag}</span>
+              </button>
+            ))}
+          <input
+            type="text"
+            placeholder="新标签…"
+            value={pending}
+            onChange={(e) => setPending(e.target.value)}
+            onKeyDown={async (e) => {
+              const value = pending.trim();
+              if (e.key === "Enter" && value && !paper.tags.includes(value)) {
+                const updated = await api.updateTags(paper.id, [...paper.tags, value]);
+                onChange(updated);
+                setPending("");
+                setOpen(false);
+              }
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopNav() {
+  return (
+    <header className="topNav">
+      <div className="brandMark">
+        <img className="logo" src="/paper-vault-logo.svg" alt="paper vault logo" />
+        paper vault
+      </div>
+      <nav className="navLinks">
+        <Link to="/">Library</Link>
+      </nav>
+    </header>
+  );
+}
+
+function AppShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div>
+      <TopNav />
+      <div className="page">{children}</div>
+    </div>
+  );
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function inlineMd(text: string): string {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+}
+
+function renderMarkdown(content: string): string {
+  const lines = escapeHtml(content).split("\n");
+  const out: string[] = [];
+  let inList = false;
+  let inCode = false;
+  for (const raw of lines) {
+    if (/^\s*```/.test(raw)) {
+      out.push(inCode ? "</pre>" : "<pre>");
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      out.push(raw);
+      continue;
+    }
+    if (/^#{1,4}\s/.test(raw)) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      const m = raw.match(/^(#{1,4})\s+(.*)$/)!;
+      out.push(`<h${m[1].length}>${inlineMd(m[2])}</h${m[1].length}>`);
+      continue;
+    }
+    if (/^\s*>/.test(raw)) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      out.push(`<blockquote>${inlineMd(raw.replace(/^\s*>\s?/, ""))}</blockquote>`);
+      continue;
+    }
+    if (/^\s*[-*]\s/.test(raw)) {
+      if (!inList) {
+        out.push("<ul>");
+        inList = true;
+      }
+      out.push(`<li>${inlineMd(raw.replace(/^\s*[-*]\s/, ""))}</li>`);
+      continue;
+    }
+    if (!raw.trim()) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      continue;
+    }
+    if (inList) {
+      out.push("</ul>");
+      inList = false;
+    }
+    out.push(`<p>${inlineMd(raw)}</p>`);
+  }
+  if (inList) out.push("</ul>");
+  if (inCode) out.push("</pre>");
+  return out.join("\n");
+}
+
+function MarkdownView({ content }: { content: string }) {
+  const html = useMemo(() => renderMarkdown(content), [content]);
+  return <article className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+type View = "all" | "reading" | "starred" | "recent";
+
+function filterByView(papers: Paper[], view: View): Paper[] {
+  switch (view) {
+    case "all":
+      return papers;
+    case "reading":
+      return papers.filter((p) => p.read_status === "reading" || p.read_status === "read");
+    case "starred":
+      return papers.filter((p) => p.starred);
+    case "recent":
+      return papers.filter((p) => p.last_read_at);
+    default:
+      return papers;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Library
+// ---------------------------------------------------------------------------
 
 function LibraryPage() {
   const [query, setQuery] = useState("");
@@ -50,13 +298,23 @@ function LibraryPage() {
   const [importValue, setImportValue] = useState("2511.21631");
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [view, setView] = useState<View>("all");
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [layout, setLayout] = useState<"table" | "card">("table");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [newFolder, setNewFolder] = useState("");
+  const [folderEditing, setFolderEditing] = useState<string | null>(null);
+  const [quickviewId, setQuickviewId] = useState<string | null>(null);
 
   async function load() {
     setError(null);
     try {
-      const response = await api.listPapers(query, selectedTags);
+      const [response, f] = await Promise.all([api.listPapers(query, selectedTags), api.listFolders()]);
       setPapers(response.papers);
       setTagCounts(response.tags);
+      setFolders(f.folders);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -84,199 +342,567 @@ function LibraryPage() {
     }
   }
 
-  async function addTag(paper: Paper) {
-    const tag = window.prompt("Tag");
-    if (!tag) return;
-    await api.updateTags(paper.id, [...paper.tags, tag]);
-    await load();
+  function currentPapers(): Paper[] {
+    let list = filterByView(papers, view);
+    if (selectedFolder != null) list = papers.filter((p) => p.folder_id === selectedFolder);
+    return [...list].sort((a, b) => {
+      const av = a.updated_at ?? "";
+      const bv = b.updated_at ?? "";
+      return sortDir === "desc" ? bv.localeCompare(av) : av.localeCompare(bv);
+    });
   }
 
-  async function removeTag(paper: Paper, tag: string) {
-    await api.updateTags(
-      paper.id,
-      paper.tags.filter((item) => item !== tag)
-    );
-    await load();
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
-  const activePaper = papers[0];
+  function toggleSelectAll(ids: string[]) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = ids.length > 0 && ids.every((id) => next.has(id));
+      if (allSelected) ids.forEach((id) => next.delete(id));
+      else ids.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
+  async function batchSet(fields: Record<string, boolean | string | number | null>) {
+    if (selected.size === 0) return;
+    try {
+      await api.batchUpdateMetadata([...selected], fields);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function replacePaper(updated: Paper) {
+    setPapers((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+  }
+
+  async function createFolder() {
+    const name = newFolder.trim();
+    if (!name) return;
+    try {
+      await api.createFolder(name, selectedFolder);
+      setNewFolder("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function renameFolder(folder: Folder, name: string) {
+    try {
+      await api.updateFolder(folder.id, { name });
+      setFolderEditing(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function deleteFolder(folder: Folder) {
+    try {
+      await api.deleteFolder(folder.id);
+      if (selectedFolder === folder.id) setSelectedFolder(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const visible = currentPapers();
+  const viewCounts: Record<View, number> = {
+    all: papers.length,
+    reading: filterByView(papers, "reading").length,
+    starred: filterByView(papers, "starred").length,
+    recent: filterByView(papers, "recent").length,
+  };
+  const folderCount = (id: string) => papers.filter((p) => p.folder_id === id).length;
 
   return (
     <AppShell>
-      <main className="workspace">
-        <header className="hero">
-          <div>
-            <div className="eyebrow">local-first literature system</div>
-            <h1>Paper understanding vault</h1>
-            <p>Import, classify, and review papers through a structured reading protocol.</p>
-          </div>
-          <div className="heroStats">
-            <div>
-              <strong>{papers.length}</strong>
-              <span>visible papers</span>
-            </div>
-            <div>
-              <strong>{Object.keys(tagCounts).length}</strong>
-              <span>tags</span>
-            </div>
-            <div>
-              <strong>{activePaper ? statusLabel(activePaper.understanding_status) : "empty"}</strong>
-              <span>current state</span>
-            </div>
-          </div>
-        </header>
-
-        <div className="toolbar">
-          <label className="searchBox">
-            <span>Search</span>
-            <input
-              placeholder="Title, arXiv ID, repo, tags"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <div className="importBox">
-            <span>Import</span>
-            <input value={importValue} onChange={(event) => setImportValue(event.target.value)} />
-            <button className="primaryButton" onClick={importPaper} disabled={importing}>
-              {importing ? "Importing..." : "Import arXiv"}
-            </button>
-            <button onClick={refresh}>Refresh</button>
-          </div>
-        </div>
-
-        <div className="contentGrid">
-          <aside className="filterPanel">
-            <div className="panelHeader">
-              <h2>Filters</h2>
-              {selectedTags.length > 0 && <button onClick={() => setSelectedTags([])}>Clear</button>}
-            </div>
-            <div className="filterGroup">
-              <div className="sectionLabel">Active</div>
-              <div className="chips">
-                {selectedTags.length === 0 && <span className="emptyHint">No filters selected</span>}
-                {selectedTags.map((tag) => (
-                  <Chip key={tag} onClick={() => setSelectedTags(selectedTags.filter((item) => item !== tag))}>
-                    {tag} ×
-                  </Chip>
-                ))}
-              </div>
-            </div>
-            <div className="filterGroup">
-              <div className="sectionLabel">Tags</div>
-              <div className="tagList">
-                {Object.entries(tagCounts).map(([tag, count]) => (
+      <div className="library">
+        <aside className="librarySidebar">
+          <div className="sideSection">
+            <div className="sideSectionHeader">视图</div>
+            <ul className="viewList">
+              {(
+                [
+                  ["all", "全部论文"],
+                  ["reading", "阅读中"],
+                  ["starred", "已星标"],
+                  ["recent", "最近阅读"],
+                ] as Array<[View, string]>
+              ).map(([key, label]) => (
+                <li key={key}>
                   <button
-                    className={selectedTags.includes(tag) ? "tagRow selected" : "tagRow"}
-                    key={tag}
+                    type="button"
+                    className={cls("viewItem", view === key && selectedFolder == null && "active")}
                     onClick={() => {
-                      if (!selectedTags.includes(tag)) setSelectedTags([...selectedTags, tag]);
+                      setView(key);
+                      setSelectedFolder(null);
                     }}
                   >
-                    <span>{tag}</span>
-                    <strong>{count}</strong>
+                    <span>{label}</span>
+                    <span className="count">{viewCounts[key]}</span>
                   </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="sideSection">
+            <div className="sideSectionHeader">文件夹</div>
+            <FolderTree
+              folders={folders}
+              selected={selectedFolder}
+              countFor={folderCount}
+              onSelect={(id) => {
+                setSelectedFolder(id);
+                setView("all");
+              }}
+              onRename={renameFolder}
+              onDelete={deleteFolder}
+              editing={folderEditing}
+              setEditing={setFolderEditing}
+              onSubfolder={setSelectedFolder}
+            />
+            <div className="newFolderRow">
+              <input
+                value={newFolder}
+                placeholder={selectedFolder ? "新建子文件夹…" : "新文件夹…"}
+                onChange={(e) => setNewFolder(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && createFolder()}
+              />
+              <button type="button" className="quietBtn" onClick={createFolder}>
+                +
+              </button>
+            </div>
+          </div>
+
+          <div className="sideSection">
+            <div className="sideSectionHeader">展示</div>
+            <div className="layoutSwitch">
+              <button type="button" className={cls(layout === "table" && "active")} onClick={() => setLayout("table")}>
+                表格
+              </button>
+              <button type="button" className={cls(layout === "card" && "active")} onClick={() => setLayout("card")}>
+                卡片
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <main className="libraryMain">
+          <div className="pageHeader">
+            <div>
+              <h1>论文库</h1>
+              <div className="sub">{visible.length} 篇论文</div>
+            </div>
+            <div className="headerActions">
+              <button type="button" className="refreshBtn" onClick={refresh}>
+                刷新索引
+              </button>
+            </div>
+          </div>
+
+          {error && <div className="errorBanner">{error}</div>}
+
+          <div className="toolbar">
+            <label className="searchBox">
+              <span>🔍</span>
+              <input
+                placeholder="搜索标题、arXiv、仓库、标签…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </label>
+            <div className="importBar">
+              <input value={importValue} onChange={(e) => setImportValue(e.target.value)} placeholder="arXiv id 或 URL" />
+              <button type="button" className="primaryBtn" onClick={importPaper} disabled={importing}>
+                {importing ? "导入中…" : "导入"}
+              </button>
+            </div>
+          </div>
+
+          <div className="tagPanel">
+            <span className="tagPanelLabel">标签过滤</span>
+            {selectedTags.length > 0 ? (
+              <span className="selectedTags">
+                {selectedTags.map((tag) => (
+                  <span className="dismissChip" key={tag}>
+                    {tag}
+                    <button type="button" onClick={() => setSelectedTags(selectedTags.filter((t) => t !== tag))}>
+                      ×
+                    </button>
+                  </span>
                 ))}
-              </div>
+              </span>
+            ) : (
+              <span className="muted" style={{ fontSize: 12 }}>
+                未选择
+              </span>
+            )}
+            <span style={{ width: 8, display: "inline-block" }} />
+            {Object.entries(tagCounts).map(([tag, count]) => (
+              <button
+                type="button"
+                key={tag}
+                className={cls("tagPill", selectedTags.includes(tag) && "active")}
+                onClick={() =>
+                  setSelectedTags(
+                    selectedTags.includes(tag) ? selectedTags.filter((t) => t !== tag) : [...selectedTags, tag]
+                  )
+                }
+              >
+                {tag} <span className="c">{count}</span>
+              </button>
+            ))}
+          </div>
+
+          {selected.size > 0 && (
+            <div className="batchBar">
+              <span className="label">{selected.size} 已选</span>
+              <span className="sep" />
+              <button type="button" className="quietBtn" onClick={() => batchSet({ starred: true })}>
+                ★ 星标
+              </button>
+              <button type="button" className="quietBtn" onClick={() => batchSet({ starred: false })}>
+                ☆ 取消星标
+              </button>
+              <span className="sep" />
+              <button type="button" className="quietBtn" onClick={() => batchSet({ read_status: "reading" })}>
+                标记阅读中
+              </button>
+              <button type="button" className="quietBtn" onClick={() => batchSet({ read_status: "read" })}>
+                标记已读
+              </button>
+              <button type="button" className="quietBtn" onClick={() => batchSet({ read_status: "unread" })}>
+                标记未读
+              </button>
+              <span className="sep" />
+              <select
+                value=""
+                onChange={async (e) => {
+                  if (!e.target.value) return;
+                  await batchSet({ folder_id: e.target.value });
+                  await load();
+                }}
+              >
+                <option value="">移动到文件夹…</option>
+                {folders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="quietBtn" onClick={() => batchSet({ folder_id: null })}>
+                移出文件夹
+              </button>
+              <span className="sep" />
+              <button type="button" className="quietBtn" onClick={() => setSelected(new Set())}>
+                清除选择
+              </button>
             </div>
-          </aside>
+          )}
 
-          <section className="resultPanel">
-            <div className="panelHeader">
-              <div>
-                <h2>Library</h2>
-                <p>{papers.length} papers match current filters</p>
-              </div>
-            </div>
-
-            {error && <div className="error">{error}</div>}
-
-            <table className="paperTable">
-              <thead>
-                <tr>
-                  <th>Paper</th>
-                  <th>Understanding</th>
-                  <th>Sources</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {papers.map((paper) => (
-                  <tr key={paper.id}>
-                    <td>
-                      <Link className="paperTitle" to={`/papers/${paper.id}`}>
-                        {paper.title}
-                      </Link>
-                      <div className="meta">
-                        {paper.arxiv_id && <span>arXiv:{paper.arxiv_id}</span>}
-                        {paper.year && <span>{paper.year}</span>}
-                        {paper.venue && <span>{paper.venue}</span>}
-                      </div>
-                      <div className="chips compact">
-                        {paper.tags.map((tag) => (
-                          <Chip key={tag} onClick={() => removeTag(paper, tag)}>
-                            {tag} ×
-                          </Chip>
-                        ))}
-                        <button className="miniButton" onClick={() => addTag(paper)}>
-                          + tag
-                        </button>
-                      </div>
-                    </td>
-                    <td>
-                      <StatusBadge status={paper.understanding_status} />
-                    </td>
-                    <td>
-                      <div className="sourceLinks">
-                        {paper.source_url && <a href={paper.source_url}>paper</a>}
-                        {paper.repo_url && <a href={paper.repo_url}>repo</a>}
-                      </div>
-                    </td>
-                    <td>{paper.updated_at?.slice(0, 10) ?? "—"}</td>
+          <div className="tableWrap">
+            {layout === "table" ? (
+              <table className="paperTable">
+                <thead>
+                  <tr>
+                    <th style={{ width: 34 }}>
+                      <input
+                        type="checkbox"
+                        className="checkbox"
+                        checked={visible.length > 0 && visible.every((p) => selected.has(p.id))}
+                        onChange={() => toggleSelectAll(visible.map((p) => p.id))}
+                      />
+                    </th>
+                    <th>标题 + 标签</th>
+                    <th>状态</th>
+                    <th>笔记</th>
+                    <th>
+                      <button type="button" className="thSort" onClick={() => setSortDir(sortDir === "desc" ? "asc" : "desc")}>
+                        更新 {sortDir === "desc" ? "↓" : "↑"}
+                      </button>
+                    </th>
                   </tr>
+                </thead>
+                <tbody>
+                  {visible.map((paper) => (
+                    <tr key={paper.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          className="checkbox"
+                          checked={selected.has(paper.id)}
+                          onChange={() => toggleSelect(paper.id)}
+                        />
+                      </td>
+                      <td>
+                        <div className="titleCell">
+                          <StarToggle paper={paper} onChange={replacePaper} />
+                          <div>
+                            <Link className="titleLink" to={`/papers/${paper.id}`}>
+                              {paper.title}
+                            </Link>
+                            <div className="rowTags">
+                              {paper.tags.map((tag) => (
+                                <span className="miniTag" key={tag}>
+                                  {tag}
+                                </span>
+                              ))}
+                              <TagEditor paper={paper} allTags={Object.keys(tagCounts)} onChange={replacePaper} />
+                              <button
+                                type="button"
+                                className="quickBtn"
+                                onClick={() => setQuickviewId(paper.id)}
+                                title="文献速览"
+                              >
+                                速览
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <StatusControl paper={paper} onChange={replacePaper} />
+                      </td>
+                      <td className="muted">{paper.reading_progress != null ? `${paper.reading_progress}%` : "—"}</td>
+                      <td className="muted">{paper.updated_at?.slice(0, 10) ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="paperCards">
+                {visible.map((paper) => (
+                  <div className="paperCard" key={paper.id}>
+                    <div className="cardHead">
+                      <StatusControl paper={paper} onChange={replacePaper} />
+                      <StarToggle paper={paper} onChange={replacePaper} />
+                    </div>
+                    <Link className="titleLink" to={`/papers/${paper.id}`}>
+                      {paper.title}
+                    </Link>
+                    <div className="rowTags">
+                      {paper.tags.map((tag) => (
+                        <span className="miniTag" key={tag}>
+                          {tag}
+                        </span>
+                      ))}
+                      <TagEditor paper={paper} allTags={Object.keys(tagCounts)} onChange={replacePaper} />
+                      <button
+                        type="button"
+                        className="quickBtn"
+                        onClick={() => setQuickviewId(paper.id)}
+                        title="文献速览"
+                      >
+                        速览
+                      </button>
+                    </div>
+                    <div className="cardFoot">
+                      <span>{paper.reading_progress != null ? `${paper.reading_progress}% 阅读` : "未读"}</span>
+                      <span>{relativeRead(paper.last_read_at)}</span>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </section>
-        </div>
-      </main>
+              </div>
+            )}
+            {visible.length === 0 && <div className="empty">没有匹配的论文</div>}
+          </div>
+          {quickviewId && (
+            <QuickViewModal paperId={quickviewId} onClose={() => setQuickviewId(null)} />
+          )}
+        </main>
+      </div>
     </AppShell>
   );
 }
 
-function ListBlock({ title, items }: { title: string; items: string[] }) {
+function QuickViewModal({ paperId, onClose }: { paperId: string; onClose: () => void }) {
+  const [data, setData] = useState<Quickview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [expandFig, setExpandFig] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoaded(false);
+    setError(null);
+    getQuickview(paperId)
+      .then((qv) => {
+        if (alive) {
+          setData(qv);
+          setLoaded(true);
+        }
+      })
+      .catch((err) => {
+        if (alive) {
+          setError(err instanceof Error ? err.message : String(err));
+          setLoaded(true);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [paperId]);
+
   return (
-    <section className="panel">
-      <h3>{title}</h3>
-      {items.length ? (
-        <ul>
-          {items.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">未填写</p>
-      )}
-    </section>
+    <div className="qvOverlay" onClick={onClose}>
+      <div className="qvPanel" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <div className="qvHead">
+          <span className="qvKicker">文献速览</span>
+          <button type="button" className="qvClose" onClick={onClose} aria-label="关闭">
+            ×
+          </button>
+        </div>
+        {!loaded && <div className="muted qvLoading">加载中…</div>}
+        {loaded && error && <div className="empty">{error}</div>}
+        {loaded && data && (
+          <>
+            <h3 className="qvTitle">{data.title}</h3>
+            {data.source_url && (
+              <a className="qvSource" href={data.source_url} target="_blank" rel="noreferrer">
+                查看源网站 ↗
+              </a>
+            )}
+            <div className="qvBody">
+              <section className="qvSection">
+                <h4>摘要</h4>
+                <p className={cls("qvAbstract", !data.abstract && "muted")}>
+                  {data.abstract || "暂无摘要"}
+                </p>
+              </section>
+              <section className="qvSection">
+                <h4>图表（{data.figures.length}）</h4>
+                {data.figures.length === 0 ? (
+                  <p className="muted">暂无提取图片</p>
+                ) : (
+                  <div className="qvFigs">
+                    {data.figures.map((fig) => (
+                      <button
+                        type="button"
+                        key={fig.name}
+                        className="qvFigWrap"
+                        onClick={() => setExpandFig(expandFig === fig.url ? null : fig.url ?? null)}
+                        title={fig.caption || fig.name}
+                      >
+                        {fig.url && <img className="qvFig" src={fig.url} alt={fig.caption || fig.name} loading="lazy" />}
+                        <span className="qvFigName">{fig.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+            {expandFig && (
+              <div className="qvFigLightbox" onClick={() => setExpandFig(null)}>
+                <img src={expandFig} alt="" />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
-function MarkdownView({ content }: { content: string }) {
-  const html = useMemo(() => {
-    return content
-      .split("\n")
-      .map((line) => {
-        if (line.startsWith("# ")) return `<h1>${line.slice(2)}</h1>`;
-        if (line.startsWith("## ")) return `<h2>${line.slice(3)}</h2>`;
-        if (line.startsWith("### ")) return `<h3>${line.slice(4)}</h3>`;
-        if (line.startsWith("- ")) return `<li>${line.slice(2)}</li>`;
-        if (!line.trim()) return "";
-        return `<p>${line}</p>`;
-      })
-      .join("\n");
-  }, [content]);
-  return <article className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+function FolderTree({
+  folders,
+  selected,
+  countFor,
+  editing,
+  setEditing,
+  onSelect,
+  onRename,
+  onDelete,
+  onSubfolder,
+}: {
+  folders: Folder[];
+  selected: string | null;
+  countFor: (id: string) => number;
+  editing: string | null;
+  setEditing: (id: string | null) => void;
+  onSelect: (id: string) => void;
+  onRename: (folder: Folder, name: string) => void;
+  onDelete: (folder: Folder) => void;
+  onSubfolder: (id: string) => void;
+}) {
+  const roots = folders.filter((f) => !f.parent_id);
+  function renderTree(parentId: string | null): React.ReactNode {
+    const children = folders.filter((f) => f.parent_id === parentId);
+    if (children.length === 0 && parentId === null) {
+      return (
+        <ul className="folderTree">
+          <li>
+            <div className="folderEmpty">尚未创建文件夹</div>
+          </li>
+        </ul>
+      );
+    }
+    return (
+      <ul className="folderTree">
+        {children.map((folder) => (
+          <li key={folder.id}>
+            <div className={cls("folderRow", selected === folder.id && "selected")}>
+              {editing === folder.id ? (
+                <input
+                  defaultValue={folder.name}
+                  autoFocus
+                  onBlur={(e) => onRename(folder, e.target.value || folder.name)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") onRename(folder, (e.target as HTMLInputElement).value || folder.name);
+                  }}
+                />
+              ) : (
+                <button type="button" className="folderItem" onClick={() => onSelect(folder.id)}>
+                  <span className="name">{folder.name}</span>
+                  <span className="count">{countFor(folder.id)}</span>
+                </button>
+              )}
+              <div className="folderHints">
+                <button type="button" title="重命名" onClick={() => setEditing(folder.id)}>
+                  ✎
+                </button>
+                <button type="button" title="新建子文件夹" onClick={() => onSubfolder(folder.id)}>
+                  ＋
+                </button>
+                <button type="button" title="删除" onClick={() => onDelete(folder)}>
+                  🗑
+                </button>
+              </div>
+            </div>
+            {renderTree(folder.id)}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return <div>{renderTree(null)}</div>;
 }
+
+function relativeRead(date?: string | null): string {
+  if (!date) return "未读";
+  const diff = Date.now() - new Date(date).getTime();
+  const days = Math.floor(diff / 86400000);
+  if (days <= 0) return "今天";
+  if (days === 1) return "昨天";
+  if (days < 30) return `${days} 天前`;
+  return new Date(date).toLocaleDateString();
+}
+
+// ---------------------------------------------------------------------------
+// Paper page
+// ---------------------------------------------------------------------------
 
 function PaperPage() {
   const { paperId } = useParams();
@@ -284,8 +910,15 @@ function PaperPage() {
   const [analysis, setAnalysis] = useState<PaperAnalysis | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [documentContent, setDocumentContent] = useState<string>("");
+  const [activeDoc, setActiveDoc] = useState<string>("");
   const [codexJob, setCodexJob] = useState<CodexAnalysisJob | null>(null);
+  const [latex, setLatex] = useState<LatexSourceResponse | null>(null);
+  const [translation, setTranslation] = useState<TranslationResponse | null>(null);
+  const [translationJob, setTranslationJob] = useState<TranslationJob | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const [tab, setTab] = useState<"pdf" | "notes" | "translation" | "latex">("pdf");
   const [error, setError] = useState<string | null>(null);
+  const [citationOpen, setCitationOpen] = useState(false);
 
   async function load() {
     if (!paperId) return;
@@ -295,23 +928,34 @@ function PaperPage() {
         api.getPaper(paperId),
         api.getAnalysis(paperId),
         api.listDocuments(paperId),
-        api.getLatestCodexAnalysisJob(paperId)
+        api.getLatestCodexAnalysisJob(paperId),
       ]);
       setPaper(paperResponse);
       setAnalysis(analysisResponse);
       setDocuments(docsResponse);
       setCodexJob(latestJob);
-      if (docsResponse[0]) {
-        const doc = await api.getDocument(paperId, docsResponse[0].name);
-        setDocumentContent(doc.content);
+      if (docsResponse[0] && !activeDoc) {
+        setActiveDoc(docsResponse[0].name);
+        setDocumentContent((await api.getDocument(paperId, docsResponse[0].name)).content);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
 
+  // write last_read_at on page open (debounced 60s)
+  useEffect(() => {
+    if (!paperId) return;
+    const nowIso = new Date().toISOString();
+    const timer = window.setTimeout(() => {
+      void api.updateMetadata(paperId, { last_read_at: nowIso }).catch(() => {});
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [paperId]);
+
   useEffect(() => {
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paperId]);
 
   useEffect(() => {
@@ -320,14 +964,13 @@ function PaperPage() {
       try {
         const job = await api.getCodexAnalysisJob(paperId, codexJob.job_id);
         setCodexJob(job);
-        if (["succeeded", "failed"].includes(job.status)) {
-          await load();
-        }
+        if (["succeeded", "failed"].includes(job.status)) await load();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     }, 3000);
     return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paperId, codexJob?.job_id, codexJob?.status]);
 
   async function regenerate() {
@@ -350,120 +993,330 @@ function PaperPage() {
     }
   }
 
-  if (error) return <main className="workspace error">{error}</main>;
-  if (!paper || !analysis) return <main className="workspace">Loading...</main>;
+  async function loadLatex() {
+    if (!paperId) return;
+    try {
+      setLatex(await api.getLatex(paperId));
+      setTab("latex");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function loadTranslation() {
+    if (!paperId) return;
+    try {
+      setTranslation(await api.getTranslation(paperId));
+      setTab("translation");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  useEffect(() => {
+    if (!paperId || !translationJob || !["queued", "running"].includes(translationJob.status)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const job = await api.getTranslationJob(paperId, translationJob.job_id);
+        setTranslationJob(job);
+        if (job.status === "succeeded") {
+          setTranslation(await api.getTranslation(paperId));
+          setTranslating(false);
+        } else if (job.status === "failed") {
+          setError(job.error || "翻译任务失败");
+          setTranslating(false);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setTranslating(false);
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [paperId, translationJob?.job_id, translationJob?.status]);
+
+  async function generateTranslation() {
+    if (!paperId) return;
+    setTranslating(true);
+    setError(null);
+    try {
+      const job = await api.generateTranslation(paperId);
+      setTranslationJob(job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setTranslating(false);
+    }
+  }
+
+  async function downloadCitation(fmt: "bibtex" | "gbt7714" | "apa") {
+    if (!paperId) return;
+    const response = await api.getCitation(paperId, fmt);
+    triggerDownload(`citation.${fmt === "bibtex" ? "bib" : "txt"}`, response.citation);
+    setCitationOpen(false);
+  }
+
+  async function downloadExport() {
+    if (!paperId) return;
+    triggerDownload(`${paperId}.md`, await api.exportMarkdown(paperId));
+  }
+
+  function triggerDownload(filename: string, content: string) {
+    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function patchPaper(updated: Paper) {
+    setPaper(updated);
+  }
+
+  if (error && !paper) return <AppShell><div className="errorBanner">{error}</div></AppShell>;
+  if (!paper || !analysis) {
+    return (
+      <AppShell>
+        <div className="empty">Loading…</div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>
-      <main className="workspace">
-        <Link className="backLink" to="/">
-          ← Library
-        </Link>
-        <header className="paperHero">
-          <div>
-            <div className="eyebrow">paper workspace</div>
-            <h1>{paper.title}</h1>
-            <div className="chips">
-              {paper.arxiv_id && <span className="chip">arXiv:{paper.arxiv_id}</span>}
-              <StatusBadge status={paper.understanding_status} />
-              <span className="chip">confidence:{analysis.source_confidence}</span>
-            </div>
-          </div>
-          <button className="primaryButton" onClick={regenerate}>
-            Generate/update draft
-          </button>
-        </header>
+      <Link className="backLink" to="/">
+        ← 返回论文库
+      </Link>
 
-        <div className="paperLayout">
-          <aside className="paperAside">
-            <section className="asideCard">
-              <h3>Source map</h3>
+      <div className="paperHeader">
+        <div>
+          <h1>{paper.title}</h1>
+          <div className="chips">
+            {paper.arxiv_id && <span className="chip">arXiv:{paper.arxiv_id}</span>}
+            <StatusBadge status={paper.understanding_status} />
+            <span className="chip">confidence:{analysis.source_confidence}</span>
+          </div>
+        </div>
+        <div className="headerActions">
+          <StarToggle paper={paper} onChange={patchPaper} />
+          <StatusControl paper={paper} onChange={patchPaper} />
+          <div className="popover-wrap">
+            <button type="button" className="quietBtn" onClick={() => setCitationOpen((v) => !v)}>
+              引文
+            </button>
+            {citationOpen && (
+              <div className="popover right">
+                <button type="button" className="tagOption" onClick={() => downloadCitation("bibtex")}>
+                  BibTeX
+                </button>
+                <button type="button" className="tagOption" onClick={() => downloadCitation("gbt7714")}>
+                  GB/T 7714
+                </button>
+                <button type="button" className="tagOption" onClick={() => downloadCitation("apa")}>
+                  APA
+                </button>
+              </div>
+            )}
+          </div>
+          <button type="button" className="quietBtn" onClick={downloadExport}>
+            Markdown 导出
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="errorBanner">{error}</div>}
+
+      <details className="drawer">
+        <summary>详情</summary>
+        <div className="drawerBody">
+          <div className="metaCards">
+            <div className="asideCard">
+              <h3>Local PDF</h3>
               <dl>
-                <dt>PDF</dt>
+                <dt>路径</dt>
                 <dd>{paper.local_pdf_path ?? "未登记"}</dd>
+                {paper.local_pdf_path && (
+                  <>
+                    <dt>预览</dt>
+                    <dd>
+                      <a href={api.pdfUrl(paper.id)} target="_blank" rel="noreferrer">
+                        在新标签打开 PDF
+                      </a>
+                    </dd>
+                  </>
+                )}
+              </dl>
+            </div>
+            <div className="asideCard">
+              <h3>Analysis Status</h3>
+              <dl>
+                <dt>状态</dt>
+                <dd>{statusLabel(paper.understanding_status)}</dd>
+                <dt>生成</dt>
+                <dd>{analysis.generated_at ?? "—"}</dd>
+              </dl>
+              <button type="button" className="quietBtn" onClick={regenerate}>
+                重新生成 / 更新草稿
+              </button>
+            </div>
+            <div className="asideCard">
+              <h3>Sources</h3>
+              <dl>
                 <dt>Paper</dt>
                 <dd>{paper.source_url ? <a href={paper.source_url}>{paper.source_url}</a> : "未登记"}</dd>
                 <dt>Repository</dt>
                 <dd>{paper.repo_url ? <a href={paper.repo_url}>{paper.repo_url}</a> : "未核验"}</dd>
               </dl>
-            </section>
-
-            <section className="asideCard">
-              <h3>Documents</h3>
-              <div className="docStack">
-                {documents.map((doc) => (
-                  <button
-                    key={doc.name}
-                    onClick={async () => {
-                      if (!paperId) return;
-                      const response = await api.getDocument(paperId, doc.name);
-                      setDocumentContent(response.content);
-                    }}
-                  >
-                    {doc.title}
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="asideCard">
-              <h3>Codex 全文解析</h3>
-              <p className="muted">启动本机 Codex 子进程，逐页读取 PDF，并按全文解析规范生成详细解析文档。</p>
-              <button
-                className="primaryButton wideButton"
-                onClick={startCodexAnalysis}
-                disabled={!!codexJob && ["queued", "running"].includes(codexJob.status)}
-              >
-                {codexJob && ["queued", "running"].includes(codexJob.status) ? "Codex running..." : "启动全文解析"}
-              </button>
-              {codexJob && (
-                <dl className="jobMeta">
-                  <dt>Status</dt>
-                  <dd>{codexJob.status}</dd>
-                  <dt>Target</dt>
-                  <dd>{codexJob.target_document}</dd>
-                  {codexJob.error && (
-                    <>
-                      <dt>Error</dt>
-                      <dd>{codexJob.error}</dd>
-                    </>
-                  )}
-                </dl>
-              )}
-            </section>
-          </aside>
-
-          <section className="paperMain">
-            <section className="summary heroSummary">
-              <h2>一屏摘要</h2>
-              <p className="leadText">{analysis.summary.problem}</p>
-              <p>{analysis.summary.core_idea}</p>
-            </section>
-
-            <div className="insightGrid">
-              <ListBlock title="贡献" items={analysis.summary.contributions} />
-              <ListBlock title="输入" items={analysis.method.inputs} />
-              <ListBlock title="输出" items={analysis.method.outputs} />
-              <ListBlock title="模块" items={analysis.method.modules} />
-              <ListBlock title="训练流程" items={analysis.method.training_pipeline} />
-              <ListBlock title="推理流程" items={analysis.method.inference_pipeline} />
-              <ListBlock title="实验/Benchmarks" items={analysis.evidence.benchmarks} />
-              <ListBlock title="限制" items={analysis.critique.limitations} />
             </div>
-
-            <section className="documents reader">
-              <div className="panelHeader">
-                <div>
-                  <h2>Analysis document</h2>
-                  <p>Local markdown rendered as a page-level reading surface.</p>
-                </div>
-              </div>
-              <MarkdownView content={documentContent} />
-            </section>
-          </section>
+          </div>
         </div>
-      </main>
+      </details>
+
+      <div className="tabs">
+        <button type="button" className={cls(tab === "pdf" && "active")} onClick={() => setTab("pdf")}>
+          PDF
+        </button>
+        <button type="button" className={cls(tab === "notes" && "active")} onClick={() => setTab("notes")}>
+          笔记
+        </button>
+        <button type="button" className={cls(tab === "translation" && "active")} onClick={loadTranslation}>
+          译文
+        </button>
+        <button type="button" className={cls(tab === "latex" && "active")} onClick={loadLatex}>
+          LaTeX 源码
+        </button>
+      </div>
+
+      {tab === "pdf" && (
+        <div className="reader">
+          <iframe className="pdfFrame" src={api.pdfUrl(paper.id)} title="PDF preview" />
+        </div>
+      )}
+
+      {tab === "notes" && (
+        <div className="reader">
+          <div className="readerInner">
+            <div className="docStack" style={{ marginBottom: 16, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {documents.map((doc) => (
+                <button
+                  type="button"
+                  key={doc.name}
+                  className={cls("miniTag", activeDoc === doc.name && "active")}
+                  onClick={async () => {
+                    const response = await api.getDocument(paper.id, doc.name);
+                    setDocumentContent(response.content);
+                    setActiveDoc(doc.name);
+                  }}
+                >
+                  {doc.title}
+                </button>
+              ))}
+            </div>
+            <MarkdownView content={documentContent || "（无分析文档）"} />
+          </div>
+        </div>
+      )}
+
+      {tab === "translation" && (
+        <TranslationPane
+          translation={translation}
+          onGenerate={generateTranslation}
+          translating={translating}
+          job={translationJob}
+        />
+      )}
+
+      {tab === "latex" && (
+        <div className="reader">
+          <div className="readerInner">
+            {!latex ? (
+              <div className="notice">正在加载 LaTeX 源码…</div>
+            ) : latex.download_error ? (
+              <div className="notice">LaTeX 源码不可用：{latex.download_error}</div>
+            ) : (
+              <MarkdownView content={latex.plain_text || "（无正文）"} />
+            )}
+          </div>
+        </div>
+      )}
+
+      <details className="drawer" style={{ marginTop: 18 }}>
+        <summary>Codex 全文解析</summary>
+        <div className="drawerBody">
+          <p className="muted">启动本机 Codex 子进程，逐页读取 PDF，并按全文解析规范生成详细解析文档。</p>
+          <button
+            type="button"
+            className="primaryBtn"
+            onClick={startCodexAnalysis}
+            disabled={!!codexJob && ["queued", "running"].includes(codexJob.status)}
+          >
+            {codexJob && ["queued", "running"].includes(codexJob.status) ? "Codex 运行中…" : "启动全文解析"}
+          </button>
+          {codexJob && (
+            <dl className="jobMeta">
+              <dt>状态</dt>
+              <dd>{codexJob.status}</dd>
+              <dt>目标</dt>
+              <dd>{codexJob.target_document}</dd>
+              {codexJob.error && (
+                <>
+                  <dt>错误</dt>
+                  <dd>{codexJob.error}</dd>
+                </>
+              )}
+            </dl>
+          )}
+        </div>
+      </details>
     </AppShell>
+  );
+}
+
+function TranslationPane({
+  translation,
+  onGenerate,
+  translating,
+  job,
+}: {
+  translation: TranslationResponse | null;
+  onGenerate: () => void;
+  translating: boolean;
+  job: TranslationJob | null;
+}) {
+  return (
+    <div className="translationPane">
+      <div className="head">
+        <span>中英对照译文</span>
+        <div className="headerActions">
+          {translation && (
+            <span className="progress">
+              已译 {translation.translated_count} / {translation.total_count}
+            </span>
+          )}
+          {translation && (
+            <button type="button" className="primaryBtn" disabled={translating} onClick={onGenerate}>
+              {translating ? `翻译任务${job?.status === "queued" ? "排队中" : "运行中"}…` : translation.translated_count === 0 ? "生成译文" : "继续翻译"}
+            </button>
+          )}
+        </div>
+      </div>
+      {job?.status === "failed" && <div className="notice errorBanner">翻译失败：{job.error || "未知错误"}</div>}
+      {!translation ? (
+        <div className="empty">加载中…</div>
+      ) : translation.total_count === 0 ? (
+        <div className="notice" style={{ margin: 16 }}>
+          此论文还没有 LaTeX 正文，无法翻译。请先在「LaTeX 源码」标签页加载源码。
+        </div>
+      ) : (
+        <div className="chunkList">
+          {translation.chunks.map((chunk, i) => (
+            <div className="chunk" key={chunk.hash || i}>
+              <div className="src">{chunk.source}</div>
+              <div className={cls("dst", !chunk.translated && "missing")}>{chunk.translated || "（未翻译）"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

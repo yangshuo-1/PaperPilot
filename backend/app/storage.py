@@ -16,6 +16,8 @@ from typing import Any
 from pydantic import ValidationError
 
 from .config import Settings
+from . import latex as _latex
+from . import llm as _llm
 from .models import (
     Critique,
     Document,
@@ -27,6 +29,7 @@ from .models import (
     Paper,
     PaperAnalysis,
     PaperIdentity,
+    ReadStatus,
     UnderstandingStatus,
 )
 
@@ -90,10 +93,9 @@ class PaperStore:
 
     def list_papers(self) -> list[Paper]:
         papers = [self._paper_from_record(record) for record in self._read_jsonl(self.paper_index_path)]
-        tags = self._read_tags()
+        meta = self._read_all_metadata()
         for paper in papers:
-            if paper.id in tags:
-                paper.tags = tags[paper.id]
+            self._apply_metadata(paper, meta.get(paper.id))
             analysis = self.get_analysis_or_none(paper.id)
             if analysis:
                 paper.understanding_status = (
@@ -108,6 +110,10 @@ class PaperStore:
             if paper.id == paper_id:
                 return paper
         raise KeyError(paper_id)
+
+    def paper_dir(self, paper_id: str) -> Path:
+        """Public Resolve the paper directory (mirrors _paper_dir)."""
+        return self._paper_dir(paper_id)
 
     def search_papers(self, q: str | None, tags: list[str]) -> list[Paper]:
         papers = self.list_papers()
@@ -141,11 +147,18 @@ class PaperStore:
         paper = self.get_paper(paper_id)
         clean_tags = sorted({tag.strip() for tag in tags if tag.strip()})
         store = self._read_tag_store()
-        store.setdefault("version", 1)
+        store.setdefault("version", 2)
         store.setdefault("papers", {})
+        current = store["papers"].get(paper_id, {"title": paper.title})
         store["papers"][paper_id] = {
             "title": paper.title,
             "tags": clean_tags,
+            # preserve existing metadata fields, defaulting new ones
+            "read_status": current.get("read_status", "unread"),
+            "starred": current.get("starred", False),
+            "folder_id": current.get("folder_id"),
+            "reading_progress": current.get("reading_progress"),
+            "last_read_at": current.get("last_read_at"),
         }
         self._write_text_atomic(self.tags_path, json.dumps(store, ensure_ascii=False, indent=2) + "\n")
         paper.tags = clean_tags
@@ -190,6 +203,7 @@ class PaperStore:
         return analysis
 
     def list_documents(self, paper_id: str) -> list[DocumentSummary]:
+        self.get_paper(paper_id)
         paper_dir = self._paper_dir(paper_id)
         docs: list[DocumentSummary] = []
         if paper_dir.exists():
@@ -198,10 +212,24 @@ class PaperStore:
         return docs
 
     def get_document(self, paper_id: str, document_name: str) -> Document:
-        path = self._paper_dir(paper_id) / document_name
-        if not path.exists() or path.suffix.lower() != ".md":
+        self.get_paper(paper_id)
+        paper_dir = self._paper_dir(paper_id).resolve()
+        try:
+            paper_dir.relative_to(self.settings.data_root.resolve())
+        except ValueError as exc:
+            raise KeyError(document_name) from exc
+        candidate = (paper_dir / document_name).resolve()
+        try:
+            candidate.relative_to(paper_dir)
+        except ValueError as exc:
+            raise KeyError(document_name) from exc
+        if not candidate.is_file() or candidate.suffix.lower() != ".md":
             raise KeyError(document_name)
-        return Document(name=path.name, title=self._document_title(path), content=path.read_text(encoding="utf-8"))
+        return Document(
+            name=candidate.name,
+            title=self._document_title(candidate),
+            content=candidate.read_text(encoding="utf-8"),
+        )
 
     def generate_analysis(self, paper_id: str) -> PaperAnalysis:
         paper = self.get_paper(paper_id)
@@ -563,6 +591,8 @@ class PaperStore:
             tags=[],
             understanding_status=record.get("understanding_status", "indexed"),
             updated_at=record.get("updated_at"),
+            abstract=record.get("abstract"),
+            primary_category=record.get("primary_category"),
         )
 
     def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
@@ -581,6 +611,453 @@ class PaperStore:
             paper_id: sorted(record.get("tags", []))
             for paper_id, record in store.get("papers", {}).items()
         }
+
+    # --- per-paper metadata (v2 paper_tags.json) ---------------------------
+
+    _DEFAULT_METADATA = {
+        "read_status": "unread",
+        "starred": False,
+        "folder_id": None,
+        "reading_progress": None,
+        "last_read_at": None,
+    }
+
+    def _read_all_metadata(self) -> dict[str, dict[str, Any]]:
+        store = self._read_tag_store()
+        papers = store.get("papers", {})
+        if not isinstance(papers, dict):
+            return {}
+        # Tolerate paper id changes by matching path when id lookup fails.
+        by_path: dict[str, dict[str, Any]] = {}
+        for paper_id, record in papers.items():
+            if not isinstance(record, dict):
+                continue
+            path = record.get("path")
+            if isinstance(path, str):
+                by_path[path] = record
+        output: dict[str, dict[str, Any]] = {}
+        for record in self._read_jsonl(self.paper_index_path):
+            paper_id = record.get("id")
+            if not paper_id:
+                continue
+            meta = papers.get(paper_id)
+            if not isinstance(meta, dict):
+                path = record.get("local_pdf_path")
+                meta = by_path.get(str(path), {}) if isinstance(path, str) else {}
+            if not isinstance(meta, dict):
+                meta = {}
+            output[paper_id] = {
+                "title": meta.get("title") or record.get("title"),
+                "tags": sorted(meta.get("tags") or []),
+                "entity_id": meta.get("entity_id"),
+                "path": meta.get("path") or record.get("local_pdf_path"),
+                "read_status": meta.get("read_status", "unread"),
+                "starred": bool(meta.get("starred", False)),
+                "folder_id": meta.get("folder_id"),
+                "reading_progress": meta.get("reading_progress"),
+                "last_read_at": meta.get("last_read_at"),
+            }
+        return output
+
+    def _apply_metadata(self, paper: Paper, meta: dict[str, Any] | None) -> None:
+        if not meta:
+            return
+        paper.tags = meta.get("tags") or []
+        paper.starred = bool(meta.get("starred", False))
+        try:
+            paper.read_status = ReadStatus(meta.get("read_status", "unread"))
+        except ValueError:
+            paper.read_status = ReadStatus.unread
+        paper.folder_id = meta.get("folder_id")
+        paper.reading_progress = meta.get("reading_progress")
+        paper.last_read_at = meta.get("last_read_at")
+
+    def update_metadata(self, paper_id: str, fields: dict[str, Any]) -> list[Paper]:
+        paper_ids = [paper_id]
+        return self.batch_update_metadata(paper_ids, fields)
+
+    def batch_update_metadata(self, paper_ids: list[str], fields: dict[str, Any]) -> list[Paper]:
+        store = self._read_tag_store()
+        store.setdefault("version", 2)
+        papers = store.setdefault("papers", {})
+        for paper_id in paper_ids:
+            paper = self.get_paper(paper_id)
+            current = dict(papers.get(paper_id) or {})
+            base = dict(self._DEFAULT_METADATA)
+            base.update(current)
+            # apply only the provided fields
+            for key in ("read_status", "starred", "folder_id", "reading_progress", "last_read_at"):
+                if key in fields:
+                    base[key] = fields[key]
+            papers[paper_id] = {
+                "entity_id": current.get("entity_id"),
+                "path": current.get("path") or paper.local_pdf_path,
+                "title": paper.title,
+                "tags": current["tags"] if "tags" in current else paper.tags,
+                "read_status": base["read_status"],
+                "starred": base["starred"],
+                "folder_id": base["folder_id"],
+                "reading_progress": base["reading_progress"],
+                "last_read_at": base["last_read_at"],
+            }
+        self._write_text_atomic(self.tags_path, json.dumps(store, ensure_ascii=False, indent=2) + "\n")
+        return [self.get_paper(pid) for pid in paper_ids]
+
+    # --- folders (paper_folders.json) ---------------------------------------
+
+    def _folder_store_path(self) -> Path:
+        return self.settings.references_dir / "paper_folders.json"
+
+    def list_folders(self) -> list[dict[str, Any]]:
+        path = self._folder_store_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        folders = data.get("folders", []) if isinstance(data, dict) else []
+        return [
+            {
+                "id": f.get("id"),
+                "name": f.get("name"),
+                "parent_id": f.get("parent_id"),
+                "order": f.get("order", 0),
+            }
+            for f in folders
+            if isinstance(f, dict) and f.get("id")
+        ]
+
+    def _write_folders(self, folders: list[dict[str, Any]]) -> None:
+        payload = {"version": 1, "folders": folders}
+        self._write_text_atomic(
+            self._folder_store_path(), json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        )
+
+    def create_folder(self, name: str, parent_id: str | None) -> dict[str, Any]:
+        if not name.strip():
+            raise ValueError("Folder name is required.")
+        folders = self.list_folders()
+        if parent_id is not None and not any(f["id"] == parent_id for f in folders):
+            raise ValueError("Parent folder does not exist.")
+        existing_ids = {f["id"] for f in folders}
+        folder_id = name.strip()
+        base = folder_id
+        n = 2
+        while folder_id in existing_ids:
+            folder_id = f"{base}-{n}"
+            n += 1
+        folders.append({"id": folder_id, "name": name.strip(), "parent_id": parent_id, "order": 0})
+        self._write_folders(folders)
+        return folders[-1]
+
+    def update_folder(
+        self,
+        folder_id: str,
+        *,
+        name: str | None = None,
+        parent_id: str | None = None,
+        parent_set: bool = False,
+        order: int | None = None,
+    ) -> dict[str, Any]:
+        folders = self.list_folders()
+        folder = next((f for f in folders if f["id"] == folder_id), None)
+        if folder is None:
+            raise KeyError(folder_id)
+        if name is not None and name.strip():
+            folder["name"] = name.strip()
+        if parent_set:
+            if parent_id == folder_id:
+                raise ValueError("A folder cannot be its own parent.")
+            if parent_id is not None and parent_id not in {f["id"] for f in folders}:
+                raise ValueError("Parent folder does not exist.")
+            # cycle guard
+            ancestor = self._folder_by_id(folders, parent_id) if parent_id is not None else None
+            while ancestor is not None:
+                if ancestor["id"] == folder_id:
+                    raise ValueError("Cannot move a folder into its own subtree.")
+                ancestor = self._parent_of(folders, ancestor["id"])
+            folder["parent_id"] = parent_id
+        if order is not None:
+            if order < 0:
+                raise ValueError("Folder order must be non-negative.")
+            folder["order"] = order
+        self._write_folders(folders)
+        return folder
+
+    def delete_folder(self, folder_id: str) -> None:
+        folders = self.list_folders()
+        if not any(f["id"] == folder_id for f in folders):
+            raise KeyError(folder_id)
+        descendants = {folder_id}
+        changed = True
+        while changed:
+            changed = False
+            for f in folders:
+                if f["parent_id"] in descendants and f["id"] not in descendants:
+                    descendants.add(f["id"])
+                    changed = True
+        remaining = [f for f in folders if f["id"] not in descendants]
+        self._write_folders(remaining)
+        # papers pointing at deleted folders silently reassigned to All
+        if folder_id in descendants:
+            store = self._read_tag_store()
+            papers = store.get("papers", {})
+            for pid, rec in list(papers.items()):
+                if isinstance(rec, dict) and rec.get("folder_id") in descendants:
+                    rec["folder_id"] = None
+            if store.get("papers") is not None:
+                self._write_text_atomic(
+                    self.tags_path, json.dumps(store, ensure_ascii=False, indent=2) + "\n"
+                )
+
+    def _parent_of(self, folders: list[dict[str, Any]], folder_id: str) -> dict[str, Any] | None:
+        folder = next((f for f in folders if f["id"] == folder_id), None)
+        if not folder or folder["parent_id"] is None:
+            return None
+        return next((f for f in folders if f["id"] == folder["parent_id"]), None)
+
+    def _folder_by_id(self, folders: list[dict[str, Any]], folder_id: str) -> dict[str, Any] | None:
+        return next((f for f in folders if f["id"] == folder_id), None)
+
+    # --- LaTeX source ------------------------------------------------------
+
+    def latex_source(self, paper_id: str) -> dict[str, Any]:
+        """Download (if needed) and parse the arXiv LaTeX source for a paper.
+
+        Caches the parse result beside the paper:
+          papers/<dir>/latex_source.md   (reader-friendly structured text)
+          papers/<dir>/latex_plain.txt   (plain body text)
+          papers/<dir>/latex_parsed.json (full parse result, for fast re-read)
+        """
+        paper = self.get_paper(paper_id)
+        if not paper.arxiv_id:
+            raise ValueError("Paper has no arXiv id; LaTeX source is unavailable.")
+        paper_dir = self._paper_dir(paper_id)
+        source_dir = paper_dir / "latex"
+        source_md = paper_dir / "latex_source.md"
+        plain_txt = paper_dir / "latex_plain.txt"
+        parsed_json = paper_dir / "latex_parsed.json"
+
+        if parsed_json.exists():
+            try:
+                parsed = json.loads(parsed_json.read_text(encoding="utf-8"))
+                return {"downloaded": True, "parsed": parsed}
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        # Download if we don't yet have the extracted tree.
+        if not source_dir.exists() or not any(source_dir.iterdir()):
+            try:
+                _latex.download_latex_sources(paper.arxiv_id, source_dir)
+            except _latex.LatexSourceError as exc:
+                return {"downloaded": False, "download_error": str(exc), "parsed": None}
+
+        try:
+            parsed = _latex.parse_latex(source_dir)
+        except _latex.LatexSourceError as exc:
+            return {"downloaded": True, "download_error": str(exc), "parsed": None}
+
+        parsed.setdefault("downloaded", True)
+        parsed.setdefault("source_dir", str(source_dir))
+        self._write_text_atomic(source_md, parsed["plain_text"] + "\n")
+        self._write_text_atomic(plain_txt, parsed["plain_text"] + "\n")
+        self._write_text_atomic(parsed_json, json.dumps(parsed, ensure_ascii=False, indent=2) + "\n")
+        return {"downloaded": True, "parsed": parsed}
+
+    # --- quick view --------------------------------------------------------
+
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+    def quickview(self, paper_id: str) -> dict[str, Any]:
+        """Return the Quick View payload: abstract + source + figures + captions."""
+        paper = self.get_paper(paper_id)
+        figures: list[dict[str, str | None]] = []
+        paper_dir = self._paper_dir(paper_id)
+        source_dir = paper_dir / "latex"
+        if paper.arxiv_id:
+            try:
+                result = self.latex_source(paper_id)
+                source_dir = Path(result.get("source_dir") or source_dir)
+            except (ValueError, KeyError):
+                pass
+        captions = self._figure_captions(source_dir)
+        if source_dir.exists():
+            for path in sorted(self._iter_image_files(source_dir)):
+                rel = path.relative_to(source_dir)
+                figures.append({
+                    "name": str(rel),
+                    "url": f"/api/papers/{paper_id}/figures/{rel.as_posix()}",
+                    "caption": captions.get(str(rel)) or captions.get(path.name),
+                })
+        return {
+            "paper_id": paper.id,
+            "title": paper.title,
+            "abstract": paper.abstract,
+            "source_url": paper.source_url,
+            "figures": figures,
+        }
+
+    def _iter_image_files(self, source_dir: Path) -> list[Path]:
+        if not source_dir.exists():
+            return []
+        return [p for p in source_dir.rglob("*") if p.is_file() and p.suffix.lower() in self._IMAGE_EXTS]
+
+    def _figure_captions(self, source_dir: Path) -> dict[str, str]:
+        """Map figure image path -> caption string (best effort)."""
+        result: dict[str, str] = {}
+        if not source_dir.exists():
+            return result
+        for tex in source_dir.rglob("*.tex"):
+            try:
+                body = tex.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for m in re.finditer(r"\\includegraphics(?:\[[^\]]*\])?\{\s*([^}]+?)\s*}", body):
+                name = m.group(1).strip().replace("\\", "/")
+                tail = body[m.end():]
+                cap = re.search(r"\\caption\{\s*(.*?)\s*}", tail, re.S)
+                if cap:
+                    caption = re.sub(r"\\\w+(?:\[[^\]]*\])?\{\s*([^}]*?)\s*}", r"\1", cap.group(1))
+                    caption = re.sub(r"[{}]|\\[^ ]*", "", caption)
+                    result[name] = caption.strip()
+        return result
+
+    def figure_file(self, paper_id: str, figure_name: str) -> Path | None:
+        """Resolve the on-disk path for a quick-view figure, safe from traversal."""
+        try:
+            self.get_paper(paper_id)
+        except KeyError:
+            raise
+        paper_dir = self._paper_dir(paper_id).resolve()
+        source_dir = (paper_dir / "latex").resolve()
+        try:
+            paper_dir.relative_to(self.settings.data_root.resolve())
+            source_dir.relative_to(paper_dir)
+        except ValueError:
+            return None
+        rel = Path(figure_name)
+        if rel.is_absolute() or ".." in rel.parts:
+            return None
+        path = (source_dir / rel).resolve()
+        try:
+            path.relative_to(source_dir)
+        except ValueError:
+            return None
+        if not path.is_file():
+            return None
+        return path
+
+    # --- translation -------------------------------------------------------
+
+    def translation(self, paper_id: str) -> dict[str, Any]:
+        self.get_paper(paper_id)
+        paper_dir = self._paper_dir(paper_id)
+        plain_txt = paper_dir / "latex_plain.txt"
+        paragraphs: list[str] = []
+        if plain_txt.exists():
+            paragraphs = [p.strip() for p in plain_txt.read_text(encoding="utf-8").split("\n\n") if p.strip()]
+        cache = _llm.load_translation_cache(paper_dir) if paragraphs else {"version": 1, "paragraphs": {}}
+        store = cache.get("paragraphs", {})
+        chunks = []
+        translated_count = 0
+        for paragraph in paragraphs:
+            key = _llm.paragraph_hash(paragraph)
+            entry = store.get(key, {})
+            if entry.get("translated"):
+                translated_count += 1
+            chunks.append({"source": paragraph, "translated": entry.get("translated", ""), "hash": key})
+        status = _llm.llm_status()
+        return {
+            "chunks": chunks,
+            "translated_count": translated_count,
+            "total_count": len(paragraphs),
+            "available": bool(paragraphs) and status["available"],
+            "source": status.get("source"),
+            "model": status.get("model"),
+        }
+
+    def generate_translation(self, paper_id: str, *, max_units: int = 200) -> dict[str, Any]:
+        self.get_paper(paper_id)
+        paper_dir = self._paper_dir(paper_id)
+        plain_txt = paper_dir / "latex_plain.txt"
+        if not plain_txt.exists():
+            # ensure source first
+            self.latex_source(paper_id)
+        if not plain_txt.exists():
+            raise ValueError("No latex plain text available to translate.")
+        paragraphs = _llm.split_paragraphs(plain_txt.read_text(encoding="utf-8"), max_units=max_units)
+        _llm.translate_paragraphs(paper_dir, paragraphs, only_untranslated=True)
+        return self.translation(paper_id)
+
+    # --- export / citation -------------------------------------------------
+
+    def markdown_export(self, paper_id: str) -> str:
+        paper = self.get_paper(paper_id)
+        analysis = self.get_analysis_or_none(paper_id)
+        lines = [
+            f"# {paper.title}",
+            "",
+            "## 元数据",
+            "",
+            f"- paper_id: {paper.id}",
+            f"- arXiv: {paper.arxiv_id or '—'}",
+            f"- 年份: {paper.year or '—'}",
+            f"- 会议/期刊: {paper.venue or '—'}",
+            f"- PDF: {paper.local_pdf_path or '未登记'}",
+            f"- Source: {paper.source_url or '未登记'}",
+            f"- Repo: {paper.repo_url or '未核验'}",
+            f"- 作者: {', '.join(paper.authors) if paper.authors else '—'}",
+            "",
+            "## 标签",
+            "",
+            ", ".join(paper.tags) if paper.tags else "（无）",
+            "",
+        ]
+        if analysis:
+            analysis_path = self._analysis_path(paper_id)
+            if analysis_path.exists():
+                lines += [f"## 结构化分析 ({analysis_path.name})", "", "```json", analysis_path.read_text(encoding="utf-8").strip(), "```", ""]
+        docs = self.list_documents(paper_id)
+        if docs:
+            lines += ["## 分析文档", ""]
+            for summary in docs:
+                try:
+                    doc = self.get_document(paper_id, summary.name)
+                    lines += [f"### {summary.title}", "", doc.content, "", "---", ""]
+                except KeyError:
+                    continue
+        return "\n".join(lines).strip() + "\n"
+
+    def citation(self, paper_id: str, fmt: str) -> str:
+        paper = self.get_paper(paper_id)
+        title = paper.title or "Untitled"
+        authors = paper.authors or []
+        author_str = " and ".join(authors) if authors else "Anonymous"
+        author_short = "、".join(authors) if authors else "佚名"
+        year = paper.year if paper.year else "n.d."
+        arxiv = paper.arxiv_id or ""
+        source = paper.source_url or ""
+
+        if fmt == "bibtex":
+            entry_id = re.sub(r"[^a-zA-Z0-9_]", "", (paper.short_title or paper.id) or "paper")
+            return (
+                f"@misc{{{entry_id},\n"
+                f"  title = {{{title}}},\n"
+                f"  author = {{{author_str}}},\n"
+                f"  year = {{{year}}},\n"
+                f"  eprint = {{{arxiv}}},\n"
+                f"  archivePrefix = {{arXiv}},\n"
+                f"  url = {{{source}}}\n"
+                f"}}\n"
+            )
+        if fmt == "gbt7714":
+            surname = authors[0] if authors else "佚名"
+            return f"{surname} 等. {title}[J/OL]. arXiv preprint arXiv:{arxiv}, {year}. {source}."
+        if fmt == "apa":
+            names = "".join(f"{a}. " for a in authors) if authors else "Anonymous. "
+            return f"{names}({year}). {title}. arXiv. https://arxiv.org/abs/{arxiv}."
+        raise ValueError(f"Unknown citation format: {fmt}")
 
     def _paper_dir(self, paper_id: str) -> Path:
         if paper_id == "qwen3-vl-2511-21631":

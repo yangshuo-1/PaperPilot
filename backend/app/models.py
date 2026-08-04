@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +11,12 @@ class UnderstandingStatus(str, Enum):
     analysis_drafted = "analysis_drafted"
     code_mapped = "code_mapped"
     needs_review = "needs_review"
+
+
+class ReadStatus(str, Enum):
+    unread = "unread"
+    reading = "reading"
+    read = "read"
 
 
 class Paper(BaseModel):
@@ -28,6 +34,28 @@ class Paper(BaseModel):
     tags: list[str] = Field(default_factory=list)
     understanding_status: UnderstandingStatus = UnderstandingStatus.not_started
     updated_at: str | None = None
+    # per-paper metadata (v2 paper_tags.json)
+    starred: bool = False
+    read_status: ReadStatus = ReadStatus.unread
+    folder_id: str | None = None
+    reading_progress: float | None = None
+    last_read_at: str | None = None
+    abstract: str | None = None
+    primary_category: str | None = None
+
+
+class FigureInfo(BaseModel):
+    name: str
+    url: str | None = None
+    caption: str | None = None
+
+
+class QuickviewResponse(BaseModel):
+    paper_id: str
+    title: str
+    abstract: str | None = None
+    source_url: str | None = None
+    figures: list[FigureInfo] = Field(default_factory=list)
 
 
 class PaperListResponse(BaseModel):
@@ -162,3 +190,90 @@ class CodexAnalysisJob(BaseModel):
 class HealthResponse(BaseModel):
     ok: bool
     data_root: str
+
+
+# --- folders ---------------------------------------------------------------
+
+
+class Folder(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    order: int = 0
+
+
+class FolderListResponse(BaseModel):
+    version: int = 1
+    folders: list[Folder] = Field(default_factory=list)
+
+
+class FolderCreateRequest(BaseModel):
+    name: str
+    parent_id: str | None = None
+
+
+class FolderUpdateRequest(BaseModel):
+    name: str | None = None
+    parent_id: str | None = None
+    order: int | None = None
+
+
+# --- metadata --------------------------------------------------------------
+
+
+class MetadataUpdateRequest(BaseModel):
+    paper_ids: list[str] | None = None  # batch variant; when absent targets the URL paper
+    starred: bool | None = None
+    read_status: ReadStatus | None = None
+    folder_id: str | None = None
+    reading_progress: float | None = None
+    last_read_at: str | None = None
+
+
+# --- LaTeX / translation ---------------------------------------------------
+
+
+class LatexSourceResponse(BaseModel):
+    title: str | None = None
+    plain_text: str = ""
+    preview: str = ""
+    files: list[str] = Field(default_factory=list)
+    source_dir: str | None = None
+    main_file: str | None = None
+    downloaded: bool = False
+    download_error: str | None = None
+
+
+class TranslationResponse(BaseModel):
+    paper_id: str
+    chunks: list[dict[str, Any]] = Field(default_factory=list)
+    translated_count: int = 0
+    total_count: int = 0
+    available: bool = False
+    source: str | None = None
+    model: str | None = None
+
+
+class TranslationGenerateRequest(BaseModel):
+    max_units: int = Field(default=200, ge=1, le=2000)
+
+
+class TranslationJob(BaseModel):
+    job_id: str
+    paper_id: str
+    status: Literal["queued", "running", "succeeded", "failed"]
+    max_units: int
+    created_at: str
+    updated_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+
+
+# --- citation / export -----------------------------------------------------
+
+
+class CitationResponse(BaseModel):
+    paper_id: str
+    format: Literal["bibtex", "gbt7714", "apa"]
+    citation: str

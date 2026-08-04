@@ -1,21 +1,37 @@
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse
+from pathlib import Path
 
 from .config import Settings, get_settings
 from .codex_jobs import CodexJobRunner
+from . import latex as latex_mod
+from . import llm as llm_mod
 from .models import (
+    CitationResponse,
     CodexAnalysisJob,
     CodexAnalysisRequest,
     Document,
     DocumentSummary,
+    Folder,
+    FolderCreateRequest,
+    FolderListResponse,
+    FolderUpdateRequest,
     HealthResponse,
     ImportRequest,
+    LatexSourceResponse,
+    MetadataUpdateRequest,
     Paper,
     PaperAnalysis,
     PaperListResponse,
+    QuickviewResponse,
     TagUpdateRequest,
+    TranslationGenerateRequest,
+    TranslationJob,
+    TranslationResponse,
 )
 from .storage import PaperStore
+from .translation_jobs import TranslationJobRunner
 
 
 app = FastAPI(title="paper_valt", version="0.1.0")
@@ -33,11 +49,26 @@ def get_store(settings: Settings = Depends(get_settings)) -> PaperStore:
     return PaperStore(settings)
 
 
+def _figure_media_type(suffix: str) -> str:
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }.get(suffix.lower(), "application/octet-stream")
+
+
 def get_codex_runner(
     settings: Settings = Depends(get_settings),
     store: PaperStore = Depends(get_store),
 ) -> CodexJobRunner:
     return CodexJobRunner(settings, store)
+
+
+def get_translation_runner(store: PaperStore = Depends(get_store)) -> TranslationJobRunner:
+    return TranslationJobRunner(store)
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -53,6 +84,45 @@ def list_papers(
 ) -> PaperListResponse:
     papers = store.search_papers(q, tag)
     return PaperListResponse(papers=papers, total=len(papers), tags=store.tag_counts(store.list_papers()))
+
+
+@app.get("/api/papers/folders", response_model=FolderListResponse)
+def list_folders(store: PaperStore = Depends(get_store)) -> FolderListResponse:
+    return FolderListResponse(folders=[Folder(**f) for f in store.list_folders()])
+
+
+@app.post("/api/papers/folders", response_model=Folder)
+def create_folder(request: FolderCreateRequest, store: PaperStore = Depends(get_store)) -> Folder:
+    try:
+        return Folder(**store.create_folder(request.name, request.parent_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/papers/folders/{folder_id}", response_model=Folder)
+def update_folder(folder_id: str, request: FolderUpdateRequest, store: PaperStore = Depends(get_store)) -> Folder:
+    try:
+        return Folder(
+            **store.update_folder(
+                folder_id,
+                name=request.name,
+                parent_id=request.parent_id,
+                parent_set="parent_id" in request.model_fields_set,
+                order=request.order,
+            )
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Folder not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/papers/folders/{folder_id}", status_code=204)
+def delete_folder(folder_id: str, store: PaperStore = Depends(get_store)) -> None:
+    try:
+        store.delete_folder(folder_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Folder not found") from exc
 
 
 @app.get("/api/papers/{paper_id}", response_model=Paper)
@@ -169,3 +239,195 @@ def import_paper(request: ImportRequest, store: PaperStore = Depends(get_store))
 def refresh(store: PaperStore = Depends(get_store)) -> PaperListResponse:
     papers = store.refresh()
     return PaperListResponse(papers=papers, total=len(papers), tags=store.tag_counts(papers))
+
+
+# ---------------------------------------------------------------------------
+# metadata
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/papers/{paper_id}/metadata", response_model=Paper)
+def get_metadata(paper_id: str, store: PaperStore = Depends(get_store)) -> Paper:
+    try:
+        return store.get_paper(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+
+
+@app.patch("/api/papers/{paper_id}/metadata", response_model=list[Paper])
+def update_metadata(
+    paper_id: str,
+    request: MetadataUpdateRequest,
+    store: PaperStore = Depends(get_store),
+) -> list[Paper]:
+    fields = request.model_dump(exclude_unset=True)
+    fields.pop("paper_ids", None)
+    field_keys = {"starred", "read_status", "folder_id", "reading_progress", "last_read_at"}
+    update = {k: v for k, v in fields.items() if k in field_keys}
+    try:
+        return store.batch_update_metadata([paper_id], update)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+
+
+@app.post("/api/papers/metadata", response_model=list[Paper])
+def batch_update_metadata(
+    request: MetadataUpdateRequest,
+    store: PaperStore = Depends(get_store),
+) -> list[Paper]:
+    paper_ids = request.paper_ids or []
+    if not paper_ids:
+        raise HTTPException(status_code=400, detail="paper_ids is required.")
+    fields = request.model_dump(exclude_unset=True)
+    fields.pop("paper_ids", None)
+    field_ids = {"starred", "read_status", "folder_id", "reading_progress", "last_read_at"}
+    update = {k: v for k, v in fields.items() if k in field_ids}
+    try:
+        return store.batch_update_metadata(paper_ids, update)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="One or more papers not found") from exc
+
+
+# ---------------------------------------------------------------------------
+# folders
+# ---------------------------------------------------------------------------
+# latex source / pdf / translation / export / citation
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/papers/{paper_id}/latex", response_model=LatexSourceResponse)
+def get_latex(paper_id: str, store: PaperStore = Depends(get_store)) -> LatexSourceResponse:
+    try:
+        result = store.latex_source(paper_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    parsed = result.get("parsed") or {}
+    return LatexSourceResponse(
+        title=parsed.get("title"),
+        plain_text=parsed.get("plain_text", "") or "",
+        preview=parsed.get("preview", "") or "",
+        files=parsed.get("files", []) or [],
+        source_dir=parsed.get("source_dir"),
+        main_file=parsed.get("main_file"),
+        downloaded=bool(result.get("downloaded")),
+        download_error=result.get("download_error"),
+    )
+
+
+@app.get("/api/papers/{paper_id}/pdf")
+def get_pdf(paper_id: str, store: PaperStore = Depends(get_store)) -> FileResponse:
+    try:
+        paper = store.get_paper(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    if not paper.local_pdf_path:
+        raise HTTPException(status_code=404, detail="Paper has no local PDF")
+    path = Path(paper.local_pdf_path)
+    path = path.resolve()
+    try:
+        path.relative_to(store.settings.data_root.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="PDF file is outside the data root") from exc
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="PDF file missing on disk")
+    return FileResponse(
+        str(path),
+        media_type="application/pdf",
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/papers/{paper_id}/quickview", response_model=QuickviewResponse)
+def get_quickview(paper_id: str, store: PaperStore = Depends(get_store)) -> QuickviewResponse:
+    try:
+        data = store.quickview(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    return QuickviewResponse(**data)
+
+
+@app.get("/api/papers/{paper_id}/figures/{figure_name:path}")
+def get_figure(paper_id: str, figure_name: str, store: PaperStore = Depends(get_store)) -> FileResponse:
+    try:
+        path = store.figure_file(paper_id, figure_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="Figure not found")
+    media = _figure_media_type(path.suffix)
+    return FileResponse(str(path), media_type=media)
+
+
+
+@app.get("/api/papers/{paper_id}/export")
+def export_paper(
+    paper_id: str,
+    format: str = Query(default="markdown"),
+    store: PaperStore = Depends(get_store),
+) -> PlainTextResponse:
+    if format.lower() != "markdown":
+        raise HTTPException(status_code=400, detail="format must be markdown")
+    try:
+        content = store.markdown_export(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
+
+
+@app.get("/api/papers/{paper_id}/citation", response_model=CitationResponse)
+def citation(
+    paper_id: str,
+    format: str = Query(default="bibtex"),
+    store: PaperStore = Depends(get_store),
+) -> CitationResponse:
+    fmt = format.lower()
+    if fmt not in ("bibtex", "gbt7714", "apa"):
+        raise HTTPException(status_code=400, detail="format must be bibtex|gbt7714|apa")
+    try:
+        text = store.citation(paper_id, fmt)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CitationResponse(paper_id=paper_id, format=fmt, citation=text)
+
+
+@app.get("/api/papers/{paper_id}/translation", response_model=TranslationResponse)
+def get_translation(paper_id: str, store: PaperStore = Depends(get_store)) -> TranslationResponse:
+    try:
+        result = store.translation(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    return TranslationResponse(paper_id=paper_id, **result)
+
+
+@app.post("/api/papers/{paper_id}/translation/generate", response_model=TranslationJob, status_code=202)
+def generate_translation(
+    paper_id: str,
+    request: TranslationGenerateRequest,
+    runner: TranslationJobRunner = Depends(get_translation_runner),
+) -> TranslationJob:
+    try:
+        return runner.start(paper_id, max_units=request.max_units)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except llm_mod.LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/papers/{paper_id}/translation/jobs/{job_id}", response_model=TranslationJob)
+def get_translation_job(
+    paper_id: str,
+    job_id: str,
+    runner: TranslationJobRunner = Depends(get_translation_runner),
+) -> TranslationJob:
+    try:
+        job = runner.get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Translation job not found") from exc
+    if job.paper_id != paper_id:
+        raise HTTPException(status_code=404, detail="Translation job not found")
+    return job

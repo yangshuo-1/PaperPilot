@@ -6,6 +6,8 @@ export type UnderstandingStatus =
   | "code_mapped"
   | "needs_review";
 
+export type ReadStatus = "unread" | "reading" | "read";
+
 export type Paper = {
   id: string;
   title: string;
@@ -21,6 +23,27 @@ export type Paper = {
   tags: string[];
   understanding_status: UnderstandingStatus;
   updated_at?: string | null;
+  starred: boolean;
+  read_status: ReadStatus;
+  folder_id?: string | null;
+  reading_progress?: number | null;
+  last_read_at?: string | null;
+  abstract?: string | null;
+  primary_category?: string | null;
+};
+
+export type FigureInfo = {
+  name: string;
+  url?: string | null;
+  caption?: string | null;
+};
+
+export type Quickview = {
+  paper_id: string;
+  title: string;
+  abstract?: string | null;
+  source_url?: string | null;
+  figures: FigureInfo[];
 };
 
 export type PaperListResponse = {
@@ -127,6 +150,63 @@ export type CodexAnalysisJob = {
   error?: string | null;
 };
 
+export type Folder = {
+  id: string;
+  name: string;
+  parent_id?: string | null;
+  order: number;
+};
+
+export type FolderListResponse = {
+  version: number;
+  folders: Folder[];
+};
+
+export type TranslationChunk = {
+  source: string;
+  translated: string;
+  hash: string;
+};
+
+export type TranslationResponse = {
+  paper_id: string;
+  chunks: TranslationChunk[];
+  translated_count: number;
+  total_count: number;
+  available: boolean;
+  source?: string | null;
+  model?: string | null;
+};
+
+export type TranslationJob = {
+  job_id: string;
+  paper_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  max_units: number;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+};
+
+export type CitationResponse = {
+  paper_id: string;
+  format: "bibtex" | "gbt7714" | "apa";
+  citation: string;
+};
+
+export type LatexSourceResponse = {
+  title?: string | null;
+  plain_text: string;
+  preview: string;
+  files: string[];
+  source_dir?: string | null;
+  main_file?: string | null;
+  downloaded: boolean;
+  download_error?: string | null;
+};
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -140,6 +220,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(text || response.statusText);
   }
   return response.json() as Promise<T>;
+}
+
+async function requestText(url: string): Promise<string> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.text();
 }
 
 export const api = {
@@ -176,5 +264,49 @@ export const api = {
     request<Paper>("/api/papers/import", {
       method: "POST",
       body: JSON.stringify({ arxiv_id_or_url: arxivIdOrUrl })
-    })
+    }),
+  // metadata
+  updateMetadata: (paperId: string, fields: Partial<Record<"starred" | "read_status" | "folder_id" | "reading_progress" | "last_read_at", boolean | string | number | null>>) =>
+    request<Paper[]>(`/api/papers/${paperId}/metadata`, {
+      method: "PATCH",
+      body: JSON.stringify(fields)
+    }),
+  batchUpdateMetadata: (paperIds: string[], fields: Record<string, boolean | string | number | null>) =>
+    request<Paper[]>("/api/papers/metadata", {
+      method: "POST",
+      body: JSON.stringify({ paper_ids: paperIds, ...fields })
+    }),
+  // folders
+  listFolders: () => request<FolderListResponse>("/api/papers/folders"),
+  createFolder: (name: string, parentId: string | null = null) =>
+    request<Folder>("/api/papers/folders", {
+      method: "POST",
+      body: JSON.stringify({ name, parent_id: parentId })
+    }),
+  updateFolder: (folderId: string, fields: { name?: string; parent_id?: string | null }) =>
+    request<Folder>(`/api/papers/folders/${folderId}`, {
+      method: "PUT",
+      body: JSON.stringify(fields)
+    }),
+  deleteFolder: (folderId: string) => request<void>(`/api/papers/folders/${folderId}`, { method: "DELETE" }),
+  // latex / translation
+  getLatex: (paperId: string) => request<LatexSourceResponse>(`/api/papers/${paperId}/latex`),
+  getTranslation: (paperId: string) => request<TranslationResponse>(`/api/papers/${paperId}/translation`),
+  generateTranslation: (paperId: string) =>
+    request<TranslationJob>(`/api/papers/${paperId}/translation/generate`, {
+      method: "POST",
+      body: JSON.stringify({ max_units: 200 })
+    }),
+  getTranslationJob: (paperId: string, jobId: string) =>
+    request<TranslationJob>(`/api/papers/${paperId}/translation/jobs/${jobId}`),
+  // export / citation
+  exportMarkdown: (paperId: string) => requestText(`/api/papers/${paperId}/export?format=markdown`),
+  getCitation: (paperId: string, format: "bibtex" | "gbt7714" | "apa") =>
+    request<CitationResponse>(`/api/papers/${paperId}/citation?format=${format}`),
+  pdfUrl: (paperId: string) => `/api/papers/${paperId}/pdf`,
 };
+
+// --- quick view (task #1) ---
+export async function getQuickview(paperId: string): Promise<Quickview> {
+  return request<Quickview>(`/api/papers/${paperId}/quickview`);
+}

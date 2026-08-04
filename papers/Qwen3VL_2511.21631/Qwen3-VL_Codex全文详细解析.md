@@ -249,3 +249,24 @@ Appendix A 列出完整 benchmark 类别：
   - 查看图 3 确认 needle-in-a-haystack heatmap 的具体持续时间、深度和准确率分布。
   - 核验 `https://github.com/QwenLM/Qwen3-VL` 中公开模型、license、推理入口、评测脚本和工具调用实现。
   - 独立复现实验中记录 prompt、sampling 参数、视频抽帧、token budget 和 judge，以避免与论文设置偏离。
+# CODEX_WRITE_VERIFY
+
+## 全文抽取覆盖率
+
+- PDF：`/home/yang/project/paper_valt/papers/Qwen3VL_2511.21631/2511.21631.pdf`
+- 总页数：42 页
+- 成功抽取页数：42 页
+- 空文本页/失败页：无
+- 覆盖率：100%
+
+## 第 1 页首句
+
+We introduce Qwen3-VL, the most capable vision–language model in the Qwen series to date, achieving superior performance across a broad range of multimodal benchmarks.
+
+## 第 2 页首句
+
+Vision–language models (VLMs) have achieved substantive progress in recent years, evolving from foundational visual perception to advanced multimodal reasoning across images and video.
+
+## 第 3 页首句
+
+Figure 1: The Qwen3-VL framework integrates a vision encoder and a language model decoder to process multimodal inputs, including text, images, and video.
