@@ -46,7 +46,7 @@
 3. **缓存** — 导出为 `papers/<dir>/latex_source.md`（原文）与 `latex_plain.txt`（解析正文），避免重复解析。
 4. **失败模式** — 下载失败（arXiv 无源/anonymous）、解压失败、无法定位 `.tex`，记录到论文状态，不中断后续。
 
-### 翻译（第四个任务 LLM 后端决策）
+### 翻译（LLM 后端决策）
 - 用户确认：使用 **DeepSeek**（当前 omp 所用）。DeepSeek 提供 OpenAI 兼容接口。
 - 实现 `backend/app/llm.py`：OpenAI 兼容 `POST {base}/chat/completions`，纯标准库 `urllib`（不新增依赖）。
 - 配置环境变量：
@@ -80,7 +80,7 @@
 
 ---
 
-## 前两 Anthropic 风格前端（第二步）
+## 前两步逐步：Anthropic 风格前端
 
 ### 设计语言（按设计文档 palete）
 - 色：背景 `#f5f3ec`、表面 `#fff`、主墨 `oklch` 近黑、强调墨土 `#c4633f`、边框 `rgba(0,0,0,.06)`。
@@ -158,11 +158,6 @@
 1. 后端：`.venv/bin/python -m compileall backend/app` + `py_compile` 新文件。
 2. 全流程：对现有 Qwen3-VL 论文触发「下载 LaTeX → 解析 → 翻译」最小路径，确认生成 `latex.md` / `translation_zh.json`。
 3. 前端：`npm run build`（tsc + vite）通过；浏览器驱动 Library + Paper 页面确认布局与交互、翻译窗格。
-
-## 暂时不做（明确 out-of-scope）
-- Deep Research、AI Chat、reflow、划词、Reader 内嵌 RAG。
-- 全文索引（PDF body indexing）保留为后续。
-- 不引入 marker/MinerU（重型 PDF → Markdown），用轻量 LaTeX 解析。
 
 ## 暂时不做（明确 out-of-scope）
 - Deep Research、AI Chat、reflow、划词、Reader 内嵌 RAG。
