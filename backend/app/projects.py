@@ -174,7 +174,7 @@ class ProjectStore:
     def governance_action(self, session_id: str, action: str, candidate_id: str | None = None, snooze_until: str | None = None) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        if action == "confirm_close" and (not session.get("closeout") or not session["closeout"].get("summary") or not session["closeout"].get("confirmed")):
+        if action == "confirm_close" and (not session.get("closeout") or not session["closeout"].get("summary") or session["closeout"].get("session_version") != session.get("updated_at")):
             raise ValueError("必须先生成并编辑 closeout 草稿")
         now = _now(); session.setdefault("governance", {})[action] = {"at": now, "status": "confirmed" if action == "confirm_close" else "deferred", "candidate_id": candidate_id, "snooze_until": snooze_until}
         if action in {"ignore", "snooze"} and candidate_id:
