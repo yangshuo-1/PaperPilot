@@ -353,10 +353,12 @@ export const api = {
   createProject: (payload: { name: string; description: string; goal: string }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
   linkProject: (id: string, payload: Record<string, unknown>) => request<Project>(`/api/projects/${id}/links`, { method: "POST", body: JSON.stringify(payload) }),
+  deleteProject: (id: string) => request<void>(`/api/projects/${id}`, { method: "DELETE" }),
   listSessions: (id: string) => request<Session[]>(`/api/projects/${id}/sessions`),
   createSession: (id: string, payload: { title: string; goal: string }) => request<Session>(`/api/projects/${id}/sessions`, { method: "POST", body: JSON.stringify(payload) }),
   updateSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   linkSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}/links`, { method: "POST", body: JSON.stringify(payload) }),
+  deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
   // export / citation
   exportMarkdown: (paperId: string) => requestText(`/api/papers/${paperId}/export?format=markdown`),
   getCitation: (paperId: string, format: "bibtex" | "gbt7714" | "apa") =>
