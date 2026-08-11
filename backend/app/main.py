@@ -215,6 +215,7 @@ def project_overview(project_id: str, projects: ProjectStore = Depends(get_proje
 def decide_relation(project_id: str, relation_id: str, request: RelationDecisionRequest, projects: ProjectStore = Depends(get_projects)) -> list[dict[str, object]]:
     try: return projects.decide_relation(project_id, relation_id, request.accepted)
     except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/papers/folders", response_model=FolderListResponse)

@@ -161,6 +161,10 @@ class ProjectStore:
         session = self.session(session_id); reasons = []
         if session.get("status") == "paused": reasons.append({"code": "paused", "reason": "Session 当前处于 paused", "suggested_action": "resume or archive"})
         if session.get("status") in {"completed", "failed"}: reasons.append({"code": session["status"], "reason": f"Session 已进入 {session['status']}", "suggested_action": "close or archive"})
+        try:
+            inactive_at = datetime.fromisoformat(session.get("last_activity_at", ""))
+            if datetime.now(timezone.utc) - inactive_at > timedelta(days=7): reasons.append({"code": "stale", "reason": "超过 7 天没有活动", "suggested_action": "review or archive"})
+        except ValueError: pass
         orphaned = [x for x in session.get("links", []) if x.get("orphaned")]
         if orphaned: reasons.append({"code": "orphaned_links", "reason": f"存在 {len(orphaned)} 个孤立引用", "suggested_action": "review links"})
         data = self._read(); stored = data.get("sessions", {}).get(session_id, {}).setdefault("governance", {}).setdefault("candidates", {})
@@ -181,6 +185,10 @@ class ProjectStore:
     def governance_action(self, session_id: str, action: str, candidate_id: str | None = None, snooze_until: str | None = None) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
+        if action in {"ignore", "snooze"} and (not candidate_id or candidate_id not in session.get("governance", {}).get("candidates", {})):
+            raise ValueError("治理候选不存在")
+        if action == "archive" and candidate_id and candidate_id not in session.get("governance", {}).get("candidates", {}):
+            raise ValueError("治理候选不存在")
         if action == "confirm_close" and (not session.get("closeout") or not session["closeout"].get("summary") or not session["closeout"].get("handoff") or not session["closeout"].get("next_steps") or session["closeout"].get("session_version") != session.get("updated_at")):
             raise ValueError("必须先生成并编辑 closeout 草稿")
         now = _now(); session.setdefault("governance", {})[action] = {"at": now, "status": "confirmed" if action == "confirm_close" else "deferred", "candidate_id": candidate_id, "snooze_until": snooze_until}
@@ -196,7 +204,8 @@ class ProjectStore:
     def save_closeout(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        now = _now(); previous = session.get("closeout") or {}; session["closeout"] = {**previous, **payload, "generated_at": previous.get("generated_at") or now, "model": payload.get("model") or previous.get("model") or "manual", "citations": payload.get("citations") or previous.get("citations", []), "document_version": payload.get("document_version") or previous.get("document_version"), "session_version": previous.get("session_version") or session.get("updated_at"), "confirmed": False, "edited_at": now}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_edited" if previous else "closeout_generated"}); self._write(data); return self.session(session_id)
+        now = _now(); previous = session.get("closeout") or {}; generated = "model" in payload or "citations" in payload or "document_version" in payload
+        session["closeout"] = {**previous, **payload, "generated_at": previous.get("generated_at") or now, "model": payload.get("model") if generated else previous.get("model") or "manual", "citations": payload.get("citations", []) if generated else previous.get("citations", []), "document_version": payload.get("document_version") if generated else previous.get("document_version"), "session_version": session.get("updated_at"), "confirmed": False, "edited_at": now}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_edited" if previous else "closeout_generated"}); self._write(data); return self.session(session_id)
 
     def generate_closeout(self, session_id: str) -> dict[str, Any]:
         session = self.session(session_id); context = json.dumps({"goal": session.get("goal"), "links": session.get("links", []), "events": session.get("events", [])}, ensure_ascii=False); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[\"\"]}}。只基于以下 Session 上下文，不得编造：{context}", max_tokens=800, timeout=90)
@@ -226,6 +235,8 @@ class ProjectStore:
         if not project: raise KeyError(project_id)
         relation = next((item for item in self.relations(project_id) if item["id"] == relation_id), None)
         if relation is None: raise KeyError(relation_id)
-        now = _now(); decisions = project.setdefault("relation_decisions", {}); decisions[relation_id] = {"accepted": accepted, "at": now}
+        decisions = project.setdefault("relation_decisions", {})
+        if relation_id in decisions: raise ValueError("关系建议已经决策，不能重复覆盖")
+        now = _now(); decisions[relation_id] = {"accepted": accepted, "at": now}
         project.setdefault("events", []).append({"seq": len(project.get("events", [])), "at": now, "action": "relation_accepted" if accepted else "relation_rejected", "relation_id": relation_id, "source": relation["source"], "target": relation["target"]})
         self._write(data); return self.relations(project_id)
