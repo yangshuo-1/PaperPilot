@@ -42,16 +42,26 @@ class ProjectStore:
         else:
             root = self.path.parent.parent.resolve()
             if ref.startswith("codex-job:"):
-                job_id = ref.removeprefix("codex-job:"); job = root / "references" / "codex_jobs" / f"{job_id}.json"; orphaned = not job.is_file()
+                job_id = ref.removeprefix("codex-job:"); job = root / "references" / "codex_jobs" / f"{job_id}.json"; orphaned = not __import__('re').fullmatch(r"[0-9a-f]{32}", job_id) or not job.is_file()
+                if not orphaned:
+                    try: orphaned = json.loads(job.read_text(encoding="utf-8")).get("job_id") != job_id
+                    except (OSError, json.JSONDecodeError): orphaned = True
             elif ref.startswith("takeaway:"):
                 parts = ref.split(":", 2); orphaned = len(parts) != 3
                 if not orphaned:
-                    path = root / "papers" / parts[1] / "ai_takeaways.json"
+                    index = root / "references" / "paper_index.jsonl"; record = next((json.loads(line) for line in index.read_text(encoding="utf-8").splitlines() if line.strip() and json.loads(line).get("id") == parts[1]), None)
+                    path = Path(record["local_pdf_path"]).resolve().parent / "ai_takeaways.json" if record and record.get("local_pdf_path") else root / "missing"
                     try: orphaned = not any(item.get("id") == parts[2] for item in json.loads(path.read_text(encoding="utf-8")).get("takeaways", []))
                     except (OSError, json.JSONDecodeError): orphaned = True
             elif ref.startswith("document:"):
                 parts = ref.split(":", 2); orphaned = len(parts) != 3
-                if not orphaned: orphaned = not (root / "papers" / parts[1] / parts[2]).is_file()
+                if not orphaned:
+                    orphaned = any(x in parts[2] for x in ("/", "\\", ".."))
+                    if not orphaned:
+                        index = root / "references" / "paper_index.jsonl"; record = next((json.loads(line) for line in index.read_text(encoding="utf-8").splitlines() if line.strip() and json.loads(line).get("id") == parts[1]), None)
+                        if not record or not record.get("local_pdf_path"): orphaned = True
+                        else:
+                            paper_dir = Path(record["local_pdf_path"]).resolve().parent; candidate = (paper_dir / parts[2]).resolve(); orphaned = paper_dir not in candidate.parents or not candidate.is_file()
             else: orphaned = True
         return {**payload, "orphaned": orphaned}
 
