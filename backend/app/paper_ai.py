@@ -36,7 +36,11 @@ def _pdf_context(pdf_path: Path, *, max_chars: int = 90000) -> tuple[str, list[d
 
 
 def _norm(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip().casefold()
+    value = value.casefold().replace("‐", "-").replace("‑", "-").replace("‒", "-").replace("–", "-").replace("—", "-")
+    # PDF extractors commonly split a word as ``integrat-\ning``.
+    value = re.sub(r"-\s+", "", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
 
 
 def _page_texts(pdf_path: Path) -> dict[int, str]:
@@ -184,6 +188,7 @@ def generate_takeaway(pdf_path: Path, paper_id: str, path: Path) -> dict[str, An
         return {"paper_id": paper_id, "takeaways": [], "available": False, "error": "AI 返回无法解析，未覆盖已有 Takeaways。"}
     cfg = status()
     items = [{"id": uuid.uuid4().hex[:12], "content": str(item.get("content") or "").strip(), "citations": _verified_citations(item.get("citations") or item.get("citation"), page_texts), "document_version": version, "model": cfg.get("model"), "generated_at": _now(), "stale": False} for item in raw_items if isinstance(item, dict) and str(item.get("content") or "").strip()][:8]
+    items = [item for item in items if item["citations"]]
     if len(items) < 3:
         return {"paper_id": paper_id, "takeaways": [], "available": False, "error": "AI 未生成至少 3 条可用 Takeaways，未覆盖已有内容。"}
     data = {"paper_id": paper_id, "takeaways": items}
