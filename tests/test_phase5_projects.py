@@ -64,6 +64,13 @@ class Phase5ProjectTests(unittest.TestCase):
         self.assertTrue(self.store.link_session(self.session()["id"], {"kind": "artifact", "ref": "/etc/passwd"})["links"][-1]["orphaned"])
         self.assertTrue(self.store.link_session(self.session()["id"], {"kind": "artifact", "ref": "takeaway:../item"})["links"][-1]["orphaned"])
 
+    def test_archive_closes_candidate_view_without_deleting_sources(self):
+        session = self.session()
+        candidate = self.store.governance(session["id"])["candidates"]
+        self.store.governance_action(session["id"], "archive")
+        self.assertEqual(self.store.governance(session["id"])["candidates"], [])
+        self.assertEqual(self.store.session(session["id"])["status"], "active")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

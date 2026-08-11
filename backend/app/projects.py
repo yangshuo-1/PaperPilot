@@ -167,7 +167,10 @@ class ProjectStore:
         except ValueError: pass
         orphaned = [x for x in session.get("links", []) if x.get("orphaned")]
         if orphaned: reasons.append({"code": "orphaned_links", "reason": f"存在 {len(orphaned)} 个孤立引用", "suggested_action": "review links"})
-        data = self._read(); stored = data.get("sessions", {}).get(session_id, {}).setdefault("governance", {}).setdefault("candidates", {})
+        data = self._read(); governance_state = data.get("sessions", {}).get(session_id, {}).get("governance", {}).get("state")
+        if governance_state in {"closed", "archived"}:
+            return {"candidates": [], "generated_at": _now(), "evidence": {"last_activity_at": session.get("last_activity_at"), "status": session.get("status")}}
+        stored = data.get("sessions", {}).get(session_id, {}).setdefault("governance", {}).setdefault("candidates", {})
         candidates = []
         current_ids = set()
         for reason in reasons:
