@@ -195,8 +195,11 @@ def generate_takeaway(pdf_path: Path, paper_id: str, path: Path) -> dict[str, An
     context, pages = _pdf_context(pdf_path)
     page_texts = _page_texts(pdf_path)
     prompt = (
-        "Using only this paper, produce 3-5 concise Chinese takeaways covering problem, method, evidence, and limitation. "
-        'Do not invent facts. Return strict JSON like {"takeaways":[{"content":"...","citation":{"page":1,"quote":"exact text"}}]}. '
+        "Using only this paper, produce 3-5 concise Chinese takeaways. Each takeaway must be exactly one atomic claim: "
+        "one subject, one predicate, and no joined claims, benchmark comparisons, causal explanations, or speculation. "
+        "The content must be directly and completely supported by its citation quote; if a quote supports only part, "
+        "rewrite content to that part. Do not add facts implied only by surrounding pages. "
+        'Return strict JSON like {"takeaways":[{"content":"一个原子结论","citation":{"page":1,"quote":"exact text directly supporting the whole content"}}]}. '
         "Use citation (singular) or citations (plural), with only page and quote; no Markdown fences or comments.\n\n" + context
     )
     answer = llm.chat_once(prompt, max_tokens=1200, timeout=120)
