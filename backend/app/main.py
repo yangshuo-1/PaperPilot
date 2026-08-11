@@ -196,11 +196,18 @@ def generate_closeout(session_id: str, projects: ProjectStore = Depends(get_proj
     try: return Session(**projects.generate_closeout(session_id))
     except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
     except ValueError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except llm_mod.LLMUnavailable as exc: raise HTTPException(status_code=503, detail="AI closeout 暂不可用，可稍后重试") from exc
 
 
 @app.get("/api/projects/{project_id}/relations")
 def project_relations(project_id: str, projects: ProjectStore = Depends(get_projects)) -> list[dict[str, object]]:
     try: return projects.relations(project_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.get("/api/projects/{project_id}/overview")
+def project_overview(project_id: str, projects: ProjectStore = Depends(get_projects)) -> dict[str, object]:
+    try: return projects.overview(project_id)
     except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
 
 

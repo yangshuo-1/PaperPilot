@@ -201,6 +201,10 @@ class ProjectStore:
         project = self.project(project_id); refs = [x.get("ref") for x in project.get("links", []) if x.get("kind") == "paper"]; decisions = self._read().get("projects", {}).get(project_id, {}).get("relation_decisions", {})
         return [{"id": uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], "kind": "shared-paper", "source": project_id, "target": ref, "evidence": {"paper": ref}, "reason": "Project 内显式共享论文引用", "status": ("accepted" if decisions.get(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], {}).get("accepted") is True else "rejected" if decisions.get(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], {}).get("accepted") is False else "pending")} for ref in refs]
 
+    def overview(self, project_id: str) -> dict[str, Any]:
+        project = self.project(project_id); sessions = self.sessions(project_id)
+        return {"project_id": project_id, "sessions": [{"id": s["id"], "title": s["title"], "status": s["status"], "last_activity_at": s["last_activity_at"]} for s in sessions], "key_resources": project.get("links", []), "unresolved": [x for s in sessions for x in s.get("links", []) if x.get("orphaned")], "recent_activity": [e for s in sessions for e in s.get("events", [])][-20:]}
+
     def decide_relation(self, project_id: str, relation_id: str, accepted: bool) -> list[dict[str, Any]]:
         data = self._read(); project = data.get("projects", {}).get(project_id)
         if not project: raise KeyError(project_id)

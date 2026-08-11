@@ -245,7 +245,7 @@ export type AIResponse = { paper_id: string; mode: string; answer: string; citat
 export type Takeaway = { id: string; content: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; stale: boolean };
 export type TakeawayResponse = { paper_id: string; takeaways: Takeaway[]; available: boolean; error?: string | null };
 export type Project = { id: string; name: string; description: string; goal: string; created_at: string; updated_at: string; links: Array<Record<string, unknown>>; session_ids: string[] };
-export type Session = { id: string; project_id: string; title: string; goal: string; status: "active" | "paused" | "completed" | "failed"; created_at: string; updated_at: string; last_activity_at: string; links: Array<Record<string, unknown>>; events: Array<Record<string, unknown>> };
+export type Session = { id: string; project_id: string; title: string; goal: string; status: "active" | "paused" | "completed" | "failed"; created_at: string; updated_at: string; last_activity_at: string; links: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; governance?: Record<string, unknown>; closeout?: { summary: string; handoff: string; next_steps: string[]; model?: string; session_version?: string; citations?: Array<Record<string, unknown>>; confirmed?: boolean } | null };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -360,9 +360,11 @@ export const api = {
   linkSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}/links`, { method: "POST", body: JSON.stringify(payload) }),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
   getGovernance: (id: string) => request<{ candidates: Array<Record<string, unknown>>; generated_at: string }>(`/api/sessions/${id}/governance`),
-  applyGovernance: (id: string, action: string) => request<Session>(`/api/sessions/${id}/governance`, { method: "POST", body: JSON.stringify({ action }) }),
+  applyGovernance: (id: string, action: string, candidate_id?: string, snooze_until?: string) => request<Session>(`/api/sessions/${id}/governance`, { method: "POST", body: JSON.stringify({ action, candidate_id, snooze_until }) }),
   saveCloseout: (id: string, payload: { summary: string; handoff: string; next_steps: string[] }) => request<Session>(`/api/sessions/${id}/closeout`, { method: "POST", body: JSON.stringify(payload) }),
   getRelations: (id: string) => request<Array<Record<string, unknown>>>(`/api/projects/${id}/relations`),
+  getResearchOverview: (id: string) => request<Record<string, unknown>>(`/api/projects/${id}/overview`),
+  generateCloseout: (id: string) => request<Session>(`/api/sessions/${id}/closeout/generate`, { method: "POST" }),
   decideRelation: (id: string, relationId: string, accepted: boolean) => request<Array<Record<string, unknown>>>(`/api/projects/${id}/relations/${relationId}`, { method: "POST", body: JSON.stringify({ accepted }) }),
   // export / citation
   exportMarkdown: (paperId: string) => requestText(`/api/papers/${paperId}/export?format=markdown`),
