@@ -40,13 +40,19 @@ class ProjectStore:
             candidate = Path(ref).resolve()
             orphaned = not candidate.is_file() or self.path.parent.parent not in candidate.parents
         else:
-            candidate = Path(ref).expanduser().resolve()
             root = self.path.parent.parent.resolve()
-            try: candidate.relative_to(root)
-            except ValueError: orphaned = True
-            else:
-                registered = [root / "papers", root / "references"]
-                orphaned = not candidate.is_file() or not any(candidate.is_relative_to(base) for base in registered)
+            if ref.startswith("codex-job:"):
+                job_id = ref.removeprefix("codex-job:"); job = root / "references" / "codex_jobs" / f"{job_id}.json"; orphaned = not job.is_file()
+            elif ref.startswith("takeaway:"):
+                parts = ref.split(":", 2); orphaned = len(parts) != 3
+                if not orphaned:
+                    path = root / "papers" / parts[1] / "ai_takeaways.json"
+                    try: orphaned = not any(item.get("id") == parts[2] for item in json.loads(path.read_text(encoding="utf-8")).get("takeaways", []))
+                    except (OSError, json.JSONDecodeError): orphaned = True
+            elif ref.startswith("document:"):
+                parts = ref.split(":", 2); orphaned = len(parts) != 3
+                if not orphaned: orphaned = not (root / "papers" / parts[1] / parts[2]).is_file()
+            else: orphaned = True
         return {**payload, "orphaned": orphaned}
 
     def refresh_links(self, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -102,7 +108,7 @@ class ProjectStore:
     def session(self, session_id: str) -> dict[str, Any]:
         value = self._read().get("sessions", {}).get(session_id)
         if not value: raise KeyError(session_id)
-        value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = list(value.get("events", [])); return value
+        value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = [{"seq": i, **event} if "seq" not in event else event for i, event in enumerate(value.get("events", []))]; return value
 
     def create_session(self, project_id: str, title: str, goal: str) -> dict[str, Any]:
         self.project(project_id); data = self._read(); now = _now(); sid = uuid.uuid4().hex[:12]
