@@ -45,6 +45,8 @@ def _page_texts(pdf_path: Path) -> dict[int, str]:
 
 
 def _verified_citations(raw: Any, page_texts: dict[int, str]) -> list[dict[str, Any]]:
+    if isinstance(raw, dict):
+        raw = [raw]
     result: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return result
@@ -53,7 +55,7 @@ def _verified_citations(raw: Any, page_texts: dict[int, str]) -> list[dict[str, 
             continue
         try:
             page = int(item.get("page"))
-            quote = str(item.get("quote") or "").strip()
+            quote = str(item.get("quote") or item.get("exact quote") or item.get("exact_quote") or "").strip()
         except (TypeError, ValueError):
             continue
         if page not in page_texts or not quote or _norm(quote) not in _norm(page_texts[page]):
@@ -65,13 +67,24 @@ def _verified_citations(raw: Any, page_texts: dict[int, str]) -> list[dict[str, 
 def _parse_answer(raw: str, page_texts: dict[int, str]) -> tuple[str, list[dict[str, Any]]]:
     """Accept a strict JSON answer; citations are retained only after page matching."""
     try:
-        data = json.loads(raw)
+        data = _parse_json_payload(raw)
     except json.JSONDecodeError:
         return raw, []
     if not isinstance(data, dict):
         return raw, []
     answer = str(data.get("answer") or "").strip()
     return answer, _verified_citations(data.get("citations"), page_texts)
+
+
+def _parse_json_payload(raw: str) -> dict[str, Any]:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+    text = re.sub(r"\s*//[^\n]*(?=\n|$)", "", text)
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise json.JSONDecodeError("expected object", text, 0)
+    return value
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -129,7 +142,8 @@ def ask(pdf_path: Path, paper_id: str, *, mode: str, question: str, selection: d
         prompt = (
             "You answer questions using only the supplied paper context. If the answer is not reliably supported, "
             "say that the paper does not provide enough evidence. Answer in Chinese. Return strict JSON with keys "
-            "answer and citations; citations must be an array of objects with page and exact quote copied from the paper.\n"
+            'answer and citations, exactly like {"answer":"...","citations":[{"page":1,"quote":"exact text"}]}. '
+            "Use only field names page and quote; no Markdown fences, comments, or extra fields. Quotes must be copied from the paper.\n"
             f"Question: {question.strip()}\n\nPaper context:\n{context}"
         )
         citations = []
@@ -137,11 +151,12 @@ def ask(pdf_path: Path, paper_id: str, *, mode: str, question: str, selection: d
     answer, model_citations = _parse_answer(answer_raw, page_texts) if mode == "ask" else (answer_raw, [])
     if mode == "ask":
         citations = model_citations
+    response_error = None if citations else "AI 已回答，但未生成可验证引用。"
     cfg = status()
     return {
         "paper_id": paper_id, "mode": mode, "answer": answer, "citations": citations,
         "document_version": version, "model": cfg.get("model"), "generated_at": _now(),
-        "stale": False, "available": True, "error": None,
+        "stale": False, "available": True, "error": response_error,
     }
 
 
@@ -159,16 +174,18 @@ def generate_takeaway(pdf_path: Path, paper_id: str, path: Path) -> dict[str, An
     page_texts = _page_texts(pdf_path)
     prompt = (
         "Using only this paper, produce 3-5 concise Chinese takeaways covering problem, method, evidence, and limitation. "
-        "Do not invent facts. Return strict JSON with key takeaways, an array of objects with content and citations "
-        "(page and exact quote copied from the paper).\n\n" + context
+        'Do not invent facts. Return strict JSON like {"takeaways":[{"content":"...","citation":{"page":1,"quote":"exact text"}}]}. '
+        "Use citation (singular) or citations (plural), with only page and quote; no Markdown fences or comments.\n\n" + context
     )
     answer = llm.chat_once(prompt, max_tokens=1200, timeout=120)
     try:
-        raw_items = json.loads(answer).get("takeaways", [])
-    except (json.JSONDecodeError, AttributeError):
-        raw_items = []
+        raw_items = _parse_json_payload(answer).get("takeaways", [])
+    except json.JSONDecodeError:
+        return {"paper_id": paper_id, "takeaways": [], "available": False, "error": "AI 返回无法解析，未覆盖已有 Takeaways。"}
     cfg = status()
-    items = [{"id": uuid.uuid4().hex[:12], "content": str(item.get("content") or "").strip(), "citations": _verified_citations(item.get("citations"), page_texts), "document_version": version, "model": cfg.get("model"), "generated_at": _now(), "stale": False} for item in raw_items if isinstance(item, dict) and str(item.get("content") or "").strip()][:8]
+    items = [{"id": uuid.uuid4().hex[:12], "content": str(item.get("content") or "").strip(), "citations": _verified_citations(item.get("citations") or item.get("citation"), page_texts), "document_version": version, "model": cfg.get("model"), "generated_at": _now(), "stale": False} for item in raw_items if isinstance(item, dict) and str(item.get("content") or "").strip()][:8]
+    if len(items) < 3:
+        return {"paper_id": paper_id, "takeaways": [], "available": False, "error": "AI 未生成至少 3 条可用 Takeaways，未覆盖已有内容。"}
     data = {"paper_id": paper_id, "takeaways": items}
     _save(path, data)
     return data | {"available": True, "error": None}
