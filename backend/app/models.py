@@ -467,9 +467,6 @@ class CloseoutRequest(BaseModel):
     summary: str = ""
     handoff: str = ""
     next_steps: list[str] = Field(default_factory=list)
-    model: str | None = None
-    citations: list[dict[str, Any]] = Field(default_factory=list)
-    document_version: str | None = None
 
 
 class RelationDecisionRequest(BaseModel):

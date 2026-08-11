@@ -165,11 +165,17 @@ class ProjectStore:
         if orphaned: reasons.append({"code": "orphaned_links", "reason": f"存在 {len(orphaned)} 个孤立引用", "suggested_action": "review links"})
         data = self._read(); stored = data.get("sessions", {}).get(session_id, {}).setdefault("governance", {}).setdefault("candidates", {})
         candidates = []
+        current_ids = set()
         for reason in reasons:
-            cid = f"{session_id}:{reason['code']}"; item = stored.get(cid, {"id": cid, **reason, "status": "pending"})
+            cid = f"{session_id}:{reason['code']}"; current_ids.add(cid)
+            item = stored.get(cid, {"id": cid, **reason, "status": "pending"})
+            item.update({key: reason[key] for key in ("code", "reason", "suggested_action")})
             if item.get("status") == "snoozed" and item.get("snooze_until", "") > _now(): continue
+            if item.get("status") == "ignored": continue
             item.setdefault("evidence_at", session.get("last_activity_at")); candidates.append(item)
-        if stored != {x["id"]: x for x in candidates}: data["sessions"][session_id]["governance"]["candidates"] = {x["id"]: x for x in candidates}; self._write(data)
+        retained = {cid: item for cid, item in stored.items() if cid not in current_ids or item.get("status") in {"ignored", "snoozed"}}
+        retained.update({x["id"]: x for x in candidates})
+        if stored != retained: data["sessions"][session_id]["governance"]["candidates"] = retained; self._write(data)
         return {"candidates": candidates, "generated_at": _now(), "evidence": {"last_activity_at": session.get("last_activity_at"), "status": session.get("status")}}
 
     def governance_action(self, session_id: str, action: str, candidate_id: str | None = None, snooze_until: str | None = None) -> dict[str, Any]:
@@ -184,6 +190,7 @@ class ProjectStore:
             session["governance"]["state"] = "closed"
             if session.get("closeout"): session["closeout"]["confirmed"] = True
         if action == "archive": session["governance"]["state"] = "archived"
+        session["updated_at"] = now; session["last_activity_at"] = now
         session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": f"governance_{action}"}); self._write(data); return self.session(session_id)
 
     def save_closeout(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -195,7 +202,9 @@ class ProjectStore:
         session = self.session(session_id); context = json.dumps({"goal": session.get("goal"), "links": session.get("links", []), "events": session.get("events", [])}, ensure_ascii=False); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[\"\"]}}。只基于以下 Session 上下文，不得编造：{context}", max_tokens=800, timeout=90)
         try: payload = json.loads(result)
         except json.JSONDecodeError as exc: raise ValueError("AI closeout 返回无法解析") from exc
-        payload.update({"model": llm.llm_status().get("model"), "citations": session.get("links", []), "document_version": session.get("updated_at")})
+        if not isinstance(payload, dict) or not isinstance(payload.get("summary"), str) or not payload["summary"].strip() or not isinstance(payload.get("handoff"), str) or not payload["handoff"].strip() or not isinstance(payload.get("next_steps"), list) or not all(isinstance(item, str) and item.strip() for item in payload["next_steps"]):
+            raise ValueError("AI closeout 返回不符合 schema")
+        payload.update({"model": llm.llm_status().get("model"), "citations": [link for link in session.get("links", []) if not link.get("orphaned")], "document_version": session.get("updated_at")})
         return self.save_closeout(session_id, payload)
 
     def relations(self, project_id: str) -> list[dict[str, Any]]:
@@ -215,4 +224,8 @@ class ProjectStore:
     def decide_relation(self, project_id: str, relation_id: str, accepted: bool) -> list[dict[str, Any]]:
         data = self._read(); project = data.get("projects", {}).get(project_id)
         if not project: raise KeyError(project_id)
-        decisions = project.setdefault("relation_decisions", {}); decisions[relation_id] = {"accepted": accepted, "at": _now()}; self._write(data); return self.relations(project_id)
+        relation = next((item for item in self.relations(project_id) if item["id"] == relation_id), None)
+        if relation is None: raise KeyError(relation_id)
+        now = _now(); decisions = project.setdefault("relation_decisions", {}); decisions[relation_id] = {"accepted": accepted, "at": now}
+        project.setdefault("events", []).append({"seq": len(project.get("events", [])), "at": now, "action": "relation_accepted" if accepted else "relation_rejected", "relation_id": relation_id, "source": relation["source"], "target": relation["target"]})
+        self._write(data); return self.relations(project_id)
