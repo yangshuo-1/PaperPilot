@@ -160,6 +160,7 @@ class ProjectStore:
     def governance(self, session_id: str) -> dict[str, Any]:
         session = self.session(session_id); reasons = []
         if session.get("status") == "paused": reasons.append({"code": "paused", "reason": "Session 当前处于 paused", "suggested_action": "resume or archive"})
+        if session.get("status") in {"completed", "failed"}: reasons.append({"code": session["status"], "reason": f"Session 已进入 {session['status']}", "suggested_action": "close or archive"})
         orphaned = [x for x in session.get("links", []) if x.get("orphaned")]
         if orphaned: reasons.append({"code": "orphaned_links", "reason": f"存在 {len(orphaned)} 个孤立引用", "suggested_action": "review links"})
         data = self._read(); stored = data.get("sessions", {}).get(session_id, {}).setdefault("governance", {}).setdefault("candidates", {})
@@ -167,7 +168,7 @@ class ProjectStore:
         for reason in reasons:
             cid = f"{session_id}:{reason['code']}"; item = stored.get(cid, {"id": cid, **reason, "status": "pending"})
             if item.get("status") == "snoozed" and item.get("snooze_until", "") > _now(): continue
-            candidates.append(item)
+            item.setdefault("evidence_at", session.get("last_activity_at")); candidates.append(item)
         if stored != {x["id"]: x for x in candidates}: data["sessions"][session_id]["governance"]["candidates"] = {x["id"]: x for x in candidates}; self._write(data)
         return {"candidates": candidates, "generated_at": _now(), "evidence": {"last_activity_at": session.get("last_activity_at"), "status": session.get("status")}}
 
@@ -191,15 +192,21 @@ class ProjectStore:
         now = _now(); session["closeout"] = {**payload, "generated_at": now, "model": payload.get("model") or "manual", "citations": payload.get("citations", []), "session_version": session.get("updated_at"), "confirmed": False}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_saved"}); self._write(data); return self.session(session_id)
 
     def generate_closeout(self, session_id: str) -> dict[str, Any]:
-        session = self.session(session_id); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[]}}。只基于当前 Session 目标：{session.get('goal','')}", max_tokens=800, timeout=90)
+        session = self.session(session_id); context = json.dumps({"goal": session.get("goal"), "links": session.get("links", []), "events": session.get("events", [])}, ensure_ascii=False); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[\"\"]}}。只基于以下 Session 上下文，不得编造：{context}", max_tokens=800, timeout=90)
         try: payload = json.loads(result)
         except json.JSONDecodeError as exc: raise ValueError("AI closeout 返回无法解析") from exc
-        payload.update({"model": llm.llm_status().get("model"), "citations": [], "document_version": None})
+        payload.update({"model": llm.llm_status().get("model"), "citations": session.get("links", []), "document_version": session.get("updated_at")})
         return self.save_closeout(session_id, payload)
 
     def relations(self, project_id: str) -> list[dict[str, Any]]:
-        project = self.project(project_id); refs = [x.get("ref") for x in project.get("links", []) if x.get("kind") == "paper"]; decisions = self._read().get("projects", {}).get(project_id, {}).get("relation_decisions", {})
-        return [{"id": uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], "kind": "shared-paper", "source": project_id, "target": ref, "evidence": {"paper": ref}, "reason": "Project 内显式共享论文引用", "status": ("accepted" if decisions.get(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], {}).get("accepted") is True else "rejected" if decisions.get(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], {}).get("accepted") is False else "pending")} for ref in refs]
+        self.project(project_id); sessions = self.sessions(project_id); decisions = self._read().get("projects", {}).get(project_id, {}).get("relation_decisions", {}); result = []
+        for left in sessions:
+            for right in sessions:
+                if left["id"] >= right["id"]: continue
+                shared = sorted({x.get("ref") for x in left.get("links", []) if x.get("kind") == "paper"} & {x.get("ref") for x in right.get("links", []) if x.get("kind") == "paper"})
+                if shared:
+                    rid = uuid.uuid5(uuid.NAMESPACE_URL, f"{left['id']}:{right['id']}:{shared}").hex[:12]; result.append({"id": rid, "kind": "shared-paper", "source": left["id"], "target": right["id"], "evidence": {"shared_papers": shared}, "reason": "两个 Session 显式共享论文", "status": "accepted" if decisions.get(rid, {}).get("accepted") is True else "rejected" if decisions.get(rid, {}).get("accepted") is False else "pending"})
+        return result
 
     def overview(self, project_id: str) -> dict[str, Any]:
         project = self.project(project_id); sessions = self.sessions(project_id)
