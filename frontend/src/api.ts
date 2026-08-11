@@ -240,6 +240,11 @@ export type LatexSourceResponse = {
   download_error?: string | null;
 };
 
+export type AICitation = { page: number; quote: string };
+export type AIResponse = { paper_id: string; mode: string; answer: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; stale: boolean; available: boolean; error?: string | null };
+export type Takeaway = { id: string; content: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; stale: boolean };
+export type TakeawayResponse = { paper_id: string; takeaways: Takeaway[]; available: boolean; error?: string | null };
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -338,6 +343,10 @@ export const api = {
     }),
   getTranslationJob: (paperId: string, jobId: string) =>
     request<TranslationJob>(`/api/papers/${paperId}/translation/jobs/${jobId}`),
+  askAI: (paperId: string, payload: Record<string, unknown>) =>
+    request<AIResponse>(`/api/papers/${paperId}/ai`, { method: "POST", body: JSON.stringify(payload) }),
+  getTakeaways: (paperId: string) => request<TakeawayResponse>(`/api/papers/${paperId}/takeaways`),
+  generateTakeaways: (paperId: string) => request<TakeawayResponse>(`/api/papers/${paperId}/takeaways/generate`, { method: "POST" }),
   // export / citation
   exportMarkdown: (paperId: string) => requestText(`/api/papers/${paperId}/export?format=markdown`),
   getCitation: (paperId: string, format: "bibtex" | "gbt7714" | "apa") =>

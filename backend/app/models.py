@@ -351,6 +351,56 @@ class TranslationJob(BaseModel):
     error: str | None = None
 
 
+# --- paper-scoped AI ------------------------------------------------------
+
+class ReaderSelection(BaseModel):
+    paper_id: str
+    page: int = Field(ge=1)
+    quote: str = Field(min_length=1)
+    document_version: str | None = None
+
+
+class AIRequest(BaseModel):
+    mode: Literal["ask", "explain", "translate"] = "ask"
+    question: str = ""
+    selection: ReaderSelection | None = None
+
+
+class AICitation(BaseModel):
+    page: int
+    quote: str
+
+
+class AIResponse(BaseModel):
+    paper_id: str
+    mode: str
+    answer: str
+    citations: list[AICitation] = Field(default_factory=list)
+    document_version: str | None = None
+    model: str | None = None
+    generated_at: str
+    stale: bool = False
+    available: bool = True
+    error: str | None = None
+
+
+class Takeaway(BaseModel):
+    id: str
+    content: str
+    citations: list[AICitation] = Field(default_factory=list)
+    document_version: str | None = None
+    model: str | None = None
+    generated_at: str
+    stale: bool = False
+
+
+class TakeawayResponse(BaseModel):
+    paper_id: str
+    takeaways: list[Takeaway] = Field(default_factory=list)
+    available: bool = True
+    error: str | None = None
+
+
 # --- citation / export -----------------------------------------------------
 
 

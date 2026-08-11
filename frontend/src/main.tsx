@@ -917,13 +917,17 @@ function PaperPage() {
   const [translation, setTranslation] = useState<TranslationResponse | null>(null);
   const [translationJob, setTranslationJob] = useState<TranslationJob | null>(null);
   const [translating, setTranslating] = useState(false);
-  const [tab, setTab] = useState<"pdf" | "notes" | "translation" | "latex">("pdf");
+  const [tab, setTab] = useState<"pdf" | "notes" | "translation" | "latex" | "ai">("pdf");
   const [error, setError] = useState<string | null>(null);
   const [citationOpen, setCitationOpen] = useState(false);
   const [lastSelection, setLastSelection] = useState<import("./PdfReader").ReaderSelection | null>(null);
   const [annotations, setAnnotations] = useState<import("./api").AnnotationResponse | null>(null);
   const [jumpCommand, setJumpCommand] = useState<{ page: number; nonce: number } | null>(null);
   const [annotationError, setAnnotationError] = useState<string | null>(null);
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiResponse, setAiResponse] = useState<import("./api").AIResponse | null>(null);
+  const [takeaways, setTakeaways] = useState<import("./api").TakeawayResponse | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
 
   async function load() {
     if (!paperId) return;
@@ -940,6 +944,7 @@ function PaperPage() {
       setDocuments(docsResponse);
       setCodexJob(latestJob);
       setAnnotations(await api.getAnnotations(paperId).catch(() => null));
+      setTakeaways(await api.getTakeaways(paperId).catch(() => null));
       if (docsResponse[0] && !activeDoc) {
         setActiveDoc(docsResponse[0].name);
         setDocumentContent((await api.getDocument(paperId, docsResponse[0].name)).content);
@@ -1051,6 +1056,32 @@ function PaperPage() {
       setError(err instanceof Error ? err.message : String(err));
       setTranslating(false);
     }
+  }
+
+  async function runAI(mode: "ask" | "explain" | "translate") {
+    if (!paperId) return;
+    setAiBusy(true);
+    try {
+      const response = await api.askAI(paperId, {
+        mode,
+        question: aiQuestion,
+        selection: lastSelection,
+      });
+      setAiResponse(response);
+      setTab("ai");
+    } catch (err) {
+      setAiResponse({ paper_id: paperId, mode, answer: "", citations: [], generated_at: new Date().toISOString(), stale: false, available: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  async function regenerateTakeaways() {
+    if (!paperId) return;
+    setAiBusy(true);
+    try { setTakeaways(await api.generateTakeaways(paperId)); }
+    catch (err) { setTakeaways({ paper_id: paperId, takeaways: [], available: false, error: err instanceof Error ? err.message : String(err) }); }
+    finally { setAiBusy(false); }
   }
 
   async function downloadCitation(fmt: "bibtex" | "gbt7714" | "apa") {
@@ -1228,6 +1259,8 @@ function PaperPage() {
           <span>已选第 {lastSelection.page} 页文本：{lastSelection.quote.slice(0, 120)}{lastSelection.quote.length > 120 ? "…" : ""}</span>
           <button type="button" className="primaryBtn" onClick={() => createAnnotation("highlight")}>创建高亮</button>
           <button type="button" className="quietBtn" onClick={() => createAnnotation("note")}>添加笔记</button>
+          <button type="button" className="quietBtn" disabled={aiBusy} onClick={() => runAI("explain")}>Explain</button>
+          <button type="button" className="quietBtn" disabled={aiBusy} onClick={() => runAI("translate")}>Translate</button>
         </div>
       )}
       {annotationError && <div className="errorBanner">{annotationError}</div>}
@@ -1247,6 +1280,23 @@ function PaperPage() {
 
       {tab === "pdf" && annotations && (
         <AnnotationSidebar annotations={annotations} onJump={(page) => setJumpCommand({ page, nonce: Date.now() })} onDelete={removeAnnotation} onEdit={editNote} />
+      )}
+
+      <div className="aiPanel">
+        <div className="annotationHeader"><strong>论文内 AI</strong><button type="button" className="quietBtn" onClick={() => setTab("ai")}>打开</button></div>
+        <div className="aiQuestion"><input value={aiQuestion} onChange={(event) => setAiQuestion(event.target.value)} placeholder="仅基于当前论文提问" /><button type="button" className="primaryBtn" disabled={aiBusy || !aiQuestion.trim()} onClick={() => runAI("ask")}>Ask AI</button></div>
+      </div>
+
+      {tab === "ai" && (
+        <div className="reader aiResults">
+          <div className="readerInner">
+            {aiResponse && <AIAnswer response={aiResponse} onJump={(page) => { setJumpCommand({ page, nonce: Date.now() }); setTab("pdf"); }} />}
+            <div className="annotationHeader"><strong>AI Takeaways</strong><button type="button" className="quietBtn" disabled={aiBusy} onClick={regenerateTakeaways}>重新生成</button></div>
+            {takeaways?.error && <div className="errorBanner">{takeaways.error}（阅读器与已有标注未受影响）</div>}
+            {takeaways?.takeaways.map((item) => <AIAnswer key={item.id} response={{ paper_id: paperId || "", mode: "takeaway", answer: `${item.stale ? "[版本已失效] " : ""}${item.content}`, citations: item.citations, generated_at: item.generated_at, document_version: item.document_version, model: item.model, stale: item.stale, available: true }} onJump={(page) => { setJumpCommand({ page, nonce: Date.now() }); setTab("pdf"); }} />)}
+            {!takeaways?.takeaways.length && !takeaways?.error && <p className="readerMuted">尚无 Takeaways，可点击“重新生成”。</p>}
+          </div>
+        </div>
       )}
 
       {tab === "notes" && (
@@ -1326,6 +1376,16 @@ function PaperPage() {
       </details>
     </AppShell>
   );
+}
+
+function AIAnswer({ response, onJump }: { response: import("./api").AIResponse; onJump: (page: number) => void }) {
+  return <div className="aiAnswer">
+    {response.error ? <div className="errorBanner">{response.error}（阅读器与已有标注未受影响，可重试）</div> : <>
+      <div className="aiAnswerMeta">{response.mode} · {response.model || "未配置模型"} · {response.stale ? "文档版本已失效" : "当前文档版本"}</div>
+      <MarkdownView content={response.answer || "AI 未返回可靠答案。"} />
+      {!!response.citations.length && <div className="aiCitations"><strong>引用</strong>{response.citations.map((citation, index) => <button type="button" key={`${citation.page}-${index}`} onClick={() => onJump(citation.page)}>p.{citation.page}：{citation.quote}</button>)}</div>}
+    </>}
+  </div>;
 }
 
 function AnnotationSidebar({
