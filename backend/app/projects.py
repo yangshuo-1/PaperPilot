@@ -175,7 +175,7 @@ class ProjectStore:
     def governance_action(self, session_id: str, action: str, candidate_id: str | None = None, snooze_until: str | None = None) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        if action == "confirm_close" and (not session.get("closeout") or not session["closeout"].get("summary") or session["closeout"].get("session_version") != session.get("updated_at")):
+        if action == "confirm_close" and (not session.get("closeout") or not session["closeout"].get("summary") or not session["closeout"].get("handoff") or not session["closeout"].get("next_steps") or session["closeout"].get("session_version") != session.get("updated_at")):
             raise ValueError("必须先生成并编辑 closeout 草稿")
         now = _now(); session.setdefault("governance", {})[action] = {"at": now, "status": "confirmed" if action == "confirm_close" else "deferred", "candidate_id": candidate_id, "snooze_until": snooze_until}
         if action in {"ignore", "snooze"} and candidate_id:
@@ -189,7 +189,7 @@ class ProjectStore:
     def save_closeout(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        now = _now(); session["closeout"] = {**payload, "generated_at": now, "model": payload.get("model") or "manual", "citations": payload.get("citations", []), "session_version": session.get("updated_at"), "confirmed": False}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_saved"}); self._write(data); return self.session(session_id)
+        now = _now(); previous = session.get("closeout") or {}; session["closeout"] = {**previous, **payload, "generated_at": previous.get("generated_at") or now, "model": payload.get("model") or previous.get("model") or "manual", "citations": payload.get("citations") or previous.get("citations", []), "document_version": payload.get("document_version") or previous.get("document_version"), "session_version": previous.get("session_version") or session.get("updated_at"), "confirmed": False, "edited_at": now}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_edited" if previous else "closeout_generated"}); self._write(data); return self.session(session_id)
 
     def generate_closeout(self, session_id: str) -> dict[str, Any]:
         session = self.session(session_id); context = json.dumps({"goal": session.get("goal"), "links": session.get("links", []), "events": session.get("events", [])}, ensure_ascii=False); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[\"\"]}}。只基于以下 Session 上下文，不得编造：{context}", max_tokens=800, timeout=90)
