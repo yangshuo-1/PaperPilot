@@ -28,12 +28,31 @@ class ProjectStore:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp.replace(self.path)
 
+    def _validate_link(self, payload: dict[str, Any]) -> dict[str, Any]:
+        kind, ref = payload.get("kind"), str(payload.get("ref") or "")
+        if kind not in {"paper", "file", "artifact"} or not ref:
+            raise ValueError("kind/ref 无效")
+        orphaned = False
+        if kind == "paper":
+            index = self.path.parent / "paper_index.jsonl"
+            orphaned = not any(json.loads(line).get("id") == ref for line in index.read_text(encoding="utf-8").splitlines() if line.strip()) if index.exists() else True
+        elif kind == "file":
+            candidate = Path(ref).resolve()
+            orphaned = not candidate.is_file() or self.path.parent.parent not in candidate.parents
+        else:
+            orphaned = not (self.path.parent.parent / ref).exists()
+        return {**payload, "orphaned": orphaned}
+
+    def refresh_links(self, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [self._validate_link(link) for link in links]
+
     def projects(self) -> list[dict[str, Any]]:
         data = self._read(); sessions = data.get("sessions", {})
         result = []
         for project in data.get("projects", {}).values():
             project = dict(project)
             project["session_ids"] = [s["id"] for s in sessions.values() if s.get("project_id") == project["id"]]
+            project["links"] = self.refresh_links(project.get("links", []))
             result.append(project)
         return result
 
@@ -63,17 +82,21 @@ class ProjectStore:
     def link_project(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); project = data.get("projects", {}).get(project_id)
         if not project: raise KeyError(project_id)
-        links = project.setdefault("links", []); link = {"id": uuid.uuid4().hex[:12], **payload}
+        links = project.setdefault("links", []); link = {"id": uuid.uuid4().hex[:12], **self._validate_link(payload)}
         if not any(x.get("kind") == link["kind"] and x.get("ref") == link["ref"] for x in links): links.append(link)
         project["updated_at"] = _now(); self._write(data); return self.project(project_id)
 
     def sessions(self, project_id: str) -> list[dict[str, Any]]:
-        data = self._read(); return [v for v in data.get("sessions", {}).values() if v.get("project_id") == project_id]
+        data = self._read(); result = []
+        for value in data.get("sessions", {}).values():
+            if value.get("project_id") == project_id:
+                value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = sorted(value.get("events", []), key=lambda x: (x.get("at", ""), x.get("action", ""))); result.append(value)
+        return result
 
     def session(self, session_id: str) -> dict[str, Any]:
         value = self._read().get("sessions", {}).get(session_id)
         if not value: raise KeyError(session_id)
-        return value
+        value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = sorted(value.get("events", []), key=lambda x: (x.get("at", ""), x.get("action", ""))); return value
 
     def create_session(self, project_id: str, title: str, goal: str) -> dict[str, Any]:
         self.project(project_id); data = self._read(); now = _now(); sid = uuid.uuid4().hex[:12]
@@ -83,16 +106,25 @@ class ProjectStore:
     def update_session(self, session_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        for key in ("title", "goal", "status"):
+        previous = session["status"]
+        requested = fields.get("status")
+        allowed = {"active": {"paused", "completed", "failed"}, "paused": {"active", "completed", "failed"}, "completed": set(), "failed": set()}
+        if requested is not None and requested != previous and requested not in allowed.get(previous, set()): raise ValueError(f"不允许状态转换：{previous} -> {requested}")
+        for key in ("title", "goal"):
             if fields.get(key) is not None: session[key] = fields[key]
+        if requested is not None: session["status"] = requested
         now = _now(); session["updated_at"] = now; session["last_activity_at"] = now
-        session.setdefault("events", []).append({"at": now, "action": "updated", "status": session["status"]})
+        action = "updated"
+        event = {"at": now, "action": action}
+        if requested is not None and requested != previous:
+            event = {"at": now, "action": {"paused": "paused", "active": "resumed", "completed": "completed", "failed": "failed"}[requested], "from_status": previous, "to_status": requested}
+        session.setdefault("events", []).append(event)
         self._write(data); return session
 
     def link_session(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        session.setdefault("links", []).append({"id": uuid.uuid4().hex[:12], **payload})
+        session.setdefault("links", []).append({"id": uuid.uuid4().hex[:12], **self._validate_link(payload)})
         now = _now(); session["updated_at"] = now; session["last_activity_at"] = now; session.setdefault("events", []).append({"at": now, "action": "linked", "ref": payload.get("ref")})
         self._write(data); return session
 

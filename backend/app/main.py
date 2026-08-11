@@ -156,12 +156,14 @@ def create_session(project_id: str, request: SessionCreateRequest, projects: Pro
 def update_session(session_id: str, request: SessionUpdateRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
     try: return Session(**projects.update_session(session_id, request.model_dump(exclude_unset=True)))
     except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/sessions/{session_id}/links", response_model=Session)
 def link_session(session_id: str, request: ProjectLinkRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
     try: return Session(**projects.link_session(session_id, request.model_dump()))
     except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204)
