@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import timedelta
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -154,3 +155,34 @@ class ProjectStore:
         data = self._read();
         if session_id not in data.get("sessions", {}): raise KeyError(session_id)
         del data["sessions"][session_id]; self._write(data)
+
+    def governance(self, session_id: str) -> dict[str, Any]:
+        session = self.session(session_id); reasons = []
+        if session.get("status") == "paused": reasons.append({"code": "paused", "reason": "Session 当前处于 paused", "suggested_action": "resume or archive"})
+        orphaned = [x for x in session.get("links", []) if x.get("orphaned")]
+        if orphaned: reasons.append({"code": "orphaned_links", "reason": f"存在 {len(orphaned)} 个孤立引用", "suggested_action": "review links"})
+        return {"candidates": reasons, "generated_at": _now(), "evidence": {"last_activity_at": session.get("last_activity_at"), "status": session.get("status")}}
+
+    def governance_action(self, session_id: str, action: str) -> dict[str, Any]:
+        data = self._read(); session = data.get("sessions", {}).get(session_id)
+        if not session: raise KeyError(session_id)
+        now = _now(); session.setdefault("governance", {})[action] = {"at": now, "status": "confirmed" if action == "confirm_close" else "deferred"}
+        if action == "confirm_close":
+            session["governance"]["state"] = "closed"
+            if session.get("closeout"): session["closeout"]["confirmed"] = True
+        if action == "archive": session["governance"]["state"] = "archived"
+        session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": f"governance_{action}"}); self._write(data); return self.session(session_id)
+
+    def save_closeout(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = self._read(); session = data.get("sessions", {}).get(session_id)
+        if not session: raise KeyError(session_id)
+        now = _now(); session["closeout"] = {**payload, "generated_at": now, "session_version": session.get("updated_at"), "confirmed": False}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_generated"}); self._write(data); return self.session(session_id)
+
+    def relations(self, project_id: str) -> list[dict[str, Any]]:
+        project = self.project(project_id); refs = [x.get("ref") for x in project.get("links", []) if x.get("kind") == "paper"]
+        return [{"id": uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], "kind": "shared-paper", "evidence": {"paper": ref}, "reason": "Project 内显式共享论文引用", "status": "pending"} for ref in refs]
+
+    def decide_relation(self, project_id: str, relation_id: str, accepted: bool) -> list[dict[str, Any]]:
+        data = self._read(); project = data.get("projects", {}).get(project_id)
+        if not project: raise KeyError(project_id)
+        decisions = project.setdefault("relation_decisions", {}); decisions[relation_id] = {"accepted": accepted, "at": _now()}; self._write(data); return self.relations(project_id)

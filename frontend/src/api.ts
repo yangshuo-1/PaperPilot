@@ -359,6 +359,11 @@ export const api = {
   updateSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   linkSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}/links`, { method: "POST", body: JSON.stringify(payload) }),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
+  getGovernance: (id: string) => request<{ candidates: Array<Record<string, unknown>>; generated_at: string }>(`/api/sessions/${id}/governance`),
+  applyGovernance: (id: string, action: string) => request<Session>(`/api/sessions/${id}/governance`, { method: "POST", body: JSON.stringify({ action }) }),
+  saveCloseout: (id: string, payload: { summary: string; handoff: string; next_steps: string[] }) => request<Session>(`/api/sessions/${id}/closeout`, { method: "POST", body: JSON.stringify(payload) }),
+  getRelations: (id: string) => request<Array<Record<string, unknown>>>(`/api/projects/${id}/relations`),
+  decideRelation: (id: string, relationId: string, accepted: boolean) => request<Array<Record<string, unknown>>>(`/api/projects/${id}/relations/${relationId}`, { method: "POST", body: JSON.stringify({ accepted }) }),
   // export / citation
   exportMarkdown: (paperId: string) => requestText(`/api/papers/${paperId}/export?format=markdown`),
   getCitation: (paperId: string, format: "bibtex" | "gbt7714" | "apa") =>

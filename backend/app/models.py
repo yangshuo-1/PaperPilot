@@ -453,6 +453,22 @@ class Session(BaseModel):
     last_activity_at: str
     links: list[dict[str, Any]] = Field(default_factory=list)
     events: list[dict[str, Any]] = Field(default_factory=list)
+    governance: dict[str, Any] = Field(default_factory=dict)
+    closeout: dict[str, Any] | None = None
+
+
+class GovernanceActionRequest(BaseModel):
+    action: Literal["ignore", "snooze", "confirm_close", "archive"]
+
+
+class CloseoutRequest(BaseModel):
+    summary: str = ""
+    handoff: str = ""
+    next_steps: list[str] = Field(default_factory=list)
+
+
+class RelationDecisionRequest(BaseModel):
+    accepted: bool
 
 
 # --- citation / export -----------------------------------------------------

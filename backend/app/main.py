@@ -40,7 +40,7 @@ from .models import (
     AIRequest,
     AIResponse,
     TakeawayResponse,
-    Project, ProjectCreateRequest, ProjectUpdateRequest, ProjectLinkRequest, Session, SessionCreateRequest, SessionUpdateRequest,
+    Project, ProjectCreateRequest, ProjectUpdateRequest, ProjectLinkRequest, Session, SessionCreateRequest, SessionUpdateRequest, GovernanceActionRequest, CloseoutRequest, RelationDecisionRequest,
 )
 from .storage import PaperStore
 from .translation_jobs import TranslationJobRunner
@@ -170,6 +170,36 @@ def link_session(session_id: str, request: ProjectLinkRequest, projects: Project
 def delete_session(session_id: str, projects: ProjectStore = Depends(get_projects)) -> None:
     try: projects.delete_session(session_id)
     except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@app.get("/api/sessions/{session_id}/governance")
+def session_governance(session_id: str, projects: ProjectStore = Depends(get_projects)) -> dict[str, object]:
+    try: return projects.governance(session_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@app.post("/api/sessions/{session_id}/governance", response_model=Session)
+def apply_governance(session_id: str, request: GovernanceActionRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
+    try: return Session(**projects.governance_action(session_id, request.action))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@app.post("/api/sessions/{session_id}/closeout", response_model=Session)
+def save_closeout(session_id: str, request: CloseoutRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
+    try: return Session(**projects.save_closeout(session_id, request.model_dump()))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@app.get("/api/projects/{project_id}/relations")
+def project_relations(project_id: str, projects: ProjectStore = Depends(get_projects)) -> list[dict[str, object]]:
+    try: return projects.relations(project_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.post("/api/projects/{project_id}/relations/{relation_id}")
+def decide_relation(project_id: str, relation_id: str, request: RelationDecisionRequest, projects: ProjectStore = Depends(get_projects)) -> list[dict[str, object]]:
+    try: return projects.decide_relation(project_id, relation_id, request.accepted)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
 
 
 @app.get("/api/papers/folders", response_model=FolderListResponse)
