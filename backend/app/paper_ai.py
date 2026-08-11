@@ -84,7 +84,25 @@ def _parse_json_payload(raw: str) -> dict[str, Any]:
     text = raw.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
-    text = re.sub(r"\s*//[^\n]*(?=\n|$)", "", text)
+    # Remove line comments only outside JSON strings; URLs and quoted prose stay intact.
+    cleaned: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == '"' and not escaped:
+            in_string = not in_string
+        if not in_string and char == "/" and index + 1 < len(text) and text[index + 1] == "/":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        cleaned.append(char)
+        escaped = char == "\\" and not escaped
+        if char != "\\":
+            escaped = False
+        index += 1
+    text = "".join(cleaned)
     value = json.loads(text)
     if not isinstance(value, dict):
         raise json.JSONDecodeError("expected object", text, 0)
