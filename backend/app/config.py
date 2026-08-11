@@ -15,6 +15,7 @@ class Settings:
         self.data_root = Path(os.getenv("PAPER_VALT_ROOT", str(self.repo_root))).resolve()
         self.papers_dir = self.data_root / "papers"
         self.references_dir = self.data_root / "references"
+        self.projects_path = self.references_dir / "projects_sessions.json"
 
     def ensure_dirs(self) -> None:
         self.papers_dir.mkdir(parents=True, exist_ok=True)

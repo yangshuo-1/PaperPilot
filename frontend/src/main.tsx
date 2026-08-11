@@ -177,9 +177,24 @@ function TopNav() {
       </div>
       <nav className="navLinks">
         <Link to="/">Library</Link>
+        <Link to="/projects">Projects</Link>
       </nav>
     </header>
   );
+}
+
+function ProjectsPage() {
+  const [projects, setProjects] = useState<import("./api").Project[]>([]);
+  const [selected, setSelected] = useState<import("./api").Project | null>(null);
+  const [sessions, setSessions] = useState<import("./api").Session[]>([]);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  async function load() { try { const values = await api.listProjects(); setProjects(values); if (selected) { setSelected(await api.getProject(selected.id)); setSessions(await api.listSessions(selected.id)); } } catch (e) { setError(String(e)); } }
+  useEffect(() => { void load(); }, []);
+  async function create() { if (!name.trim()) return; await api.createProject({ name, description: "", goal: "" }); setName(""); await load(); }
+  async function open(project: import("./api").Project) { setSelected(project); setSessions(await api.listSessions(project.id)); }
+  async function createSession() { if (!selected) return; const title = window.prompt("Session 标题", "阅读与分析")?.trim(); if (!title) return; setSessions([...sessions, await api.createSession(selected.id, { title, goal: "" })]); }
+  return <AppShell><div className="paperHeader"><div><h1>Projects</h1><p className="muted">本地研究容器；删除不级联论文、文件或 AI 产物。</p></div></div>{error && <div className="errorBanner">{error}</div>}<div className="projectGrid"><section className="asideCard"><h3>新建 Project</h3><div className="aiQuestion"><input value={name} onChange={e => setName(e.target.value)} placeholder="Project 名称" /><button className="primaryBtn" onClick={create}>创建</button></div>{projects.map(p => <button className={cls("projectRow", selected?.id === p.id && "active")} key={p.id} onClick={() => void open(p)}>{p.name}<small>{p.session_ids.length} sessions · {p.links.length} links</small></button>)}</section>{selected ? <section className="asideCard"><h2>{selected.name}</h2><p>{selected.goal || "未设置目标"}</p><h3>关联资源</h3>{selected.links.length ? selected.links.map((link, i) => <div className="projectLink" key={i}>{String(link.kind)} · {String(link.label || link.ref)}</div>) : <p className="muted">暂无资源</p>}<button className="quietBtn" onClick={() => void api.linkProject(selected.id, { kind: "paper", ref: window.prompt("论文 ID") || "", label: "论文快照", metadata: { snapshot_at: new Date().toISOString() } }).then(load)}>关联论文</button><h3>Sessions <button className="quietBtn" onClick={() => void createSession()}>新建</button></h3>{sessions.map(s => <div className="sessionRow" key={s.id}><b>{s.title}</b><span>{s.status}</span><small>最近活动 {s.last_activity_at}</small><div><button className="quietBtn" onClick={() => void api.updateSession(s.id, { status: "paused" }).then(load)}>暂停</button><button className="quietBtn" onClick={() => void api.updateSession(s.id, { status: "active" }).then(load)}>恢复</button><button className="quietBtn" onClick={() => void api.updateSession(s.id, { status: "completed" }).then(load)}>结束</button></div>{s.events.map((event, i) => <small key={i}>· {String(event.action)} {String(event.at)}</small>)}</div>)}</section> : <section className="asideCard"><h2>选择一个 Project</h2><p className="muted">刷新后项目与 Session 从本地存储恢复。</p></section>}</div></AppShell>;
 }
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -1488,6 +1503,7 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<LibraryPage />} />
+        <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/papers/:paperId" element={<PaperPage />} />
       </Routes>
     </BrowserRouter>

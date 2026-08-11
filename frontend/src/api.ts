@@ -244,6 +244,8 @@ export type AICitation = { page: number; quote: string };
 export type AIResponse = { paper_id: string; mode: string; answer: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; stale: boolean; available: boolean; error?: string | null };
 export type Takeaway = { id: string; content: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; stale: boolean };
 export type TakeawayResponse = { paper_id: string; takeaways: Takeaway[]; available: boolean; error?: string | null };
+export type Project = { id: string; name: string; description: string; goal: string; created_at: string; updated_at: string; links: Array<Record<string, unknown>>; session_ids: string[] };
+export type Session = { id: string; project_id: string; title: string; goal: string; status: "active" | "paused" | "completed" | "failed"; created_at: string; updated_at: string; last_activity_at: string; links: Array<Record<string, unknown>>; events: Array<Record<string, unknown>> };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -347,6 +349,14 @@ export const api = {
     request<AIResponse>(`/api/papers/${paperId}/ai`, { method: "POST", body: JSON.stringify(payload) }),
   getTakeaways: (paperId: string) => request<TakeawayResponse>(`/api/papers/${paperId}/takeaways`),
   generateTakeaways: (paperId: string) => request<TakeawayResponse>(`/api/papers/${paperId}/takeaways/generate`, { method: "POST" }),
+  listProjects: () => request<Project[]>("/api/projects"),
+  createProject: (payload: { name: string; description: string; goal: string }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
+  getProject: (id: string) => request<Project>(`/api/projects/${id}`),
+  linkProject: (id: string, payload: Record<string, unknown>) => request<Project>(`/api/projects/${id}/links`, { method: "POST", body: JSON.stringify(payload) }),
+  listSessions: (id: string) => request<Session[]>(`/api/projects/${id}/sessions`),
+  createSession: (id: string, payload: { title: string; goal: string }) => request<Session>(`/api/projects/${id}/sessions`, { method: "POST", body: JSON.stringify(payload) }),
+  updateSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  linkSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}/links`, { method: "POST", body: JSON.stringify(payload) }),
   // export / citation
   exportMarkdown: (paperId: string) => requestText(`/api/papers/${paperId}/export?format=markdown`),
   getCitation: (paperId: string, format: "bibtex" | "gbt7714" | "apa") =>

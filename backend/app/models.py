@@ -401,6 +401,60 @@ class TakeawayResponse(BaseModel):
     error: str | None = None
 
 
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    goal: str = ""
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    goal: str | None = None
+
+
+class ProjectLinkRequest(BaseModel):
+    kind: Literal["paper", "file", "artifact"]
+    ref: str = Field(min_length=1)
+    label: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SessionCreateRequest(BaseModel):
+    title: str = Field(min_length=1)
+    goal: str = ""
+
+
+class SessionUpdateRequest(BaseModel):
+    title: str | None = None
+    goal: str | None = None
+    status: Literal["active", "paused", "completed", "failed"] | None = None
+
+
+class Project(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    goal: str = ""
+    created_at: str
+    updated_at: str
+    links: list[dict[str, Any]] = Field(default_factory=list)
+    session_ids: list[str] = Field(default_factory=list)
+
+
+class Session(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    goal: str = ""
+    status: Literal["active", "paused", "completed", "failed"]
+    created_at: str
+    updated_at: str
+    last_activity_at: str
+    links: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
 # --- citation / export -----------------------------------------------------
 
 

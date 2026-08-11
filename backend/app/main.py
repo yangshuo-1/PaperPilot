@@ -9,6 +9,7 @@ from . import latex as latex_mod
 from . import llm as llm_mod
 from . import reader as reader_mod
 from . import paper_ai
+from .projects import ProjectStore
 from .annotations import AnnotationStore
 from .models import (
     CitationResponse,
@@ -39,6 +40,7 @@ from .models import (
     AIRequest,
     AIResponse,
     TakeawayResponse,
+    Project, ProjectCreateRequest, ProjectUpdateRequest, ProjectLinkRequest, Session, SessionCreateRequest, SessionUpdateRequest,
 )
 from .storage import PaperStore
 from .translation_jobs import TranslationJobRunner
@@ -61,6 +63,10 @@ def get_store(settings: Settings = Depends(get_settings)) -> PaperStore:
 
 def get_annotations(settings: Settings = Depends(get_settings)) -> AnnotationStore:
     return AnnotationStore(settings)
+
+
+def get_projects(settings: Settings = Depends(get_settings)) -> ProjectStore:
+    return ProjectStore(settings.projects_path)
 
 
 def _figure_media_type(suffix: str) -> str:
@@ -98,6 +104,70 @@ def list_papers(
 ) -> PaperListResponse:
     papers = store.search_papers(q, tag)
     return PaperListResponse(papers=papers, total=len(papers), tags=store.tag_counts(store.list_papers()))
+
+
+@app.get("/api/projects", response_model=list[Project])
+def list_projects(projects: ProjectStore = Depends(get_projects)) -> list[Project]:
+    return [Project(**value) for value in projects.projects()]
+
+
+@app.post("/api/projects", response_model=Project)
+def create_project(request: ProjectCreateRequest, projects: ProjectStore = Depends(get_projects)) -> Project:
+    return Project(**projects.create_project(request.name, request.description, request.goal))
+
+
+@app.get("/api/projects/{project_id}", response_model=Project)
+def get_project(project_id: str, projects: ProjectStore = Depends(get_projects)) -> Project:
+    try: return Project(**projects.project(project_id))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.patch("/api/projects/{project_id}", response_model=Project)
+def update_project(project_id: str, request: ProjectUpdateRequest, projects: ProjectStore = Depends(get_projects)) -> Project:
+    try: return Project(**projects.update_project(project_id, request.model_dump(exclude_unset=True)))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.delete("/api/projects/{project_id}", status_code=204)
+def delete_project(project_id: str, projects: ProjectStore = Depends(get_projects)) -> None:
+    try: projects.delete_project(project_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.post("/api/projects/{project_id}/links", response_model=Project)
+def link_project(project_id: str, request: ProjectLinkRequest, projects: ProjectStore = Depends(get_projects)) -> Project:
+    try: return Project(**projects.link_project(project_id, request.model_dump()))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.get("/api/projects/{project_id}/sessions", response_model=list[Session])
+def list_sessions(project_id: str, projects: ProjectStore = Depends(get_projects)) -> list[Session]:
+    try: projects.project(project_id); return [Session(**x) for x in projects.sessions(project_id)]
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.post("/api/projects/{project_id}/sessions", response_model=Session)
+def create_session(project_id: str, request: SessionCreateRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
+    try: return Session(**projects.create_session(project_id, request.title, request.goal))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.patch("/api/sessions/{session_id}", response_model=Session)
+def update_session(session_id: str, request: SessionUpdateRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
+    try: return Session(**projects.update_session(session_id, request.model_dump(exclude_unset=True)))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@app.post("/api/sessions/{session_id}/links", response_model=Session)
+def link_session(session_id: str, request: ProjectLinkRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
+    try: return Session(**projects.link_session(session_id, request.model_dump()))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@app.delete("/api/sessions/{session_id}", status_code=204)
+def delete_session(session_id: str, projects: ProjectStore = Depends(get_projects)) -> None:
+    try: projects.delete_session(session_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
 
 
 @app.get("/api/papers/folders", response_model=FolderListResponse)
