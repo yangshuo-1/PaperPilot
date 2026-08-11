@@ -180,14 +180,22 @@ def session_governance(session_id: str, projects: ProjectStore = Depends(get_pro
 
 @app.post("/api/sessions/{session_id}/governance", response_model=Session)
 def apply_governance(session_id: str, request: GovernanceActionRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
-    try: return Session(**projects.governance_action(session_id, request.action))
+    try: return Session(**projects.governance_action(session_id, request.action, request.candidate_id, request.snooze_until))
     except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/sessions/{session_id}/closeout", response_model=Session)
 def save_closeout(session_id: str, request: CloseoutRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
     try: return Session(**projects.save_closeout(session_id, request.model_dump()))
     except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@app.post("/api/sessions/{session_id}/closeout/generate", response_model=Session)
+def generate_closeout(session_id: str, projects: ProjectStore = Depends(get_projects)) -> Session:
+    try: return Session(**projects.generate_closeout(session_id))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/relations")

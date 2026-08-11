@@ -6,6 +6,7 @@ from datetime import timedelta
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from . import llm
 
 
 def _now() -> str:
@@ -161,12 +162,23 @@ class ProjectStore:
         if session.get("status") == "paused": reasons.append({"code": "paused", "reason": "Session 当前处于 paused", "suggested_action": "resume or archive"})
         orphaned = [x for x in session.get("links", []) if x.get("orphaned")]
         if orphaned: reasons.append({"code": "orphaned_links", "reason": f"存在 {len(orphaned)} 个孤立引用", "suggested_action": "review links"})
-        return {"candidates": reasons, "generated_at": _now(), "evidence": {"last_activity_at": session.get("last_activity_at"), "status": session.get("status")}}
+        data = self._read(); stored = data.get("sessions", {}).get(session_id, {}).setdefault("governance", {}).setdefault("candidates", {})
+        candidates = []
+        for reason in reasons:
+            cid = f"{session_id}:{reason['code']}"; item = stored.get(cid, {"id": cid, **reason, "status": "pending"})
+            if item.get("status") == "snoozed" and item.get("snooze_until", "") > _now(): continue
+            candidates.append(item)
+        if stored != {x["id"]: x for x in candidates}: data["sessions"][session_id]["governance"]["candidates"] = {x["id"]: x for x in candidates}; self._write(data)
+        return {"candidates": candidates, "generated_at": _now(), "evidence": {"last_activity_at": session.get("last_activity_at"), "status": session.get("status")}}
 
-    def governance_action(self, session_id: str, action: str) -> dict[str, Any]:
+    def governance_action(self, session_id: str, action: str, candidate_id: str | None = None, snooze_until: str | None = None) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        now = _now(); session.setdefault("governance", {})[action] = {"at": now, "status": "confirmed" if action == "confirm_close" else "deferred"}
+        if action == "confirm_close" and (not session.get("closeout") or not session["closeout"].get("summary") or not session["closeout"].get("confirmed")):
+            raise ValueError("必须先生成并编辑 closeout 草稿")
+        now = _now(); session.setdefault("governance", {})[action] = {"at": now, "status": "confirmed" if action == "confirm_close" else "deferred", "candidate_id": candidate_id, "snooze_until": snooze_until}
+        if action in {"ignore", "snooze"} and candidate_id:
+            item = session.setdefault("governance", {}).setdefault("candidates", {}).setdefault(candidate_id, {"id": candidate_id}); item["status"] = "ignored" if action == "ignore" else "snoozed"; item["snooze_until"] = snooze_until
         if action == "confirm_close":
             session["governance"]["state"] = "closed"
             if session.get("closeout"): session["closeout"]["confirmed"] = True
@@ -176,11 +188,18 @@ class ProjectStore:
     def save_closeout(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
-        now = _now(); session["closeout"] = {**payload, "generated_at": now, "session_version": session.get("updated_at"), "confirmed": False}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_generated"}); self._write(data); return self.session(session_id)
+        now = _now(); session["closeout"] = {**payload, "generated_at": now, "model": payload.get("model") or "manual", "citations": payload.get("citations", []), "session_version": session.get("updated_at"), "confirmed": False}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_saved"}); self._write(data); return self.session(session_id)
+
+    def generate_closeout(self, session_id: str) -> dict[str, Any]:
+        session = self.session(session_id); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[]}}。只基于当前 Session 目标：{session.get('goal','')}", max_tokens=800, timeout=90)
+        try: payload = json.loads(result)
+        except json.JSONDecodeError as exc: raise ValueError("AI closeout 返回无法解析") from exc
+        payload.update({"model": llm.llm_status().get("model"), "citations": [], "document_version": None})
+        return self.save_closeout(session_id, payload)
 
     def relations(self, project_id: str) -> list[dict[str, Any]]:
-        project = self.project(project_id); refs = [x.get("ref") for x in project.get("links", []) if x.get("kind") == "paper"]
-        return [{"id": uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], "kind": "shared-paper", "evidence": {"paper": ref}, "reason": "Project 内显式共享论文引用", "status": "pending"} for ref in refs]
+        project = self.project(project_id); refs = [x.get("ref") for x in project.get("links", []) if x.get("kind") == "paper"]; decisions = self._read().get("projects", {}).get(project_id, {}).get("relation_decisions", {})
+        return [{"id": uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], "kind": "shared-paper", "source": project_id, "target": ref, "evidence": {"paper": ref}, "reason": "Project 内显式共享论文引用", "status": ("accepted" if decisions.get(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], {}).get("accepted") is True else "rejected" if decisions.get(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{ref}").hex[:12], {}).get("accepted") is False else "pending")} for ref in refs]
 
     def decide_relation(self, project_id: str, relation_id: str, accepted: bool) -> list[dict[str, Any]]:
         data = self._read(); project = data.get("projects", {}).get(project_id)

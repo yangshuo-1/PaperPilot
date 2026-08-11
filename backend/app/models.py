@@ -459,6 +459,8 @@ class Session(BaseModel):
 
 class GovernanceActionRequest(BaseModel):
     action: Literal["ignore", "snooze", "confirm_close", "archive"]
+    candidate_id: str | None = None
+    snooze_until: str | None = None
 
 
 class CloseoutRequest(BaseModel):
