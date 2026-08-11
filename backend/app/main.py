@@ -189,6 +189,7 @@ def apply_governance(session_id: str, request: GovernanceActionRequest, projects
 def save_closeout(session_id: str, request: CloseoutRequest, projects: ProjectStore = Depends(get_projects)) -> Session:
     try: return Session(**projects.save_closeout(session_id, request.model_dump()))
     except KeyError as exc: raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/sessions/{session_id}/closeout/generate", response_model=Session)

@@ -36,6 +36,11 @@ class Phase5ProjectTests(unittest.TestCase):
         self.assertEqual(edited["closeout"]["session_version"], edited["updated_at"])
         self.assertTrue(self.store.governance_action(session["id"], "confirm_close")["closeout"]["confirmed"])
         self.assertEqual(self.store.governance(session["id"])["candidates"], [])
+        with self.assertRaises(ValueError):
+            self.store.save_closeout(session["id"], {"summary": "again", "handoff": "h", "next_steps": ["n"]})
+        with patch("backend.app.projects.llm.chat_once"):
+            with self.assertRaises(ValueError):
+                self.store.generate_closeout(session["id"])
 
     def test_relation_decision_evidence_timeline_and_no_overwrite(self):
         left, right = self.session("left"), self.session("right")
@@ -70,6 +75,10 @@ class Phase5ProjectTests(unittest.TestCase):
         self.store.governance_action(session["id"], "archive")
         self.assertEqual(self.store.governance(session["id"])["candidates"], [])
         self.assertEqual(self.store.session(session["id"])["status"], "active")
+        with self.assertRaises(ValueError):
+            self.store.save_closeout(session["id"], {"summary": "x", "handoff": "h", "next_steps": ["n"]})
+        with self.assertRaises(ValueError):
+            self.store.governance_action(session["id"], "archive")
 
 
 if __name__ == "__main__":

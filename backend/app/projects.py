@@ -130,6 +130,8 @@ class ProjectStore:
     def update_session(self, session_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
+        if session.get("governance", {}).get("state") in {"closed", "archived"}:
+            raise ValueError("Session 治理状态已锁定")
         previous = session["status"]
         requested = fields.get("status")
         allowed = {"active": {"paused", "completed", "failed"}, "paused": {"active", "completed", "failed"}, "completed": set(), "failed": set()}
@@ -188,6 +190,8 @@ class ProjectStore:
     def governance_action(self, session_id: str, action: str, candidate_id: str | None = None, snooze_until: str | None = None) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
+        if session.get("governance", {}).get("state") in {"closed", "archived"}:
+            raise ValueError("Session 治理状态已锁定")
         if action in {"ignore", "snooze"} and (not candidate_id or candidate_id not in session.get("governance", {}).get("candidates", {})):
             raise ValueError("治理候选不存在")
         if action == "archive" and candidate_id and candidate_id not in session.get("governance", {}).get("candidates", {}):
@@ -207,11 +211,16 @@ class ProjectStore:
     def save_closeout(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
+        if session.get("governance", {}).get("state") in {"closed", "archived"}:
+            raise ValueError("Session 治理状态已锁定")
         now = _now(); previous = session.get("closeout") or {}; generated = "model" in payload or "citations" in payload or "document_version" in payload
         session["closeout"] = {**previous, **payload, "generated_at": previous.get("generated_at") or now, "model": payload.get("model") if generated else previous.get("model") or "manual", "citations": payload.get("citations", []) if generated else previous.get("citations", []), "document_version": payload.get("document_version") if generated else previous.get("document_version"), "session_version": session.get("updated_at"), "confirmed": False, "edited_at": now}; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "closeout_edited" if previous else "closeout_generated"}); self._write(data); return self.session(session_id)
 
     def generate_closeout(self, session_id: str) -> dict[str, Any]:
-        session = self.session(session_id); context = json.dumps({"goal": session.get("goal"), "links": session.get("links", []), "events": session.get("events", [])}, ensure_ascii=False); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[\"\"]}}。只基于以下 Session 上下文，不得编造：{context}", max_tokens=800, timeout=90)
+        session = self.session(session_id)
+        if session.get("governance", {}).get("state") in {"closed", "archived"}:
+            raise ValueError("Session 治理状态已锁定")
+        context = json.dumps({"goal": session.get("goal"), "links": session.get("links", []), "events": session.get("events", [])}, ensure_ascii=False); result = llm.chat_once(f"为 Session {session['title']} 生成严格 JSON：{{\"summary\":\"\",\"handoff\":\"\",\"next_steps\":[\"\"]}}。只基于以下 Session 上下文，不得编造：{context}", max_tokens=800, timeout=90)
         try: payload = json.loads(result)
         except json.JSONDecodeError as exc: raise ValueError("AI closeout 返回无法解析") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("summary"), str) or not payload["summary"].strip() or not isinstance(payload.get("handoff"), str) or not payload["handoff"].strip() or not isinstance(payload.get("next_steps"), list) or not all(isinstance(item, str) and item.strip() for item in payload["next_steps"]):
