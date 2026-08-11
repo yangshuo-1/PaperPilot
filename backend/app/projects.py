@@ -40,7 +40,13 @@ class ProjectStore:
             candidate = Path(ref).resolve()
             orphaned = not candidate.is_file() or self.path.parent.parent not in candidate.parents
         else:
-            orphaned = not (self.path.parent.parent / ref).exists()
+            candidate = Path(ref).expanduser().resolve()
+            root = self.path.parent.parent.resolve()
+            try: candidate.relative_to(root)
+            except ValueError: orphaned = True
+            else:
+                registered = [root / "papers", root / "references"]
+                orphaned = not candidate.is_file() or not any(candidate.is_relative_to(base) for base in registered)
         return {**payload, "orphaned": orphaned}
 
     def refresh_links(self, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -96,11 +102,11 @@ class ProjectStore:
     def session(self, session_id: str) -> dict[str, Any]:
         value = self._read().get("sessions", {}).get(session_id)
         if not value: raise KeyError(session_id)
-        value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = sorted(value.get("events", []), key=lambda x: (x.get("at", ""), x.get("action", ""))); return value
+        value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = list(value.get("events", [])); return value
 
     def create_session(self, project_id: str, title: str, goal: str) -> dict[str, Any]:
         self.project(project_id); data = self._read(); now = _now(); sid = uuid.uuid4().hex[:12]
-        session = {"id": sid, "project_id": project_id, "title": title, "goal": goal, "status": "active", "created_at": now, "updated_at": now, "last_activity_at": now, "links": [], "events": [{"at": now, "action": "created"}]}
+        session = {"id": sid, "project_id": project_id, "title": title, "goal": goal, "status": "active", "created_at": now, "updated_at": now, "last_activity_at": now, "links": [], "events": [{"seq": 0, "at": now, "action": "created"}]}
         data.setdefault("sessions", {})[sid] = session; self._write(data); return session
 
     def update_session(self, session_id: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -115,9 +121,9 @@ class ProjectStore:
         if requested is not None: session["status"] = requested
         now = _now(); session["updated_at"] = now; session["last_activity_at"] = now
         action = "updated"
-        event = {"at": now, "action": action}
+        event = {"seq": len(session.get("events", [])), "at": now, "action": action}
         if requested is not None and requested != previous:
-            event = {"at": now, "action": {"paused": "paused", "active": "resumed", "completed": "completed", "failed": "failed"}[requested], "from_status": previous, "to_status": requested}
+            event = {"seq": len(session.get("events", [])), "at": now, "action": {"paused": "paused", "active": "resumed", "completed": "completed", "failed": "failed"}[requested], "from_status": previous, "to_status": requested}
         session.setdefault("events", []).append(event)
         self._write(data); return session
 
@@ -125,7 +131,7 @@ class ProjectStore:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
         if not session: raise KeyError(session_id)
         session.setdefault("links", []).append({"id": uuid.uuid4().hex[:12], **self._validate_link(payload)})
-        now = _now(); session["updated_at"] = now; session["last_activity_at"] = now; session.setdefault("events", []).append({"at": now, "action": "linked", "ref": payload.get("ref")})
+        now = _now(); session["updated_at"] = now; session["last_activity_at"] = now; session.setdefault("events", []).append({"seq": len(session.get("events", [])), "at": now, "action": "linked", "ref": payload.get("ref")})
         self._write(data); return session
 
     def delete_session(self, session_id: str) -> None:
