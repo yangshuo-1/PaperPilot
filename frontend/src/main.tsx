@@ -1383,7 +1383,7 @@ function AIAnswer({ response, onJump }: { response: import("./api").AIResponse; 
     {response.error ? <div className="errorBanner">{response.error}（阅读器与已有标注未受影响，可重试）</div> : <>
       <div className="aiAnswerMeta">{response.mode} · {response.model || "未配置模型"} · {response.stale ? "文档版本已失效" : "当前文档版本"}</div>
       <MarkdownView content={response.answer || "AI 未返回可靠答案。"} />
-      {!!response.citations.length && <div className="aiCitations"><strong>引用</strong>{response.citations.map((citation, index) => <button type="button" key={`${citation.page}-${index}`} onClick={() => onJump(citation.page)}>p.{citation.page}：{citation.quote}</button>)}</div>}
+      {!!response.citations.length && <div className="aiCitations"><strong>引用{response.stale ? "（版本已失效，已禁用回跳）" : ""}</strong>{response.citations.map((citation, index) => <button type="button" disabled={response.stale} key={`${citation.page}-${index}`} onClick={() => onJump(citation.page)}>p.{citation.page}：{citation.quote}</button>)}</div>}
     </>}
   </div>;
 }

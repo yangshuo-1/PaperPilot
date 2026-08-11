@@ -27,9 +27,11 @@ from typing import Any
 # with HTTP 403 (error code 1010).
 # ---------------------------------------------------------------------------
 
-# Repo-local config file (gitignored; contains the secret). A path override is
-# supported via PAPER_LLM_CONFIG_PATH.
+# Pi owns the provider configuration. A repo-local file is retained only as a
+# backwards-compatible fallback for explicit local development.
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "llm_config.json"
+_PI_MODELS_PATH = Path(os.getenv("PI_MODELS_PATH", "~/.pi/agent/models.json")).expanduser()
+_PI_AUTH_PATH = Path(os.getenv("PI_AUTH_PATH", "~/.pi/agent/auth.json")).expanduser()
 
 # Picked first from a known-good list per provider when multiple models exist.
 _PREFERRED_MODELS = (
@@ -78,8 +80,26 @@ def _env_config() -> dict[str, Any] | None:
     return {"base_url": base_url.rstrip("/"), "api_key": api_key, "model": model}
 
 
+def _pi_config() -> dict[str, Any] | None:
+    """Resolve Pi's humanfia-lab provider without exposing credentials."""
+    try:
+        models = json.loads(_PI_MODELS_PATH.read_text(encoding="utf-8"))
+        auth = json.loads(_PI_AUTH_PATH.read_text(encoding="utf-8"))
+        provider = models.get("providers", {}).get("humanfia-lab", {})
+        auth_provider = auth.get("humanfia-lab", {})
+        base_url = str(provider.get("baseUrl") or "").strip()
+        entries = provider.get("models") or []
+        model = str((entries[0] if entries else {}).get("id") or "").strip()
+        api_key = str(auth_provider.get("key") or "").strip()
+        if base_url and model and api_key:
+            return {"base_url": base_url.rstrip("/"), "api_key": api_key, "model": model, "provider": "humanfia-lab"}
+    except (OSError, json.JSONDecodeError, AttributeError, IndexError, TypeError):
+        pass
+    return None
+
+
 def _effective_config() -> dict[str, Any] | None:
-    return _env_config() or _read_local_config()
+    return _env_config() or _pi_config()
 
 
 def llm_available() -> bool:
@@ -89,15 +109,15 @@ def llm_available() -> bool:
 def llm_status() -> dict[str, Any]:
     """Return a human-reportable availability status without exposing secrets."""
     env = _env_config()
-    local_cfg = _read_local_config()
+    pi_cfg = _pi_config()
     effective = _effective_config()
     if env:
         source = "env"
-    elif local_cfg:
-        source = "local-config"
+    elif pi_cfg:
+        source = "pi"
     else:
         source = None
-    return {"available": source is not None, "source": source, "model": effective["model"] if source else None}
+    return {"available": source is not None, "provider": effective.get("provider", "") if source else None, "model": effective["model"] if source else None}
 
 
 def _chat_completion(  # noqa: PLR0913
