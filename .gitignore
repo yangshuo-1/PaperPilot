@@ -33,6 +33,8 @@ references/codex_jobs/
 references/translation_jobs/
 references/paper_discovery.json
 references/paper_discovery_history.json
+references/paper_discovery_review.json
+references/paper_discovery_review.md
 
 # ---- OS / editor ----
 .DS_Store

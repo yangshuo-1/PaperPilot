@@ -520,6 +520,49 @@ p {
   color: #34744b;
 }
 
+.discoveryReview {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.discoveryReviewHeader,
+.discoveryReviewItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.discoveryBucket {
+  margin-top: 10px;
+}
+
+.discoveryBucket h4 {
+  margin: 0 0 5px;
+  font-size: 12px;
+}
+
+.discoveryReviewItem {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.discoveryReviewItem > div {
+  min-width: 0;
+}
+
+.discoveryReviewItem .muted {
+  line-height: 1.4;
+}
+
+.discoveryReviewPath {
+  margin-top: 10px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .refreshBtn {
   background: transparent;
   border-color: var(--border-strong);

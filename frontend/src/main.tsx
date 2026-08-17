@@ -4,6 +4,7 @@ import { BrowserRouter, Link, Route, Routes, useParams } from "react-router-dom"
 import type {
   CodexAnalysisJob,
   DiscoveryCandidate,
+  DiscoveryReviewResponse,
   DocumentSummary,
   Folder,
   LatexSourceResponse,
@@ -26,6 +27,15 @@ const READ_LABELS: Record<ReadStatus, string> = {
 
 function cls(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
+}
+
+function downloadText(filename: string, content: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 function statusTone(status: string): string {
@@ -400,6 +410,9 @@ function LibraryPage() {
   const [discoveryDays, setDiscoveryDays] = useState(1);
   const [discovering, setDiscovering] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
+  const [discoveryReview, setDiscoveryReview] = useState<DiscoveryReviewResponse | null>(null);
+  const [reviewingDiscovery, setReviewingDiscovery] = useState(false);
+  const [processingDiscovery, setProcessingDiscovery] = useState(false);
 
   async function load() {
     setError(null);
@@ -455,6 +468,53 @@ function LibraryPage() {
       await api.importPaper(candidate.arxiv_id);
       setDiscovery((prev) => prev.filter((item) => item.arxiv_id !== candidate.arxiv_id));
       await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function reviewDiscovered() {
+    setError(null);
+    setReviewingDiscovery(true);
+    try {
+      setDiscoveryReview(await api.reviewDiscovery());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewingDiscovery(false);
+    }
+  }
+
+  async function processMustRead() {
+    const ids = (discoveryReview?.candidates || [])
+      .filter((candidate) => candidate.recommendation === "must_read" && !candidate.existing_paper_id)
+      .map((candidate) => candidate.arxiv_id);
+    if (!ids.length) return;
+    setError(null);
+    setProcessingDiscovery(true);
+    try {
+      const result = await api.processDiscovery(ids, true);
+      const failed = result.items.filter((item) => item.status === "failed");
+      if (failed.length) setError(`已处理 ${result.items.length - failed.length} 篇，失败 ${failed.length} 篇：${failed[0].error || "未知错误"}`);
+      await load();
+      setDiscoveryReview((previous) => previous ? {
+        ...previous,
+        candidates: previous.candidates.map((candidate) => {
+          const item = result.items.find((processed) => processed.arxiv_id === candidate.arxiv_id);
+          return item?.paper_id ? { ...candidate, existing_paper_id: item.paper_id } : candidate;
+        })
+      } : previous);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProcessingDiscovery(false);
+    }
+  }
+
+  async function downloadDiscoveryReview() {
+    try {
+      const markdown = await api.discoveryReviewMarkdown();
+      downloadText(`论文推荐-${discoveryReview?.target_date || new Date().toISOString().slice(0, 10)}.md`, markdown);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -667,7 +727,12 @@ function LibraryPage() {
                   <strong>论文发现</strong>
                   <span className="muted"> {discovery.length} 篇候选，来自 arXiv / Hugging Face</span>
                 </div>
-                <button type="button" className="quietBtn" onClick={() => setDiscoveryOpen(false)}>收起</button>
+                <div className="discoveryActions">
+                  <button type="button" className="quietBtn" onClick={reviewDiscovered} disabled={reviewingDiscovery || !discovery.length}>
+                    {reviewingDiscovery ? "生成点评中…" : "生成推荐点评"}
+                  </button>
+                  <button type="button" className="quietBtn" onClick={() => setDiscoveryOpen(false)}>收起</button>
+                </div>
               </div>
               {discovery.length === 0 ? (
                 <div className="empty">没有达到当前关键词阈值的候选。</div>
@@ -694,6 +759,47 @@ function LibraryPage() {
                       </div>
                     </article>
                   ))}
+                </div>
+              )}
+              {discoveryReview && (
+                <div className="discoveryReview">
+                  <div className="discoveryReviewHeader">
+                    <div>
+                      <strong>推荐分流</strong>
+                      <span className="muted"> 必读 {discoveryReview.counts.must_read || 0} · 值得看 {discoveryReview.counts.watch || 0} · 可跳过 {discoveryReview.counts.skip || 0}</span>
+                    </div>
+                    <div className="discoveryActions">
+                      <button type="button" className="quietBtn" onClick={downloadDiscoveryReview}>下载推荐 Markdown</button>
+                      <button
+                        type="button"
+                        className="primaryBtn"
+                        onClick={processMustRead}
+                        disabled={processingDiscovery || !(discoveryReview.candidates.some((candidate) => candidate.recommendation === "must_read" && !candidate.existing_paper_id))}
+                      >
+                        {processingDiscovery ? "导入并解析中…" : "处理新必读"}
+                      </button>
+                    </div>
+                  </div>
+                  {(["must_read", "watch", "skip"] as const).map((bucket) => {
+                    const entries = discoveryReview.candidates.filter((candidate) => candidate.recommendation === bucket);
+                    if (!entries.length) return null;
+                    const label = bucket === "must_read" ? "🔥 必读" : bucket === "watch" ? "👀 值得看" : "💤 可跳过";
+                    return (
+                      <div className="discoveryBucket" key={bucket}>
+                        <h4>{label}</h4>
+                        {entries.map((candidate) => (
+                          <div className="discoveryReviewItem" key={candidate.arxiv_id}>
+                            <div>
+                              <a href={candidate.url} target="_blank" rel="noreferrer">{candidate.title}</a>
+                              <span className="muted"> · {candidate.rationale}</span>
+                            </div>
+                            {candidate.existing_paper_id ? <Link className="miniTag" to={`/papers/${candidate.existing_paper_id}`}>已在论文库</Link> : null}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                  {discoveryReview.markdown_path && <div className="muted discoveryReviewPath">推荐 Markdown 已保存：{discoveryReview.markdown_path}</div>}
                 </div>
               )}
             </section>
@@ -1263,12 +1369,7 @@ function PaperPage() {
   }
 
   function triggerDownload(filename: string, content: string) {
-    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadText(filename, content);
   }
 
   function patchPaper(updated: Paper) {

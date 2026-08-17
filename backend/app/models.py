@@ -201,6 +201,38 @@ class DiscoveryCandidate(BaseModel):
     method_summary: str = ""
     is_re_recommend: bool = False
     last_recommend_date: str | None = None
+    recommendation: Literal["must_read", "watch", "skip"] | None = None
+    rationale: str = ""
+    existing_paper_id: str | None = None
+
+
+class DiscoveryReviewRequest(BaseModel):
+    min_score: int | None = Field(default=None, ge=0)
+
+
+class DiscoveryReviewResponse(BaseModel):
+    candidates: list[DiscoveryCandidate] = Field(default_factory=list)
+    generated_at: str
+    target_date: str
+    markdown_path: str | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class DiscoveryProcessRequest(BaseModel):
+    arxiv_ids: list[str] = Field(min_length=1, max_length=30)
+    analyze: bool = True
+
+
+class DiscoveryProcessItem(BaseModel):
+    arxiv_id: str
+    paper_id: str | None = None
+    status: Literal["imported", "analysis_queued", "failed"]
+    job_id: str | None = None
+    error: str | None = None
+
+
+class DiscoveryProcessResponse(BaseModel):
+    items: list[DiscoveryProcessItem] = Field(default_factory=list)
 
 
 class DiscoveryResponse(BaseModel):

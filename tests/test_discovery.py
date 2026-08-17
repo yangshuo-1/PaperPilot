@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from backend.app.discovery import DiscoveryConfig, discover, enrich_html, score_paper
+from backend.app.discovery import DiscoveryConfig, discover, enrich_html, review_candidate, review_markdown, score_paper
 
 
 ARXIV_XML = """
@@ -58,7 +58,26 @@ class DiscoveryTests(unittest.TestCase):
                 fetcher=fetcher,
                 history_path=history_path,
             )
-            self.assertEqual(result.candidates, [])
+            self.assertEqual(len(result.candidates), 1)
+            self.assertTrue(result.candidates[0]["is_re_recommend"])
+
+    def test_review_assigns_bucket_and_writes_useful_markdown(self):
+        candidate = review_candidate({
+            "arxiv_id": "2401.12345",
+            "title": "Robot diffusion policy",
+            "authors": ["Alice Smith"],
+            "abstract": "A manipulation policy.",
+            "url": "https://arxiv.org/abs/2401.12345",
+            "pdf_url": "https://arxiv.org/pdf/2401.12345",
+            "score": 6,
+            "source": "arxiv",
+            "method_names": ["RoboDiffusion"],
+        })
+        self.assertEqual(candidate["recommendation"], "must_read")
+        markdown = review_markdown([candidate], target_date="2024-01-15")
+        self.assertIn("## 分流表", markdown)
+        self.assertIn("🔥 必读", markdown)
+        self.assertIn("RoboDiffusion", markdown)
 
 
 if __name__ == "__main__":

@@ -113,6 +113,79 @@ class DiscoveryResult:
     config: dict[str, Any]
 
 
+def review_candidate(candidate: dict[str, Any], *, existing_paper_id: str | None = None, min_score: int = 2) -> dict[str, Any]:
+    """Turn a scored/enriched candidate into a deterministic review decision.
+
+    The original skill asks an LLM to write a sharp review. The vault keeps the
+    decision reproducible and evidence-based, while leaving the full Codex
+    analysis step available for papers that make the must-read bucket.
+    """
+    score = int(candidate.get("score") or 0)
+    abstract = str(candidate.get("abstract") or "")
+    method_names = [str(item) for item in candidate.get("method_names") or [] if str(item).strip()]
+    if score >= max(min_score + 3, 5):
+        recommendation = "must_read"
+        rationale = f"相关性评分 {score}，命中重点方向；建议进入全文解析。"
+    elif score >= min_score + 1:
+        recommendation = "watch"
+        rationale = f"相关性评分 {score}，方向相关但证据有限；建议先看摘要和实验章节。"
+    else:
+        recommendation = "skip"
+        rationale = f"相关性评分 {score}，低于重点推荐阈值。"
+    if not abstract:
+        rationale += " 摘要未获取，结论需要人工核验。"
+    if candidate.get("has_real_world"):
+        rationale += " 检测到真实环境/硬件实验线索。"
+    if existing_paper_id:
+        rationale += " 论文库中已有同一 arXiv 条目。"
+    result = dict(candidate)
+    result["recommendation"] = recommendation
+    result["rationale"] = rationale
+    result["existing_paper_id"] = existing_paper_id
+    if method_names:
+        result["method_summary"] = result.get("method_summary") or f"富化识别方法：{', '.join(method_names[:5])}。"
+    return result
+
+
+def review_markdown(candidates: list[dict[str, Any]], *, target_date: str) -> str:
+    labels = {"must_read": "🔥 必读", "watch": "👀 值得看", "skip": "💤 可跳过"}
+    lines = [
+        "---",
+        f"date: {target_date}",
+        "tags: [paper-discovery, auto-generated]",
+        "---",
+        "",
+        "# 论文推荐",
+        "",
+        "## 分流表",
+        "",
+        "| 等级 | 论文 | 评分 | 理由 |",
+        "|---|---|---:|---|",
+    ]
+    for candidate in candidates:
+        recommendation = str(candidate.get("recommendation") or "skip")
+        title = str(candidate.get("title") or candidate.get("arxiv_id") or "Untitled").replace("|", "\\|")
+        rationale = str(candidate.get("rationale") or "").replace("|", "\\|")
+        lines.append(f"| {labels.get(recommendation, recommendation)} | [{title}]({candidate.get('url', '')}) | {int(candidate.get('score') or 0)} | {rationale} |")
+    for recommendation, heading in labels.items():
+        selected = [candidate for candidate in candidates if candidate.get("recommendation") == recommendation]
+        if not selected:
+            continue
+        lines.extend(["", f"## {heading}", ""])
+        for index, candidate in enumerate(selected, 1):
+            lines.extend([
+                f"### {index}. {candidate.get('title') or candidate.get('arxiv_id')}",
+                f"- **作者**: {', '.join(candidate.get('authors') or []) or '未知'}",
+                f"- **来源**: {candidate.get('source', 'unknown')}" + (f" · HF upvotes: {candidate.get('hf_upvotes', 0)}" if candidate.get("source") != "arxiv" else ""),
+                f"- **链接**: [arXiv]({candidate.get('url', '')}) | [PDF]({candidate.get('pdf_url', '')})",
+                f"- **点评**: {candidate.get('rationale') or '需要人工核验。'}",
+                f"- **方法线索**: {', '.join(candidate.get('method_names') or []) or '摘要/HTML 未提取到方法名。'}",
+                "",
+            ])
+    lines.extend(["## 说明", "", "该推荐由来源、关键词评分和 arXiv HTML 富化字段生成；详细结论请以全文解析为准。", ""])
+    return "\n".join(lines)
+
+
 def _clean_space(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "")).strip()
 
@@ -161,7 +234,7 @@ def _http_get(url: str, timeout: int = 30) -> str:
 def _safe_fetch(fetcher: Callable[[str, int], str], url: str, timeout: int, errors: list[str]) -> str:
     try:
         return fetcher(url, timeout)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except Exception as exc:
         errors.append(f"{url}: {exc}")
         return ""
 
@@ -411,18 +484,28 @@ def discover(
         except (OSError, json.JSONDecodeError, TypeError):
             history = {}
     candidates = []
+    previously_seen = []
     for paper in papers.values():
         if paper["score"] < config.min_score:
             continue
         if days == 1 and paper["arxiv_id"] in history:
             if target_date.weekday() < 5:
+                previously_seen.append(paper)
                 continue
             if paper.get("source") != "hf-trending" or int(paper.get("hf_upvotes") or 0) < 5:
+                previously_seen.append(paper)
                 continue
             paper["is_re_recommend"] = True
             paper["last_recommend_date"] = history[paper["arxiv_id"]]
         candidates.append(paper)
     candidates.sort(key=lambda item: (-int(item.get("score") or 0), item.get("title") or ""))
+    previously_seen.sort(key=lambda item: (-int(item.get("score") or 0), item.get("title") or ""))
+    if days == 1 and len(candidates) < min(20, config.top_n):
+        needed = min(20, config.top_n) - len(candidates)
+        for paper in previously_seen[:needed]:
+            paper["is_re_recommend"] = True
+            paper["last_recommend_date"] = history.get(paper["arxiv_id"], "unknown")
+            candidates.append(paper)
     candidates = candidates[: config.top_n * days]
     if enrich and candidates:
         with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:

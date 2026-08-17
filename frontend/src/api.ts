@@ -76,6 +76,9 @@ export type DiscoveryCandidate = {
   method_summary: string;
   is_re_recommend: boolean;
   last_recommend_date?: string | null;
+  recommendation?: "must_read" | "watch" | "skip" | null;
+  rationale?: string;
+  existing_paper_id?: string | null;
 };
 
 export type DiscoveryResponse = {
@@ -85,6 +88,24 @@ export type DiscoveryResponse = {
   days: number;
   errors: string[];
   config: Record<string, unknown>;
+};
+
+export type DiscoveryReviewResponse = {
+  candidates: DiscoveryCandidate[];
+  generated_at: string;
+  target_date: string;
+  markdown_path?: string | null;
+  counts: Record<string, number>;
+};
+
+export type DiscoveryProcessResponse = {
+  items: Array<{
+    arxiv_id: string;
+    paper_id?: string | null;
+    status: "imported" | "analysis_queued" | "failed";
+    job_id?: string | null;
+    error?: string | null;
+  }>;
 };
 
 export type PaperAnalysis = {
@@ -343,6 +364,18 @@ export const api = {
       body: JSON.stringify({ days, enrich })
     }),
   latestDiscovery: () => request<DiscoveryResponse>("/api/papers/discovery"),
+  reviewDiscovery: (minScore?: number) =>
+    request<DiscoveryReviewResponse>("/api/papers/discovery/review", {
+      method: "POST",
+      body: JSON.stringify({ min_score: minScore ?? null })
+    }),
+  latestDiscoveryReview: () => request<DiscoveryReviewResponse>("/api/papers/discovery/review"),
+  discoveryReviewMarkdown: () => requestText("/api/papers/discovery/review/markdown"),
+  processDiscovery: (arxivIds: string[], analyze = true) =>
+    request<DiscoveryProcessResponse>("/api/papers/discovery/process", {
+      method: "POST",
+      body: JSON.stringify({ arxiv_ids: arxivIds, analyze })
+    }),
   // metadata
   updateMetadata: (paperId: string, fields: Partial<Record<"starred" | "read_status" | "folder_id" | "reading_progress" | "current_page" | "total_pages" | "document_version" | "last_read_at", boolean | string | number | null>>) =>
     request<Paper[]>(`/api/papers/${paperId}/metadata`, {

@@ -378,6 +378,40 @@ class PaperStore:
         }
         snapshot_path = self.settings.references_dir / "paper_discovery.json"
         self._write_text_atomic(snapshot_path, json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n")
+        return snapshot
+
+    def review_discovery(self, *, min_score: int | None = None) -> dict[str, Any]:
+        snapshot_path = self.settings.references_dir / "paper_discovery.json"
+        if not snapshot_path.exists():
+            raise ValueError("No discovery snapshot exists. Run paper discovery first.")
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid discovery snapshot: {exc}") from exc
+        threshold = min_score if min_score is not None else int((snapshot.get("config") or {}).get("min_score") or 2)
+        existing_by_arxiv = {paper.arxiv_id: paper.id for paper in self.list_papers() if paper.arxiv_id}
+        candidates = [
+            _discovery.review_candidate(item, existing_paper_id=existing_by_arxiv.get(item.get("arxiv_id")), min_score=threshold)
+            for item in snapshot.get("candidates", [])
+            if isinstance(item, dict)
+        ]
+        generated_at = now_iso()
+        review = {
+            "candidates": candidates,
+            "generated_at": generated_at,
+            "target_date": snapshot.get("target_date") or generated_at[:10],
+            "counts": {
+                "must_read": sum(item.get("recommendation") == "must_read" for item in candidates),
+                "watch": sum(item.get("recommendation") == "watch" for item in candidates),
+                "skip": sum(item.get("recommendation") == "skip" for item in candidates),
+            },
+        }
+        markdown_path = self.settings.references_dir / "paper_discovery_review.md"
+        self._write_text_atomic(markdown_path, _discovery.review_markdown(candidates, target_date=review["target_date"]))
+        review["markdown_path"] = str(markdown_path)
+        review_path = self.settings.references_dir / "paper_discovery_review.json"
+        self._write_text_atomic(review_path, json.dumps(review, ensure_ascii=False, indent=2) + "\n")
+        history_path = self.settings.references_dir / "paper_discovery_history.json"
         history: list[dict[str, str]] = []
         if history_path.exists():
             try:
@@ -386,16 +420,16 @@ class PaperStore:
                     history = [item for item in loaded if isinstance(item, dict)]
             except (OSError, json.JSONDecodeError):
                 history = []
-        seen = {(str(item.get("arxiv_id")), str(item.get("date"))) for item in history}
-        for paper in result.candidates:
-            marker = (str(paper.get("arxiv_id")), result.target_date)
-            if marker not in seen:
-                history.append({"arxiv_id": str(paper.get("arxiv_id")), "title": str(paper.get("title") or ""), "date": result.target_date})
-                seen.add(marker)
+        seen = {str(item.get("arxiv_id")) for item in history}
+        for paper in candidates:
+            arxiv_id = str(paper.get("arxiv_id") or "")
+            if arxiv_id and arxiv_id not in seen:
+                history.append({"arxiv_id": arxiv_id, "title": str(paper.get("title") or ""), "date": review["target_date"]})
+                seen.add(arxiv_id)
         cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
         history = [item for item in history if str(item.get("date") or "") >= cutoff]
         self._write_text_atomic(history_path, json.dumps(history, ensure_ascii=False, indent=2) + "\n")
-        return snapshot
+        return review
 
     def refresh(self) -> list[Paper]:
         self._ensure_seed_data()

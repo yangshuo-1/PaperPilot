@@ -27,6 +27,11 @@ from .models import (
     ImportRequest,
     DiscoveryRequest,
     DiscoveryResponse,
+    DiscoveryReviewRequest,
+    DiscoveryReviewResponse,
+    DiscoveryProcessRequest,
+    DiscoveryProcessResponse,
+    DiscoveryProcessItem,
     LatexSourceResponse,
     MetadataUpdateRequest,
     Paper,
@@ -273,6 +278,39 @@ def latest_discovery(settings: Settings = Depends(get_settings)) -> DiscoveryRes
         raise HTTPException(status_code=500, detail=f"Invalid discovery snapshot: {exc}") from exc
 
 
+@app.post("/api/papers/discovery/review", response_model=DiscoveryReviewResponse)
+def review_discovery(
+    request: DiscoveryReviewRequest,
+    store: PaperStore = Depends(get_store),
+) -> DiscoveryReviewResponse:
+    try:
+        return DiscoveryReviewResponse(**store.review_discovery(min_score=request.min_score))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/papers/discovery/review", response_model=DiscoveryReviewResponse)
+def latest_discovery_review(settings: Settings = Depends(get_settings)) -> DiscoveryReviewResponse:
+    path = settings.references_dir / "paper_discovery_review.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No discovery review exists")
+    try:
+        return DiscoveryReviewResponse(**json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"Invalid discovery review: {exc}") from exc
+
+
+@app.get("/api/papers/discovery/review/markdown")
+def discovery_review_markdown(settings: Settings = Depends(get_settings)) -> PlainTextResponse:
+    path = settings.references_dir / "paper_discovery_review.md"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No discovery review exists")
+    try:
+        return PlainTextResponse(path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read discovery review: {exc}") from exc
+
+
 @app.get("/api/papers/{paper_id}", response_model=Paper)
 def get_paper(paper_id: str, store: PaperStore = Depends(get_store)) -> Paper:
     try:
@@ -402,6 +440,30 @@ def discover_papers(
         return DiscoveryResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/papers/discovery/process", response_model=DiscoveryProcessResponse)
+def process_discovery(
+    request: DiscoveryProcessRequest,
+    store: PaperStore = Depends(get_store),
+    runner: CodexJobRunner = Depends(get_codex_runner),
+) -> DiscoveryProcessResponse:
+    items: list[DiscoveryProcessItem] = []
+    for arxiv_id in dict.fromkeys(request.arxiv_ids):
+        try:
+            paper = store.import_arxiv(arxiv_id)
+            if not request.analyze:
+                items.append(DiscoveryProcessItem(arxiv_id=arxiv_id, paper_id=paper.id, status="imported"))
+                continue
+            job = runner.start_analysis(
+                paper.id,
+                extra_instructions="这是从论文发现推荐中选出的重点论文。请按全文解析规范完成完整分析，并保留 PDF 覆盖率证据。",
+                overwrite=False,
+            )
+            items.append(DiscoveryProcessItem(arxiv_id=arxiv_id, paper_id=paper.id, status="analysis_queued", job_id=job.job_id))
+        except (ValueError, KeyError) as exc:
+            items.append(DiscoveryProcessItem(arxiv_id=arxiv_id, status="failed", error=str(exc)))
+    return DiscoveryProcessResponse(items=items)
 
 
 @app.delete("/api/papers/{paper_id}", status_code=204)
