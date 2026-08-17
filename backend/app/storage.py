@@ -20,6 +20,7 @@ from .config import Settings
 from . import latex as _latex
 from . import llm as _llm
 from . import reader as _reader
+from . import discovery as _discovery
 from .models import (
     Critique,
     Document,
@@ -333,6 +334,68 @@ class PaperStore:
         self._ensure_default_tags(paper_id, metadata)
         self._write_imported_analysis(paper_id, record, metadata, extracted_text)
         return self.get_paper(paper_id)
+
+    def discover_papers(
+        self,
+        *,
+        days: int = 1,
+        enrich: bool = True,
+        keywords: list[str] | None = None,
+        negative_keywords: list[str] | None = None,
+        domain_boost_keywords: list[str] | None = None,
+        arxiv_categories: list[str] | None = None,
+        min_score: int | None = None,
+        top_n: int | None = None,
+    ) -> dict[str, Any]:
+        """Discover and enrich new papers without importing them yet.
+
+        The discovery snapshot is deliberately separate from ``paper_index``:
+        users can review scores and metadata before downloading any PDFs.
+        """
+        base = _discovery.DiscoveryConfig()
+        config = _discovery.DiscoveryConfig(
+            keywords=keywords if keywords is not None else base.keywords,
+            negative_keywords=negative_keywords if negative_keywords is not None else base.negative_keywords,
+            domain_boost_keywords=domain_boost_keywords if domain_boost_keywords is not None else base.domain_boost_keywords,
+            arxiv_categories=arxiv_categories if arxiv_categories is not None else base.arxiv_categories,
+            min_score=min_score if min_score is not None else base.min_score,
+            top_n=top_n if top_n is not None else base.top_n,
+        )
+        history_path = self.settings.references_dir / "paper_discovery_history.json"
+        result = _discovery.discover(
+            days=days,
+            config=config,
+            enrich=enrich,
+            history_path=history_path,
+        )
+        snapshot = {
+            "fetched_at": result.fetched_at,
+            "target_date": result.target_date,
+            "days": result.days,
+            "candidates": result.candidates,
+            "errors": result.errors,
+            "config": result.config,
+        }
+        snapshot_path = self.settings.references_dir / "paper_discovery.json"
+        self._write_text_atomic(snapshot_path, json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n")
+        history: list[dict[str, str]] = []
+        if history_path.exists():
+            try:
+                loaded = json.loads(history_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    history = [item for item in loaded if isinstance(item, dict)]
+            except (OSError, json.JSONDecodeError):
+                history = []
+        seen = {(str(item.get("arxiv_id")), str(item.get("date"))) for item in history}
+        for paper in result.candidates:
+            marker = (str(paper.get("arxiv_id")), result.target_date)
+            if marker not in seen:
+                history.append({"arxiv_id": str(paper.get("arxiv_id")), "title": str(paper.get("title") or ""), "date": result.target_date})
+                seen.add(marker)
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+        history = [item for item in history if str(item.get("date") or "") >= cutoff]
+        self._write_text_atomic(history_path, json.dumps(history, ensure_ascii=False, indent=2) + "\n")
+        return snapshot
 
     def refresh(self) -> list[Paper]:
         self._ensure_seed_data()

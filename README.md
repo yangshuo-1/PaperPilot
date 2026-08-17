@@ -5,6 +5,7 @@
 ## 功能
 
 - 论文库：搜索、标签过滤、星标、阅读状态、文件夹、表格/卡片视图和批量操作。
+- 论文发现：抓取 Hugging Face Daily/Trending 与 arXiv，按关键词打分、去重并富化元数据，确认后再导入。
 - 论文详情：PDF 内嵌预览、分析文档阅读、论文速览、LaTeX 正文预览。
 - 分析：通过本机 Codex CLI 异步生成全文解析文档。
 - 翻译：通过 OpenAI 兼容接口异步逐段翻译 LaTeX 正文，并按段落 hash 缓存。
@@ -51,5 +52,6 @@ cd frontend && npm run build
 - `backend/app/codex_jobs.py`：Codex 全文分析任务。
 - `backend/app/translation_jobs.py`：翻译任务和轮询状态。
 - `backend/app/latex.py`：arXiv LaTeX 下载与轻量解析。
+- `backend/app/discovery.py`：多源论文抓取、关键词筛选、历史去重与 arXiv HTML 富化（不含 Zotero）。
 - `frontend/src/main.tsx`：论文库和详情工作台。
 - `docs/`：设计文档、重构计划和数据资产说明。

@@ -445,6 +445,81 @@ p {
   width: 220px;
 }
 
+.importBar select {
+  min-width: 92px;
+}
+
+.discoveryPanel {
+  margin: 0 0 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.discoveryHeader,
+.discoveryTitle,
+.discoveryActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.discoveryHeader {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.discoveryList {
+  display: grid;
+  gap: 8px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.discoveryItem {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.discoveryScore {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.discoveryTitle a {
+  font-weight: 650;
+}
+
+.discoveryMeta {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.discoveryBody p {
+  margin: 7px 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.discoveryActions {
+  margin-top: 7px;
+}
+
+.realWorldTag {
+  color: #34744b;
+}
+
 .refreshBtn {
   background: transparent;
   border-color: var(--border-strong);

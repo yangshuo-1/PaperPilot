@@ -1,3 +1,5 @@
+import json
+
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -23,6 +25,8 @@ from .models import (
     FolderUpdateRequest,
     HealthResponse,
     ImportRequest,
+    DiscoveryRequest,
+    DiscoveryResponse,
     LatexSourceResponse,
     MetadataUpdateRequest,
     Paper,
@@ -258,6 +262,17 @@ def delete_folder(folder_id: str, store: PaperStore = Depends(get_store)) -> Non
         raise HTTPException(status_code=404, detail="Folder not found") from exc
 
 
+@app.get("/api/papers/discovery", response_model=DiscoveryResponse)
+def latest_discovery(settings: Settings = Depends(get_settings)) -> DiscoveryResponse:
+    path = settings.references_dir / "paper_discovery.json"
+    if not path.exists():
+        return DiscoveryResponse(candidates=[], fetched_at="", target_date="", days=0, errors=[], config={})
+    try:
+        return DiscoveryResponse(**json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"Invalid discovery snapshot: {exc}") from exc
+
+
 @app.get("/api/papers/{paper_id}", response_model=Paper)
 def get_paper(paper_id: str, store: PaperStore = Depends(get_store)) -> Paper:
     try:
@@ -364,6 +379,27 @@ def get_document(paper_id: str, document_name: str, store: PaperStore = Depends(
 def import_paper(request: ImportRequest, store: PaperStore = Depends(get_store)) -> Paper:
     try:
         return store.import_arxiv(request.arxiv_id_or_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/papers/discovery", response_model=DiscoveryResponse)
+def discover_papers(
+    request: DiscoveryRequest,
+    store: PaperStore = Depends(get_store),
+) -> DiscoveryResponse:
+    try:
+        result = store.discover_papers(
+            days=request.days,
+            enrich=request.enrich,
+            keywords=request.keywords,
+            negative_keywords=request.negative_keywords,
+            domain_boost_keywords=request.domain_boost_keywords,
+            arxiv_categories=request.arxiv_categories,
+            min_score=request.min_score,
+            top_n=request.top_n,
+        )
+        return DiscoveryResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

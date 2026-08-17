@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Link, Route, Routes, useParams } from "react-router-dom";
 import type {
   CodexAnalysisJob,
+  DiscoveryCandidate,
   DocumentSummary,
   Folder,
   LatexSourceResponse,
@@ -395,6 +396,10 @@ function LibraryPage() {
   const [newFolder, setNewFolder] = useState("");
   const [folderEditing, setFolderEditing] = useState<string | null>(null);
   const [quickviewId, setQuickviewId] = useState<string | null>(null);
+  const [discovery, setDiscovery] = useState<DiscoveryCandidate[]>([]);
+  const [discoveryDays, setDiscoveryDays] = useState(1);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveryOpen, setDiscoveryOpen] = useState(false);
 
   async function load() {
     setError(null);
@@ -427,6 +432,31 @@ function LibraryPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function discoverPapers() {
+    setError(null);
+    setDiscovering(true);
+    try {
+      const response = await api.discoverPapers(discoveryDays, true);
+      setDiscovery(response.candidates);
+      setDiscoveryOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
+  async function importDiscovered(candidate: DiscoveryCandidate) {
+    setError(null);
+    try {
+      await api.importPaper(candidate.arxiv_id);
+      setDiscovery((prev) => prev.filter((item) => item.arxiv_id !== candidate.arxiv_id));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -618,7 +648,56 @@ function LibraryPage() {
                 {importing ? "导入中…" : "导入"}
               </button>
             </div>
+            <div className="importBar discoveryBar">
+              <select value={discoveryDays} onChange={(e) => setDiscoveryDays(Number(e.target.value))}>
+                <option value={1}>今日</option>
+                <option value={3}>近 3 天</option>
+                <option value={7}>近 7 天</option>
+              </select>
+              <button type="button" className="quietBtn" onClick={discoverPapers} disabled={discovering}>
+                {discovering ? "抓取中…" : "发现论文"}
+              </button>
+            </div>
           </div>
+
+          {discoveryOpen && (
+            <section className="discoveryPanel">
+              <div className="discoveryHeader">
+                <div>
+                  <strong>论文发现</strong>
+                  <span className="muted"> {discovery.length} 篇候选，来自 arXiv / Hugging Face</span>
+                </div>
+                <button type="button" className="quietBtn" onClick={() => setDiscoveryOpen(false)}>收起</button>
+              </div>
+              {discovery.length === 0 ? (
+                <div className="empty">没有达到当前关键词阈值的候选。</div>
+              ) : (
+                <div className="discoveryList">
+                  {discovery.map((candidate) => (
+                    <article className="discoveryItem" key={candidate.arxiv_id}>
+                      <div className="discoveryScore">{candidate.score}</div>
+                      <div className="discoveryBody">
+                        <div className="discoveryTitle">
+                          <a href={candidate.url} target="_blank" rel="noreferrer">{candidate.title}</a>
+                          <span className="miniTag">{candidate.source}</span>
+                          {candidate.has_real_world && <span className="miniTag realWorldTag">真实实验</span>}
+                        </div>
+                        <div className="muted discoveryMeta">
+                          {candidate.authors.slice(0, 4).join(", ") || "作者待补全"}
+                          {candidate.affiliations.length > 0 && ` · ${candidate.affiliations.slice(0, 2).join(", ")}`}
+                        </div>
+                        {candidate.method_summary && <p>{candidate.method_summary}</p>}
+                        <div className="discoveryActions">
+                          <button type="button" className="primaryBtn" onClick={() => importDiscovered(candidate)}>导入论文</button>
+                          <a className="quietBtn" href={candidate.pdf_url} target="_blank" rel="noreferrer">打开 PDF</a>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           <div className="tagPanel">
             <span className="tagPanelLabel">标签过滤</span>

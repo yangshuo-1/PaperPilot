@@ -55,6 +55,38 @@ export type PaperListResponse = {
   tags: Record<string, number>;
 };
 
+export type DiscoveryCandidate = {
+  arxiv_id: string;
+  title: string;
+  authors: string[];
+  affiliations: string[];
+  abstract: string;
+  url: string;
+  pdf_url: string;
+  date: string;
+  category: string;
+  source: string;
+  score: number;
+  hf_upvotes: number;
+  figure_url: string;
+  section_headers: string[];
+  captions: string[];
+  has_real_world: boolean;
+  method_names: string[];
+  method_summary: string;
+  is_re_recommend: boolean;
+  last_recommend_date?: string | null;
+};
+
+export type DiscoveryResponse = {
+  candidates: DiscoveryCandidate[];
+  fetched_at: string;
+  target_date: string;
+  days: number;
+  errors: string[];
+  config: Record<string, unknown>;
+};
+
 export type PaperAnalysis = {
   paper_id: string;
   identity: {
@@ -305,6 +337,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ arxiv_id_or_url: arxivIdOrUrl })
     }),
+  discoverPapers: (days = 1, enrich = true) =>
+    request<DiscoveryResponse>("/api/papers/discovery", {
+      method: "POST",
+      body: JSON.stringify({ days, enrich })
+    }),
+  latestDiscovery: () => request<DiscoveryResponse>("/api/papers/discovery"),
   // metadata
   updateMetadata: (paperId: string, fields: Partial<Record<"starred" | "read_status" | "folder_id" | "reading_progress" | "current_page" | "total_pages" | "document_version" | "last_read_at", boolean | string | number | null>>) =>
     request<Paper[]>(`/api/papers/${paperId}/metadata`, {

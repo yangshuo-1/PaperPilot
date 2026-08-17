@@ -31,6 +31,8 @@ papers/**/translation_zh.json
 # ---- Runtime job artifacts ----
 references/codex_jobs/
 references/translation_jobs/
+references/paper_discovery.json
+references/paper_discovery_history.json
 
 # ---- OS / editor ----
 .DS_Store

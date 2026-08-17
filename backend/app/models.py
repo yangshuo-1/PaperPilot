@@ -169,6 +169,49 @@ class ImportRequest(BaseModel):
     arxiv_id_or_url: str
 
 
+class DiscoveryRequest(BaseModel):
+    days: int = Field(default=1, ge=1, le=30)
+    enrich: bool = True
+    keywords: list[str] | None = None
+    negative_keywords: list[str] | None = None
+    domain_boost_keywords: list[str] | None = None
+    arxiv_categories: list[str] | None = None
+    min_score: int | None = Field(default=None, ge=0)
+    top_n: int | None = Field(default=None, ge=1, le=100)
+
+
+class DiscoveryCandidate(BaseModel):
+    arxiv_id: str
+    title: str
+    authors: list[str] = Field(default_factory=list)
+    affiliations: list[str] = Field(default_factory=list)
+    abstract: str = ""
+    url: str
+    pdf_url: str
+    date: str = ""
+    category: str = ""
+    source: str
+    score: int = 0
+    hf_upvotes: int = 0
+    figure_url: str = ""
+    section_headers: list[str] = Field(default_factory=list)
+    captions: list[str] = Field(default_factory=list)
+    has_real_world: bool = False
+    method_names: list[str] = Field(default_factory=list)
+    method_summary: str = ""
+    is_re_recommend: bool = False
+    last_recommend_date: str | None = None
+
+
+class DiscoveryResponse(BaseModel):
+    candidates: list[DiscoveryCandidate] = Field(default_factory=list)
+    fetched_at: str
+    target_date: str
+    days: int
+    errors: list[str] = Field(default_factory=list)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 class CodexAnalysisRequest(BaseModel):
     extra_instructions: str = ""
     overwrite: bool = True
