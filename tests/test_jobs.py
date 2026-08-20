@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,6 +94,26 @@ class JobReliabilityTests(unittest.TestCase):
                 runner._run_codex(job, "codex", "prompt")
             popen.assert_not_called()
             self.assertEqual(runner.get_job(job.job_id).status, "failed")
+
+    def test_timeout_retries_three_times_and_finishes_failed(self):
+        class Process:
+            returncode = -9
+            def communicate(self, *_args, **_kwargs): raise subprocess.TimeoutExpired("codex", 1)
+            def poll(self): return None
+            def kill(self): pass
+            def wait(self, **_kwargs): pass
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            settings.references_dir.mkdir(); (settings.references_dir / "codex_jobs").mkdir()
+            job = CodexAnalysisJob(job_id="e" * 32, paper_id="paper-1", status="queued", target_document=str(root / "out.md"), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"), timeout_seconds=1)
+            runner = CodexJobRunner(settings, SimpleNamespace())
+            (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
+            with patch("backend.app.codex_jobs.subprocess.Popen", return_value=Process()):
+                runner._run_codex(job, "codex", "prompt")
+            final = runner.get_job(job.job_id)
+            self.assertEqual(final.status, "failed")
+            self.assertEqual(final.attempts, 3)
+            self.assertIn("timed out", final.error or "")
 
     def test_translation_failure_does_not_publish_partial_cache(self):
         with tempfile.TemporaryDirectory() as temp:
