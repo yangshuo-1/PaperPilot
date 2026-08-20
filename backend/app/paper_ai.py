@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import uuid
 import re
+import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,22 +19,68 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _pdf_context(pdf_path: Path, *, max_chars: int = 90000) -> tuple[str, list[dict[str, Any]]]:
+@dataclass(frozen=True)
+class ContextPolicy:
+    """Bound paper context by passages, rather than silently truncating the PDF."""
+
+    max_chars: int = 90000
+    passage_chars: int = 2400
+    overlap_chars: int = 300
+    top_k: int = 36
+    quote_chars: int = 1200
+
+    @classmethod
+    def from_env(cls) -> "ContextPolicy":
+        def integer(name: str, default: int, minimum: int) -> int:
+            try:
+                return max(minimum, int(os.getenv(name, default)))
+            except (TypeError, ValueError):
+                return default
+        return cls(
+            max_chars=integer("PAPER_AI_CONTEXT_CHARS", 90000, 1000),
+            passage_chars=integer("PAPER_AI_PASSAGE_CHARS", 2400, 400),
+            overlap_chars=integer("PAPER_AI_PASSAGE_OVERLAP", 300, 0),
+            top_k=integer("PAPER_AI_CONTEXT_TOP_K", 36, 1),
+            quote_chars=integer("PAPER_AI_CITATION_QUOTE_CHARS", 1200, 100),
+        )
+
+
+def _pdf_context(pdf_path: Path, *, policy: ContextPolicy | None = None, query: str = "") -> tuple[str, list[dict[str, Any]]]:
+    policy = policy or ContextPolicy.from_env()
     reader = PdfReader(str(pdf_path))
-    pages: list[dict[str, Any]] = []
-    total = 0
+    passages: list[dict[str, Any]] = []
+    terms = {term for term in re.findall(r"[\w-]{3,}", query.casefold())}
     for number, page in enumerate(reader.pages, start=1):
         text = (page.extract_text() or "").strip()
         if not text:
             continue
-        remaining = max_chars - total
-        if remaining <= 0:
+        step = max(1, policy.passage_chars - min(policy.overlap_chars, policy.passage_chars - 1))
+        for start in range(0, len(text), step):
+            passage = text[start:start + policy.passage_chars].strip()
+            if not passage:
+                continue
+            score = sum(passage.casefold().count(term) for term in terms)
+            passages.append({"page": number, "quote": passage[:policy.quote_chars], "text": passage, "score": score, "ordinal": len(passages)})
+            if start + policy.passage_chars >= len(text):
+                break
+    ranked = sorted(passages, key=lambda item: (-item["score"], item["page"], item["ordinal"])) if terms else passages
+    selected: list[dict[str, Any]] = []
+    context_parts: list[str] = []
+    total = 0
+    for passage in ranked[:policy.top_k]:
+        rendered = f"[Page {passage['page']}]\n{passage['text']}"
+        if total + len(rendered) > policy.max_chars:
+            remaining = policy.max_chars - total
+            if remaining <= 20:
+                continue
+            rendered = rendered[:remaining]
+        selected.append({"page": passage["page"], "quote": passage["quote"]})
+        context_parts.append(rendered)
+        total += len(rendered)
+        if total >= policy.max_chars:
             break
-        text = text[:remaining]
-        pages.append({"page": number, "quote": text[:1200]})
-        total += len(text)
-    context = "\n\n".join(f"[Page {p['page']}]\n{p['quote']}" for p in pages)
-    return context, pages
+    context = "\n\n".join(context_parts)
+    return context, selected
 
 
 def _norm(value: str) -> str:
@@ -130,7 +178,7 @@ def status() -> dict[str, Any]:
 
 def ask(pdf_path: Path, paper_id: str, *, mode: str, question: str, selection: dict[str, Any] | None) -> dict[str, Any]:
     version = document_version(pdf_path)
-    context, pages = _pdf_context(pdf_path)
+    context, pages = _pdf_context(pdf_path, query=question if mode == "ask" else "")
     page_texts = _page_texts(pdf_path)
     if mode == "ask" and not page_texts:
         raise ValueError("当前 PDF 没有可用文本，无法可靠回答")
