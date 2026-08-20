@@ -346,7 +346,7 @@ export const api = {
   startCodexAnalysis: (paperId: string, extraInstructions = "") =>
     request<CodexAnalysisJob>(`/api/papers/${paperId}/analysis/codex`, {
       method: "POST",
-      body: JSON.stringify({ extra_instructions: extraInstructions, overwrite: true })
+      body: JSON.stringify({ extra_instructions: extraInstructions, overwrite: false })
     }),
   getCodexAnalysisJob: (paperId: string, jobId: string) =>
     request<CodexAnalysisJob>(`/api/papers/${paperId}/analysis/codex/${jobId}`),

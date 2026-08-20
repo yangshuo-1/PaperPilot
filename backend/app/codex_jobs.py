@@ -14,6 +14,7 @@ from pathlib import Path
 from .config import Settings
 from .models import CodexAnalysisJob, Paper
 from .storage import PaperStore
+from .reader import document_version
 
 
 def now_iso() -> str:
@@ -28,7 +29,7 @@ class CodexJobRunner:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self._processes: dict[str, subprocess.Popen[str]] = {}
 
-    def start_analysis(self, paper_id: str, *, extra_instructions: str = "", overwrite: bool = True) -> CodexAnalysisJob:
+    def start_analysis(self, paper_id: str, *, extra_instructions: str = "", overwrite: bool = False) -> CodexAnalysisJob:
         paper = self.store.get_paper(paper_id)
         if not paper.local_pdf_path:
             raise ValueError("Paper has no local PDF path. Import or register the PDF first.")
@@ -39,7 +40,7 @@ class CodexJobRunner:
         if not codex_bin:
             raise ValueError("codex CLI was not found in PATH.")
 
-        job_key = hashlib.sha256(f"{paper.id}|{pdf_path.stat().st_mtime_ns}|{extra_instructions.strip()}".encode()).hexdigest()
+        job_key = self._job_key(paper.id, pdf_path, extra_instructions)
         existing = [job for path in self.jobs_dir.glob("*.json") if path.suffix == ".json" for job in self._safe_read(path) if job.paper_id == paper.id and job.job_key == job_key]
         active = [job for job in existing if job.status in {"queued", "running"}]
         if active:
@@ -82,6 +83,10 @@ class CodexJobRunner:
         )
         thread.start()
         return self.get_job(job_id)
+
+    def _job_key(self, paper_id: str, pdf_path: Path, extra_instructions: str) -> str:
+        version = document_version(pdf_path)
+        return hashlib.sha256(f"{paper_id}|{version}|{extra_instructions.strip()}".encode()).hexdigest()
 
     def get_job(self, job_id: str) -> CodexAnalysisJob:
         path = self._job_path(job_id)

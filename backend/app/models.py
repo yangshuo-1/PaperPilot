@@ -246,7 +246,7 @@ class DiscoveryResponse(BaseModel):
 
 class CodexAnalysisRequest(BaseModel):
     extra_instructions: str = ""
-    overwrite: bool = True
+    overwrite: bool = False
 
 
 class CodexAnalysisJob(BaseModel):
