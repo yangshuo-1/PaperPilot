@@ -28,6 +28,7 @@ class CodexJobRunner:
         self.jobs_dir = settings.references_dir / "codex_jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self._processes: dict[str, subprocess.Popen[str]] = {}
+        self._recover_incomplete()
 
     def start_analysis(self, paper_id: str, *, extra_instructions: str = "", overwrite: bool = False) -> CodexAnalysisJob:
         paper = self.store.get_paper(paper_id)
@@ -75,14 +76,31 @@ class CodexJobRunner:
         prompt_path.write_text(prompt, encoding="utf-8")
         self._write_job(job)
 
-        thread = threading.Thread(
-            target=self._run_codex,
-            args=(job, codex_bin, prompt),
-            name=f"codex-analysis-{job_id}",
-            daemon=True,
-        )
-        thread.start()
+        self._spawn(job, codex_bin, prompt)
         return self.get_job(job_id)
+
+    def _spawn(self, job: CodexAnalysisJob, codex_bin: str, prompt: str) -> None:
+        thread = threading.Thread(target=self._run_codex, args=(job, codex_bin, prompt), name=f"codex-analysis-{job.job_id}", daemon=True)
+        thread.start()
+
+    def _recover_incomplete(self) -> None:
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            return
+        for path in self.jobs_dir.glob("*.json"):
+            job_items = self._safe_read(path)
+            if not job_items:
+                continue
+            job = job_items[0]
+            checkpoint = Path(job.checkpoint_path) if job.checkpoint_path else None
+            if job.status not in {"queued", "running"} or not checkpoint or not checkpoint.exists() or not job.prompt_path:
+                continue
+            try:
+                prompt = Path(job.prompt_path).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            job.status = "running"; job.cancel_requested = False; job.updated_at = now_iso(); self._write_job(job)
+            self._spawn(job, codex_bin, prompt)
 
     def _job_key(self, paper_id: str, pdf_path: Path, extra_instructions: str) -> str:
         version = document_version(pdf_path)
@@ -280,18 +298,18 @@ class CodexJobRunner:
 """
 
     def _document_quality_error(self, path: Path) -> str | None:
-        """Reject incomplete generated analysis before it replaces a usable document."""
+        """Apply a lightweight proxy gate; full per-figure/table citation audit remains human review."""
         if not path.is_file():
             return "解析文档未生成"
         text = path.read_text(encoding="utf-8", errors="replace")
         required = ("摘要", "方法", "实验", "结论", "局限")
         missing = [heading for heading in required if heading not in text]
         if missing:
-            return "解析质量门禁失败：缺少章节 " + "、".join(missing)
+            return "解析质量代理门禁失败：缺少章节 " + "、".join(missing)
         if not re.search(r"(?:第\s*)?\d+\s*页|page\s*\d+", text, re.IGNORECASE):
-            return "解析质量门禁失败：缺少页码覆盖证据"
+            return "解析质量代理门禁失败：缺少页码覆盖证据"
         if not re.search(r"figure|fig\.?|图|table|表|公式|equation", text, re.IGNORECASE):
-            return "解析质量门禁失败：缺少 Figure/Table/公式检查记录"
+            return "解析质量代理门禁失败：缺少 Figure/Table/公式检查记录"
         return None
 
     def _job_path(self, job_id: str) -> Path:

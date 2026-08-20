@@ -32,6 +32,34 @@ class JobReliabilityTests(unittest.TestCase):
             self.assertEqual(result.job_id, old.job_id)
             self.assertEqual(len(list(runner.jobs_dir.glob("*.json"))), 1)
 
+    def test_runner_recovers_job_with_running_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            (settings.references_dir / "codex_jobs").mkdir(parents=True)
+            job = CodexAnalysisJob(
+                job_id="b" * 32, paper_id="paper-1", status="running", target_document=str(root / "out.md"),
+                log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"),
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+                checkpoint_path=str(root / "references" / ("b" * 32 + ".checkpoint.json")),
+            )
+            (root / "references" / "codex_jobs" / ("b" * 32 + ".json")).write_text(job.model_dump_json(), encoding="utf-8")
+            Path(job.checkpoint_path).write_text('{"status":"running"}\n', encoding="utf-8")
+            Path(job.prompt_path).write_text("resume", encoding="utf-8")
+            with patch("backend.app.codex_jobs.shutil.which", return_value="codex"), patch.object(CodexJobRunner, "_spawn") as spawn:
+                runner = CodexJobRunner(settings, SimpleNamespace())
+            spawn.assert_called_once()
+            self.assertEqual(runner.get_job(job.job_id).status, "running")
+
+    def test_quality_gate_is_explicitly_only_a_proxy(self):
+        runner = CodexJobRunner.__new__(CodexJobRunner)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "analysis.md"
+            path.write_text("摘要\n方法\n实验\n结论\n局限\n第 1 页\nFigure/Table/公式 检查", encoding="utf-8")
+            self.assertIsNone(runner._document_quality_error(path))
+            path.write_text("摘要\n方法\n实验\n结论\n局限", encoding="utf-8")
+            self.assertIn("代理门禁", runner._document_quality_error(path) or "")
+
 
 if __name__ == "__main__":
     unittest.main()
