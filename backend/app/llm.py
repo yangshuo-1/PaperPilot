@@ -8,7 +8,7 @@ import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Minimal OpenAI-compatible chat client for the paper vault.
@@ -270,6 +270,7 @@ def translate_paragraphs(
     *,
     only_untranslated: bool = True,
     max_tokens: int = 1600,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Translate each paragraph to Chinese (source + translation kept).
 
@@ -291,6 +292,8 @@ def translate_paragraphs(
         to_translate.append(idx)
 
     for idx in to_translate:
+        if should_cancel and should_cancel():
+            raise RuntimeError("translation cancelled")
         paragraph = paragraphs[idx]
         key = paragraph_hash(paragraph)
         prompt = (

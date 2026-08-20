@@ -26,6 +26,7 @@ class CodexJobRunner:
         self.store = store
         self.jobs_dir = settings.references_dir / "codex_jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self._processes: dict[str, subprocess.Popen[str]] = {}
 
     def start_analysis(self, paper_id: str, *, extra_instructions: str = "", overwrite: bool = True) -> CodexAnalysisJob:
         paper = self.store.get_paper(paper_id)
@@ -94,6 +95,9 @@ class CodexJobRunner:
             job.cancel_requested = True
             job.error = "Cancellation requested"
             self._write_job(job)
+            process = self._processes.get(job_id)
+            if process and process.poll() is None:
+                process.terminate()
         return job
 
     def latest_job_for_paper(self, paper_id: str) -> CodexAnalysisJob | None:
@@ -111,7 +115,7 @@ class CodexJobRunner:
 
     def _run_codex(self, job: CodexAnalysisJob, codex_bin: str, prompt: str) -> None:
         job.status = "running"
-        job.attempts += 1
+        job.attempts = 0
         job.started_at = now_iso()
         job.updated_at = job.started_at
         self._write_job(job)
@@ -140,47 +144,67 @@ class CodexJobRunner:
         if had_previous:
             shutil.copy2(target, backup)
         try:
-            with open(job.log_path, "w", encoding="utf-8") as log_file:
-                log_file.write("$ " + " ".join(cmd) + "\n\n")
-                log_file.flush()
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(self.settings.repo_root),
-                    stdin=subprocess.PIPE,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=env,
-                )
-                proc.communicate(prompt, timeout=job.timeout_seconds)
-            job.exit_code = proc.returncode
-            quality_error = self._document_quality_error(target) if proc.returncode == 0 else None
-            job.status = "succeeded" if proc.returncode == 0 and quality_error is None else "failed"
-            if proc.returncode != 0:
-                job.error = f"codex exited with status {proc.returncode}"
-            elif quality_error:
-                job.error = quality_error
+            for attempt in range(job.attempts, 3):
+                if self._cancel_requested(job.job_id):
+                    job.status = "failed"; job.error = "Cancellation requested"; break
+                job.attempts = attempt + 1
+                job.status = "running"; job.updated_at = now_iso(); self._write_job(job)
+                self._write_checkpoint(job, "running")
+                try:
+                    with open(job.log_path, "a", encoding="utf-8") as log_file:
+                        log_file.write(f"\n$ attempt {job.attempts}: " + " ".join(cmd) + "\n\n")
+                        proc = subprocess.Popen(cmd, cwd=str(self.settings.repo_root), stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True, env=env)
+                        self._processes[job.job_id] = proc
+                        proc.communicate(prompt, timeout=job.timeout_seconds)
+                    job.exit_code = proc.returncode
+                    if proc.returncode == 0:
+                        quality_error = self._document_quality_error(target)
+                        if not quality_error:
+                            job.status = "succeeded"; job.error = None; break
+                        job.error = quality_error
+                    else:
+                        job.error = f"codex exited with status {proc.returncode}"
+                except subprocess.TimeoutExpired:
+                    proc.kill(); proc.wait(timeout=10); job.error = f"codex timed out after {job.timeout_seconds}s"
+                except Exception as exc:
+                    job.error = str(exc)
+                finally:
+                    self._processes.pop(job.job_id, None)
+                if self._cancel_requested(job.job_id):
+                    job.error = "Cancellation requested"; break
+                job.status = "running" if attempt < 2 else "failed"
+                self._write_checkpoint(job, "retrying" if attempt < 2 else "failed")
+                if attempt < 2:
+                    import time
+                    time.sleep(0.2 * (attempt + 1))
+            if job.status != "succeeded":
+                job.status = "failed"
                 if had_previous:
                     shutil.copy2(backup, target)
                 elif target.exists():
                     target.unlink()
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-                proc.wait(timeout=10)
-            except Exception:
-                pass
-            job.status = "failed"
-            job.error = f"codex timed out after {job.timeout_seconds}s"
         except Exception as exc:
-            job.status = "failed"
-            job.error = str(exc)
+            job.status = "failed"; job.error = str(exc)
         finally:
             if backup.exists():
                 backup.unlink()
             job.finished_at = now_iso()
             job.updated_at = job.finished_at
             self._write_job(job)
+
+    def _cancel_requested(self, job_id: str) -> bool:
+        try:
+            return bool(self.get_job(job_id).cancel_requested)
+        except KeyError:
+            return False
+
+    def _write_checkpoint(self, job: CodexAnalysisJob, status: str) -> None:
+        if not job.checkpoint_path:
+            return
+        path = Path(job.checkpoint_path)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(json.dumps({"job_id": job.job_id, "paper_id": job.paper_id, "status": status, "attempts": job.attempts, "updated_at": now_iso()}) + "\n", encoding="utf-8")
+        tmp.replace(path)
 
     def _build_prompt(self, paper: Paper, target_document: Path, extra_instructions: str) -> str:
         docs = self.store.list_documents(paper.id)

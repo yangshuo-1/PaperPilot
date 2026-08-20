@@ -1115,7 +1115,7 @@ class PaperStore:
             "model": status.get("model"),
         }
 
-    def generate_translation(self, paper_id: str, *, max_units: int = 200) -> dict[str, Any]:
+    def generate_translation(self, paper_id: str, *, max_units: int = 200, should_cancel: Any = None) -> dict[str, Any]:
         self.get_paper(paper_id)
         paper_dir = self._paper_dir(paper_id)
         plain_txt = paper_dir / "latex_plain.txt"
@@ -1125,7 +1125,7 @@ class PaperStore:
         if not plain_txt.exists():
             raise ValueError("No latex plain text available to translate.")
         paragraphs = _llm.split_paragraphs(plain_txt.read_text(encoding="utf-8"), max_units=max_units)
-        _llm.translate_paragraphs(paper_dir, paragraphs, only_untranslated=True)
+        _llm.translate_paragraphs(paper_dir, paragraphs, only_untranslated=True, should_cancel=should_cancel)
         return self.translation(paper_id)
 
     # --- export / citation -------------------------------------------------
