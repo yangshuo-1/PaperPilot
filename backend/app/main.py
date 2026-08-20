@@ -396,6 +396,17 @@ def get_codex_analysis_job(
     return job
 
 
+@app.post("/api/papers/{paper_id}/analysis/codex/{job_id}/cancel", response_model=CodexAnalysisJob)
+def cancel_codex_analysis(paper_id: str, job_id: str, runner: CodexJobRunner = Depends(get_codex_runner)) -> CodexAnalysisJob:
+    try:
+        job = runner.cancel(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Codex analysis job not found") from exc
+    if job.paper_id != paper_id:
+        raise HTTPException(status_code=404, detail="Codex analysis job not found")
+    return job
+
+
 @app.get("/api/papers/{paper_id}/documents", response_model=list[DocumentSummary])
 def list_documents(paper_id: str, store: PaperStore = Depends(get_store)) -> list[DocumentSummary]:
     try:
@@ -854,6 +865,17 @@ def get_translation_job(
 ) -> TranslationJob:
     try:
         job = runner.get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Translation job not found") from exc
+    if job.paper_id != paper_id:
+        raise HTTPException(status_code=404, detail="Translation job not found")
+    return job
+
+
+@app.post("/api/papers/{paper_id}/translation/jobs/{job_id}/cancel", response_model=TranslationJob)
+def cancel_translation_job(paper_id: str, job_id: str, runner: TranslationJobRunner = Depends(get_translation_runner)) -> TranslationJob:
+    try:
+        job = runner.cancel(job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Translation job not found") from exc
     if job.paper_id != paper_id:

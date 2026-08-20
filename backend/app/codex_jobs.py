@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import threading
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +38,15 @@ class CodexJobRunner:
         if not codex_bin:
             raise ValueError("codex CLI was not found in PATH.")
 
+        job_key = hashlib.sha256(f"{paper.id}|{pdf_path.stat().st_mtime_ns}|{extra_instructions.strip()}".encode()).hexdigest()
+        existing = [job for path in self.jobs_dir.glob("*.json") if path.suffix == ".json" for job in self._safe_read(path) if job.paper_id == paper.id and job.job_key == job_key]
+        active = [job for job in existing if job.status in {"queued", "running"}]
+        if active:
+            return sorted(active, key=lambda item: item.created_at)[-1]
+        succeeded = [job for job in existing if job.status == "succeeded"]
+        if succeeded and not overwrite:
+            return sorted(succeeded, key=lambda item: item.created_at)[-1]
+
         job_id = uuid.uuid4().hex
         paper_dir = pdf_path.parent
         target_document = paper_dir / f"{self._safe_doc_stem(paper.short_title or paper.id)}_Codex全文详细解析.md"
@@ -56,6 +66,8 @@ class CodexJobRunner:
             final_message_path=str(final_message_path),
             created_at=now_iso(),
             updated_at=now_iso(),
+            job_key=job_key,
+            checkpoint_path=str(self.jobs_dir / f"{job_id}.checkpoint.json"),
         )
         prompt = self._build_prompt(paper, target_document, extra_instructions)
         prompt_path.write_text(prompt, encoding="utf-8")
@@ -76,6 +88,14 @@ class CodexJobRunner:
             raise KeyError(job_id)
         return CodexAnalysisJob.model_validate_json(path.read_text(encoding="utf-8"))
 
+    def cancel(self, job_id: str) -> CodexAnalysisJob:
+        job = self.get_job(job_id)
+        if job.status in {"queued", "running"}:
+            job.cancel_requested = True
+            job.error = "Cancellation requested"
+            self._write_job(job)
+        return job
+
     def latest_job_for_paper(self, paper_id: str) -> CodexAnalysisJob | None:
         jobs: list[CodexAnalysisJob] = []
         for path in self.jobs_dir.glob("*.json"):
@@ -91,9 +111,12 @@ class CodexJobRunner:
 
     def _run_codex(self, job: CodexAnalysisJob, codex_bin: str, prompt: str) -> None:
         job.status = "running"
+        job.attempts += 1
         job.started_at = now_iso()
         job.updated_at = job.started_at
         self._write_job(job)
+        if job.checkpoint_path:
+            Path(job.checkpoint_path).write_text(json.dumps({"job_id": job.job_id, "paper_id": job.paper_id, "status": "running", "attempts": job.attempts}) + "\n", encoding="utf-8")
 
         cmd = [
             codex_bin,
@@ -111,6 +134,11 @@ class CodexJobRunner:
         ]
         env = os.environ.copy()
         env.setdefault("PYTHONUNBUFFERED", "1")
+        target = Path(job.target_document)
+        backup = target.with_name(f".{target.name}.{job.job_id}.bak")
+        had_previous = target.is_file()
+        if had_previous:
+            shutil.copy2(target, backup)
         try:
             with open(job.log_path, "w", encoding="utf-8") as log_file:
                 log_file.write("$ " + " ".join(cmd) + "\n\n")
@@ -124,15 +152,32 @@ class CodexJobRunner:
                     text=True,
                     env=env,
                 )
-                proc.communicate(prompt)
+                proc.communicate(prompt, timeout=job.timeout_seconds)
             job.exit_code = proc.returncode
-            job.status = "succeeded" if proc.returncode == 0 else "failed"
+            quality_error = self._document_quality_error(target) if proc.returncode == 0 else None
+            job.status = "succeeded" if proc.returncode == 0 and quality_error is None else "failed"
             if proc.returncode != 0:
                 job.error = f"codex exited with status {proc.returncode}"
+            elif quality_error:
+                job.error = quality_error
+                if had_previous:
+                    shutil.copy2(backup, target)
+                elif target.exists():
+                    target.unlink()
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+            job.status = "failed"
+            job.error = f"codex timed out after {job.timeout_seconds}s"
         except Exception as exc:
             job.status = "failed"
             job.error = str(exc)
         finally:
+            if backup.exists():
+                backup.unlink()
             job.finished_at = now_iso()
             job.updated_at = job.finished_at
             self._write_job(job)
@@ -205,8 +250,29 @@ class CodexJobRunner:
 请开始执行。最终只需要简短说明目标文档是否已生成、覆盖率是多少。
 """
 
+    def _document_quality_error(self, path: Path) -> str | None:
+        """Reject incomplete generated analysis before it replaces a usable document."""
+        if not path.is_file():
+            return "解析文档未生成"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        required = ("摘要", "方法", "实验", "结论", "局限")
+        missing = [heading for heading in required if heading not in text]
+        if missing:
+            return "解析质量门禁失败：缺少章节 " + "、".join(missing)
+        if not re.search(r"(?:第\s*)?\d+\s*页|page\s*\d+", text, re.IGNORECASE):
+            return "解析质量门禁失败：缺少页码覆盖证据"
+        if not re.search(r"figure|fig\.?|图|table|表|公式|equation", text, re.IGNORECASE):
+            return "解析质量门禁失败：缺少 Figure/Table/公式检查记录"
+        return None
+
     def _job_path(self, job_id: str) -> Path:
         return self.jobs_dir / f"{job_id}.json"
+
+    def _safe_read(self, path: Path) -> list[CodexAnalysisJob]:
+        try:
+            return [CodexAnalysisJob.model_validate_json(path.read_text(encoding="utf-8"))]
+        except Exception:
+            return []
 
     def _safe_doc_stem(self, value: str) -> str:
         return re.sub(r"[^A-Za-z0-9._\\-\u4e00-\u9fff]+", "_", value).strip("._") or "paper"

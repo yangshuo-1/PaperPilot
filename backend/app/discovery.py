@@ -138,6 +138,9 @@ def review_candidate(candidate: dict[str, Any], *, existing_paper_id: str | None
         rationale += " 检测到真实环境/硬件实验线索。"
     if existing_paper_id:
         rationale += " 论文库中已有同一 arXiv 条目。"
+    reasons = [str(item) for item in candidate.get("score_reasons") or [] if str(item).strip()]
+    if reasons:
+        rationale += " 评分依据：" + "；".join(reasons[:6]) + "。"
     result = dict(candidate)
     result["recommendation"] = recommendation
     result["rationale"] = rationale
@@ -195,31 +198,42 @@ def _arxiv_id(value: str) -> str:
     return match.group(1) if match else ""
 
 
-def score_paper(paper: dict[str, Any], config: DiscoveryConfig, *, is_trending: bool = False) -> int:
+def score_breakdown(paper: dict[str, Any], config: DiscoveryConfig, *, is_trending: bool = False) -> tuple[int, list[str]]:
     title = str(paper.get("title") or "")
     text = f"{title} {paper.get('abstract') or ''}".casefold()
     title_lower = title.casefold()
     if any(keyword.casefold() in text for keyword in config.negative_keywords):
-        return -999
+        return -999, ["命中负向关键词，排除推荐"]
     score = 0
+    reasons: list[str] = []
     keyword_hits = 0
     for keyword in config.keywords:
         needle = keyword.casefold()
         if needle in title_lower:
             score += 3
             keyword_hits += 1
+            reasons.append(f"标题命中关键词：{keyword}")
         elif needle in text:
             score += 1
             keyword_hits += 1
+            reasons.append(f"摘要/正文命中关键词：{keyword}")
     domain_hits = sum(keyword.casefold() in text for keyword in config.domain_boost_keywords)
     score += 2 if domain_hits >= 2 else 1 if domain_hits == 1 else 0
+    if domain_hits:
+        reasons.append(f"领域词命中 {domain_hits} 个")
     if is_trending:
         upvotes = int(paper.get("hf_upvotes") or 0)
         if keyword_hits or domain_hits:
             score += 3 if upvotes >= 10 else 2 if upvotes >= 5 else 1 if upvotes >= 2 else 0
         elif upvotes >= 20:
             score += 1
-    return score
+            if upvotes >= 2:
+                reasons.append(f"Trending upvotes 加权：{upvotes}")
+    return score, reasons
+
+
+def score_paper(paper: dict[str, Any], config: DiscoveryConfig, *, is_trending: bool = False) -> int:
+    return score_breakdown(paper, config, is_trending=is_trending)[0]
 
 
 def _http_get(url: str, timeout: int = 30) -> str:
@@ -263,7 +277,7 @@ def _parse_hf_item(item: dict[str, Any], source: str, config: DiscoveryConfig) -
         "source": source,
         "hf_upvotes": int(paper.get("upvotes") or 0),
     }
-    result["score"] = score_paper(result, config, is_trending=source == "hf-trending")
+    result["score"], result["score_reasons"] = score_breakdown(result, config, is_trending=source == "hf-trending")
     return result if result["score"] >= 0 else None
 
 
@@ -308,7 +322,7 @@ def _parse_arxiv_xml(xml_text: str, config: DiscoveryConfig, *, days: int, start
             "category": category,
             "source": "arxiv",
         }
-        paper["score"] = score_paper(paper, config)
+        paper["score"], paper["score_reasons"] = score_breakdown(paper, config)
         if arxiv_id and paper["score"] >= 0:
             papers.append(paper)
     return papers

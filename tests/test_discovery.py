@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from backend.app.discovery import DiscoveryConfig, discover, enrich_html, review_candidate, review_markdown, score_paper
+from backend.app.discovery import DiscoveryConfig, discover, enrich_html, review_candidate, review_markdown, score_paper, score_breakdown
 
 
 ARXIV_XML = """
@@ -26,6 +26,13 @@ class DiscoveryTests(unittest.TestCase):
         config = DiscoveryConfig()
         self.assertLess(score_paper({"title": "Medical imaging", "abstract": "robot"}, config), 0)
         self.assertGreaterEqual(score_paper({"title": "Robot diffusion policy", "abstract": "manipulation"}, config), 2)
+
+    def test_score_breakdown_is_explainable(self):
+        score, reasons = score_breakdown({"title": "Robot diffusion policy", "abstract": "manipulation"}, DiscoveryConfig())
+        self.assertGreater(score, 0)
+        self.assertTrue(reasons)
+        reviewed = review_candidate({"title": "Robot diffusion policy", "abstract": "manipulation", "score": score, "score_reasons": reasons})
+        self.assertIn("评分依据", reviewed["rationale"])
 
     def test_html_enrichment_extracts_structured_fields(self):
         body = """

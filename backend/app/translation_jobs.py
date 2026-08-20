@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,12 @@ class TranslationJobRunner:
         self.store.get_paper(paper_id)
         if not _llm.llm_available():
             raise _llm.LLMUnavailable("No LLM provider configured.")
+        job_key = hashlib.sha256(f"{paper_id}|{max_units}".encode()).hexdigest()
+        existing = [self.get(path.stem) for path in self.jobs_dir.glob("*.json") if path.stem.isalnum()]
+        matching = [item for item in existing if item.paper_id == paper_id and item.job_key == job_key]
+        active = [item for item in matching if item.status in {"queued", "running"}]
+        if active:
+            return max(active, key=lambda item: item.created_at)
         job = TranslationJob(
             job_id=uuid.uuid4().hex,
             paper_id=paper_id,
@@ -33,6 +40,8 @@ class TranslationJobRunner:
             max_units=max_units,
             created_at=now_iso(),
             updated_at=now_iso(),
+            job_key=job_key,
+            checkpoint_path=str(self.jobs_dir / f"{job.job_id}.checkpoint.json"),
         )
         self._write(job)
         thread = threading.Thread(
@@ -50,6 +59,14 @@ class TranslationJobRunner:
             raise KeyError(job_id)
         return TranslationJob.model_validate_json(path.read_text(encoding="utf-8"))
 
+    def cancel(self, job_id: str) -> TranslationJob:
+        job = self.get(job_id)
+        if job.status in {"queued", "running"}:
+            job.cancel_requested = True
+            job.error = "Cancellation requested"
+            self._write(job)
+        return job
+
     def latest_for_paper(self, paper_id: str) -> TranslationJob | None:
         jobs: list[TranslationJob] = []
         for path in self.jobs_dir.glob("*.json"):
@@ -63,9 +80,15 @@ class TranslationJobRunner:
 
     def _run(self, job: TranslationJob) -> None:
         job.status = "running"
+        job.attempts += 1
         job.started_at = now_iso()
         job.updated_at = job.started_at
         self._write(job)
+        if job.checkpoint_path:
+            Path(job.checkpoint_path).write_text(
+                f'{{"job_id":"{job.job_id}","paper_id":"{job.paper_id}","status":"running","attempts":{job.attempts}}}\n',
+                encoding="utf-8",
+            )
         try:
             self.store.generate_translation(job.paper_id, max_units=job.max_units)
             job.status = "succeeded"

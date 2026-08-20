@@ -263,6 +263,11 @@ class CodexAnalysisJob(BaseModel):
     finished_at: str | None = None
     exit_code: int | None = None
     error: str | None = None
+    job_key: str = ""
+    checkpoint_path: str | None = None
+    attempts: int = 0
+    timeout_seconds: int = 1800
+    cancel_requested: bool = False
 
 
 class HealthResponse(BaseModel):
@@ -424,6 +429,11 @@ class TranslationJob(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     error: str | None = None
+    job_key: str = ""
+    checkpoint_path: str | None = None
+    attempts: int = 0
+    timeout_seconds: int = 900
+    cancel_requested: bool = False
 
 
 # --- paper-scoped AI ------------------------------------------------------
