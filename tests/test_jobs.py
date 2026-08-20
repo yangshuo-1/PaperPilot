@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.app.codex_jobs import CodexJobRunner
+from backend.app import llm
 from backend.app.models import CodexAnalysisJob, Paper
 
 
@@ -59,6 +60,54 @@ class JobReliabilityTests(unittest.TestCase):
             self.assertIsNone(runner._document_quality_error(path))
             path.write_text("摘要\n方法\n实验\n结论\n局限", encoding="utf-8")
             self.assertIn("代理门禁", runner._document_quality_error(path) or "")
+
+    def test_invalid_output_restores_previous_document(self):
+        class Process:
+            returncode = 0
+            def communicate(self, *_args, **_kwargs):
+                target.write_text("摘要", encoding="utf-8")
+            def poll(self): return None
+            def kill(self): pass
+            def wait(self, **_kwargs): pass
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            settings.references_dir.mkdir(); (settings.references_dir / "codex_jobs").mkdir()
+            target = root / "analysis.md"; target.write_text("旧文档", encoding="utf-8")
+            job = CodexAnalysisJob(job_id="c" * 32, paper_id="paper-1", status="queued", target_document=str(target), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"))
+            runner = CodexJobRunner(settings, SimpleNamespace())
+            (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
+            with patch("backend.app.codex_jobs.subprocess.Popen", return_value=Process()):
+                runner._run_codex(job, "codex", "prompt")
+            self.assertEqual(target.read_text(encoding="utf-8"), "旧文档")
+            self.assertEqual(runner.get_job(job.job_id).status, "failed")
+
+    def test_cancel_before_start_is_cooperative(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            settings.references_dir.mkdir(); (settings.references_dir / "codex_jobs").mkdir()
+            job = CodexAnalysisJob(job_id="d" * 32, paper_id="paper-1", status="queued", target_document=str(root / "out.md"), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"))
+            runner = CodexJobRunner(settings, SimpleNamespace())
+            (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
+            runner.cancel(job.job_id)
+            with patch("backend.app.codex_jobs.subprocess.Popen") as popen:
+                runner._run_codex(job, "codex", "prompt")
+            popen.assert_not_called()
+            self.assertEqual(runner.get_job(job.job_id).status, "failed")
+
+    def test_translation_failure_does_not_publish_partial_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            paper_dir = Path(temp)
+            calls = 0
+            def chat(*_args, **_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise RuntimeError("boom")
+                return "译文"
+            with patch.object(llm, "_effective_config", return_value={"base_url": "x", "api_key": "x", "model": "x"}), patch.object(llm, "_chat_completion", side_effect=chat):
+                with self.assertRaises(RuntimeError):
+                    llm.translate_paragraphs(paper_dir, ["first", "second"])
+            self.assertFalse((paper_dir / "translation_zh.json").exists())
 
 
 if __name__ == "__main__":

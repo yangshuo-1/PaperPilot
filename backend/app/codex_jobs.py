@@ -137,6 +137,14 @@ class CodexJobRunner:
         return sorted(jobs, key=lambda job: job.created_at)[-1]
 
     def _run_codex(self, job: CodexAnalysisJob, codex_bin: str, prompt: str) -> None:
+        if self._cancel_requested(job.job_id):
+            job.cancel_requested = True
+            job.status = "failed"
+            job.error = "Cancellation requested"
+            job.finished_at = now_iso()
+            job.updated_at = job.finished_at
+            self._write_job(job)
+            return
         job.status = "running"
         job.attempts = 0
         job.started_at = now_iso()
