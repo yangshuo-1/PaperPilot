@@ -9,6 +9,12 @@
 
 每篇论文一个目录：`papers/<PaperShortName>_<arxiv_id>/`。源文件与处理结果同目录存放，便于随论文一起归档。
 
+统一数据根由 `PAPER_VALT_ROOT` 指定（默认仓库根目录），服务只从该根解析
+`papers/` 与 `references/`。新代码通过每篇论文的四层逻辑目录工作：
+`source/`（外部原始输入）、`derived/`（确定性解析）、`results/`（模型/任务结果）、
+`exports/`（用户导出）。当前迁移采用“只读旧布局、增量写审计”的策略：旧的根目录文件
+不会批量移动，现有 `paper_index.jsonl` 的 `local_pdf_path` 仍是论文目录解析依据。
+
 ## 数据字典
 
 ### references/（全局索引与状态，小体积，入 git）
@@ -31,6 +37,8 @@
 | `translation_zh.json` | 段落级中文翻译缓存（LLM 产物） | 需 DeepSeek key 重生成 | ❌（成本产物） |
 | `<short>_Codex全文详细解析.md` | 全文解析（Codex 产物） | 需 Codex CLI 重跑 | ✅ |
 | `<paper_id>_analysis.json` | 结构化分析 schema | 需 Codex CLI | ✅ |
+| `manifest.json` | 资产相对路径、角色、SHA-256、生成器版本、输入 document_version | 导入/解析审计 | ✅ |
+| `runs.jsonl` | run_id、paper_id、输入版本、阶段、产物、状态、错误 | 导入/解析/任务审计 | ✅ |
 | `*_详细解析.md` | 派生分析文档 | 可重生成 | ✅ |
 | `*_PDF抽取预览.md` | 导入时 PDF 前几页预览 | 可重生成 | ✅ |
 
@@ -72,3 +80,13 @@ v2 增加 per-paper：`read_status`、`starred`、`folder_id`、`reading_progres
 
 - 入 git 的是可复现 / 人工沉淀成果；不入 git 的是可重拉的大文件与成本产物。
 - 任何时候可重新下载 PDF / LaTeX，或重新解析 / 翻译，不影响已提交的分析与索引。
+- `manifest.json` 与 `runs.jsonl` 均采用临时文件替换原子写入；manifest 以相对路径和 SHA-256
+  绑定实际文件，run 记录输入版本与产物列表。API 可通过
+  `/api/papers/<paper_id>/assets/manifest` 和 `/api/papers/<paper_id>/assets/runs` 核验。
+
+## 迁移与回滚
+
+- 迁移不会移动或删除已有 `papers/<paper>/` 资产；先运行导入或 LaTeX 解析即可生成审计记录。
+- 新的分层目录可由后续任务逐类启用，旧路径在 `paper_index.jsonl` 中保持兼容。
+- 回滚代码只需恢复应用版本；manifest/runs 是附加审计文件，不影响旧读取路径，可保留或删除。
+- 仅提交轻量索引、manifest 和审计记录；PDF、LaTeX 源码及成本型结果继续遵守 `.gitignore`。

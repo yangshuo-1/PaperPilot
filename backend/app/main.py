@@ -678,6 +678,24 @@ def get_latex(paper_id: str, store: PaperStore = Depends(get_store)) -> LatexSou
     )
 
 
+@app.get("/api/papers/{paper_id}/assets/manifest")
+def get_asset_manifest(paper_id: str, store: PaperStore = Depends(get_store)) -> dict:
+    try:
+        return store.asset_manifest(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/papers/{paper_id}/assets/runs")
+def get_asset_runs(paper_id: str, store: PaperStore = Depends(get_store)) -> list[dict]:
+    try:
+        return store.asset_runs(paper_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+
+
 @app.get("/api/papers/{paper_id}/reader", response_model=ReaderManifest)
 def get_reader_manifest(paper_id: str, store: PaperStore = Depends(get_store)) -> ReaderManifest:
     try:

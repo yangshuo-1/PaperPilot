@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .config import Settings
+from .asset_audit import append_run, asset_record, sha256_file, update_manifest
 from . import latex as _latex
 from . import llm as _llm
 from . import reader as _reader
@@ -333,6 +334,18 @@ class PaperStore:
         self._upsert_paper_record(record)
         self._ensure_default_tags(paper_id, metadata)
         self._write_imported_analysis(paper_id, record, metadata, extracted_text)
+        document_version = sha256_file(pdf_path)
+        self._record_assets(
+            paper_id,
+            [asset_record(pdf_path, paper_dir, role="source", generated_by="import_arxiv")],
+            generator_version="import_arxiv.v1",
+            run={
+                "stage": "import",
+                "input_document_version": document_version,
+                "outputs": [str(pdf_path.relative_to(paper_dir))],
+                "status": "completed",
+            },
+        )
         return self.get_paper(paper_id)
 
     def discover_papers(
@@ -1001,7 +1014,53 @@ class PaperStore:
         self._write_text_atomic(source_md, parsed["plain_text"] + "\n")
         self._write_text_atomic(plain_txt, parsed["plain_text"] + "\n")
         self._write_text_atomic(parsed_json, json.dumps(parsed, ensure_ascii=False, indent=2) + "\n")
+        pdf_path = Path(paper.local_pdf_path) if paper.local_pdf_path else None
+        input_version = sha256_file(pdf_path) if pdf_path and pdf_path.is_file() else None
+        outputs = [source_md, plain_txt, parsed_json]
+        self._record_assets(
+            paper_id,
+            [asset_record(path, paper_dir, role="derived", generated_by="latex.parse_latex", input_document_version=input_version) for path in outputs],
+            generator_version="latex.parse_latex.v1",
+            run={
+                "stage": "latex_parse",
+                "input_document_version": input_version,
+                "outputs": [str(path.relative_to(paper_dir)) for path in outputs],
+                "status": "completed",
+            },
+        )
         return {"downloaded": True, "parsed": parsed}
+
+    def asset_manifest(self, paper_id: str) -> dict[str, Any]:
+        self.get_paper(paper_id)
+        path = self._paper_dir(paper_id) / "manifest.json"
+        if not path.exists():
+            return {"schema_version": 1, "paper_id": paper_id, "assets": []}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Invalid paper asset manifest") from exc
+
+    def asset_runs(self, paper_id: str) -> list[dict[str, Any]]:
+        self.get_paper(paper_id)
+        path = self._paper_dir(paper_id) / "runs.jsonl"
+        if not path.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                records.append(json.loads(line))
+        return records
+
+    def asset_dirs(self, paper_id: str) -> dict[str, str]:
+        """Return future-facing layers without moving legacy assets."""
+        paper_dir = self._paper_dir(paper_id)
+        return {name: str(paper_dir / name) for name in ("source", "derived", "results", "exports")}
+
+    def _record_assets(self, paper_id: str, files: list[dict[str, Any]], *,
+                       generator_version: str, run: dict[str, Any]) -> None:
+        paper_dir = self._paper_dir(paper_id)
+        manifest = update_manifest(paper_dir, paper_id, files, generator_version=generator_version)
+        append_run(paper_dir, {"paper_id": paper_id, **run, "manifest_generator_version": manifest["generator_version"]})
 
     # --- quick view --------------------------------------------------------
 
