@@ -91,6 +91,9 @@ METHOD_STOP_WORDS = {
     "testing", "inference", "baseline", "ablation", "rgb", "gpu", "cpu", "cnn",
     "mlp", "sgd", "adam", "gan", "api", "html", "pdf", "json", "xml", "sota",
 }
+DISCOVERY_SOURCE_TIMEOUT = 12
+DISCOVERY_ARXIV_TIMEOUT = 15
+DISCOVERY_ENRICH_TIMEOUT = 15
 
 
 @dataclass(frozen=True)
@@ -415,13 +418,13 @@ def enrich_candidate(candidate: dict[str, Any], fetcher: Callable[[str, int], st
         return result
     html_body = ""
     try:
-        html_body = fetcher(f"https://arxiv.org/html/{arxiv_id}", 30)
+        html_body = fetcher(f"https://arxiv.org/html/{arxiv_id}", DISCOVERY_ENRICH_TIMEOUT)
     except Exception:
         html_body = ""
     enriched = enrich_html(html_body, arxiv_id, str(result.get("title") or ""))
     if not enriched.get("authors") or not enriched.get("affiliations"):
         try:
-            abs_body = fetcher(f"https://arxiv.org/abs/{arxiv_id}", 30)
+            abs_body = fetcher(f"https://arxiv.org/abs/{arxiv_id}", DISCOVERY_ENRICH_TIMEOUT)
         except Exception:
             abs_body = ""
         if abs_body:
@@ -436,7 +439,7 @@ def enrich_candidate(candidate: dict[str, Any], fetcher: Callable[[str, int], st
 
 
 def _fetch_json(fetcher: Callable[[str, int], str], url: str, errors: list[str]) -> Any:
-    body = _safe_fetch(fetcher, url, 45, errors)
+    body = _safe_fetch(fetcher, url, DISCOVERY_SOURCE_TIMEOUT, errors)
     if not body:
         return []
     try:
@@ -485,7 +488,8 @@ def discover(
         "sortOrder": "descending",
         "max_results": min(400 * days, 3000),
     })
-    arxiv_body = _safe_fetch(fetcher, arxiv_url, max(60, 30 * days), errors)
+    arxiv_timeout = min(35, max(DISCOVERY_ARXIV_TIMEOUT, 5 * days))
+    arxiv_body = _safe_fetch(fetcher, arxiv_url, arxiv_timeout, errors)
     for parsed in _parse_arxiv_xml(arxiv_body, config, days=days, start=start_date, end=target_date):
         if parsed["arxiv_id"] not in papers or parsed["score"] > papers[parsed["arxiv_id"]]["score"]:
             papers[parsed["arxiv_id"]] = parsed

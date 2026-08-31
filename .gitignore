@@ -19,6 +19,10 @@ frontend/dist/
 *.tsbuildinfo
 
 # ---- Data assets (heavy / LLM-cost / reproducible) ----
+# 论文本体、解析产物和运行时清单保留在本地，不进入代码仓库。
+papers/
+references/*.json
+references/*.jsonl
 # 二进制与可重拉数据，见 docs/DATA_ASSETS.md
 papers/**/*.pdf
 papers/**/latex/
@@ -27,10 +31,14 @@ papers/**/latex_plain.txt
 papers/**/latex_source.md
 papers/**/reader_manifest.json
 papers/**/translation_zh.json
+papers/**/ai_answers.jsonl
+papers/**/ai_takeaways.json
 
 # ---- Runtime job artifacts ----
 references/codex_jobs/
 references/translation_jobs/
+references/takeaway_jobs/
+projects/
 references/paper_discovery.json
 references/paper_discovery_history.json
 references/paper_discovery_review.json

@@ -80,6 +80,50 @@ class Phase5ProjectTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.governance_action(session["id"], "archive")
 
+    def test_workspace_writes_reads_and_rejects_traversal(self):
+        workspace = self.store.workspace(self.project["id"])
+        self.assertEqual(workspace["root"], f"projects/{self.project['id']}")
+        entry = self.store.write_workspace_file(self.project["id"], "notes/reading-log.md", "# Reading log\n")
+        self.assertEqual(entry["path"], "notes/reading-log.md")
+        self.assertEqual(self.store.read_workspace_file(self.project["id"], "notes/reading-log.md"), "# Reading log\n")
+        self.assertIn("notes/reading-log.md", {item["path"] for item in self.store.workspace(self.project["id"])["entries"]})
+        with self.assertRaises(ValueError):
+            self.store.write_workspace_file(self.project["id"], "../outside.md", "nope")
+        with self.assertRaises(ValueError):
+            self.store.read_workspace_file(self.project["id"], "notes/../outside.md")
+
+    def test_session_workspace_is_created_and_isolated(self):
+        session = self.session()
+        self.assertEqual(session["workspace_root"], f"projects/{self.project['id']}/sessions/{session['id']}")
+        session_path = self.root / "projects" / self.project["id"] / "sessions" / session["id"]
+        self.store.write_workspace_file(self.project["id"], f"sessions/{session['id']}/note.md", "session note")
+        self.assertEqual(self.store.read_workspace_file(self.project["id"], f"sessions/{session['id']}/note.md"), "session note")
+        self.store.delete_session(session["id"])
+        self.assertFalse(session_path.exists())
+
+    def test_project_deletion_removes_only_its_workspace(self):
+        other = self.store.create_project("other", "", "goal")
+        self.store.write_workspace_file(self.project["id"], "notes/project.md", "project")
+        self.store.write_workspace_file(other["id"], "notes/other.md", "other")
+        self.store.delete_project(self.project["id"])
+        self.assertFalse((self.root / "projects" / self.project["id"]).exists())
+        self.assertTrue((self.root / "projects" / other["id"] / "notes" / "other.md").is_file())
+
+    def test_latest_job_requires_an_existing_paper(self):
+        from backend.app.takeaway_jobs import TakeawayJobRunner
+        from backend.app.translation_jobs import TranslationJobRunner
+        from types import SimpleNamespace
+
+        job_store = SimpleNamespace(
+            settings=SimpleNamespace(references_dir=self.root / "references"),
+            get_paper=lambda _paper_id: (_ for _ in ()).throw(KeyError("missing")),
+        )
+
+        with self.assertRaises(KeyError):
+            TakeawayJobRunner(job_store).latest_for_paper("missing")
+        with self.assertRaises(KeyError):
+            TranslationJobRunner(job_store).latest_for_paper("missing")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

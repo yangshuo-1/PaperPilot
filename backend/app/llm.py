@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -38,6 +39,8 @@ _PREFERRED_MODELS = (
     "deepseek-v4-flash", "deepseek-v3", "deepseek-chat",
     "gpt-5.2", "gpt-5.1-codex", "gpt-5-codex", "gpt-4o",
 )
+
+_TRANSIENT_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 
@@ -128,6 +131,8 @@ def _chat_completion(  # noqa: PLR0913
     model: str,
     max_tokens: int = 1600,
     timeout: int = 180,
+    retry_attempts: int = 2,
+    retry_delay: float = 0.5,
 ) -> str:
     """POST {base}/chat/completions and return assistant content."""
     payload = {
@@ -154,16 +159,21 @@ def _chat_completion(  # noqa: PLR0913
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:400]
-        raise LLMUnavailable(f"LLM HTTP {exc.code}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise LLMUnavailable(f"LLM network error: {exc.reason}") from exc
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise LLMUnavailable(f"LLM invalid response: {exc}") from exc
+    for attempt in range(retry_attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:400]
+            if exc.code not in _TRANSIENT_HTTP_STATUSES or attempt >= retry_attempts:
+                raise LLMUnavailable(f"LLM HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            if attempt >= retry_attempts:
+                raise LLMUnavailable(f"LLM network error: {exc.reason}") from exc
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise LLMUnavailable(f"LLM invalid response: {exc}") from exc
+        time.sleep(retry_delay * (2 ** attempt))
 
     try:
         content = data["choices"][0]["message"]["content"]

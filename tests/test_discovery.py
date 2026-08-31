@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from backend.app.discovery import DiscoveryConfig, discover, enrich_html, review_candidate, review_markdown, score_paper, score_breakdown
+from backend.app.discovery import DISCOVERY_ARXIV_TIMEOUT, DISCOVERY_SOURCE_TIMEOUT, DiscoveryConfig, discover, enrich_html, review_candidate, review_markdown, score_paper, score_breakdown
 
 
 ARXIV_XML = """
@@ -67,6 +67,22 @@ class DiscoveryTests(unittest.TestCase):
             )
             self.assertEqual(len(result.candidates), 1)
             self.assertTrue(result.candidates[0]["is_re_recommend"])
+
+    def test_discovery_uses_bounded_source_timeouts(self):
+        observed: dict[str, int] = {}
+
+        def fetcher(url: str, timeout: int) -> str:
+            observed[url] = timeout
+            return "[]" if "huggingface.co" in url else ARXIV_XML
+
+        discover(
+            target_date=date(2024, 1, 15),
+            config=DiscoveryConfig(min_score=0, top_n=10),
+            enrich=False,
+            fetcher=fetcher,
+        )
+        self.assertEqual(max(timeout for url, timeout in observed.items() if "huggingface.co" in url), DISCOVERY_SOURCE_TIMEOUT)
+        self.assertEqual(next(timeout for url, timeout in observed.items() if "export.arxiv.org" in url), DISCOVERY_ARXIV_TIMEOUT)
 
     def test_review_assigns_bucket_and_writes_useful_markdown(self):
         candidate = review_candidate({

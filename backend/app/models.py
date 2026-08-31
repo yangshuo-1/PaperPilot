@@ -67,6 +67,22 @@ class PaperListResponse(BaseModel):
     tags: dict[str, int] = Field(default_factory=dict)
 
 
+class ReadingListEntry(BaseModel):
+    paper_id: str
+    added_at: str
+    priority: int = 0
+
+
+class ReadingListResponse(BaseModel):
+    papers: list[Paper] = Field(default_factory=list)
+    entries: list[ReadingListEntry] = Field(default_factory=list)
+    total: int = 0
+
+
+class ReadingListUpdateRequest(BaseModel):
+    priority: int = Field(default=0, ge=0, le=100)
+
+
 class TagUpdateRequest(BaseModel):
     tags: list[str]
 
@@ -339,6 +355,21 @@ class ReaderManifest(BaseModel):
     error: str | None = None
 
 
+class PaperSearchMatch(BaseModel):
+    source: Literal["pdf", "latex", "document"]
+    name: str
+    page: int | None = None
+    quote: str
+    match: str
+
+
+class PaperSearchResponse(BaseModel):
+    paper_id: str
+    query: str
+    total: int
+    results: list[PaperSearchMatch] = Field(default_factory=list)
+
+
 class ReaderAnchor(BaseModel):
     id: str
     paper_id: str
@@ -434,6 +465,7 @@ class TranslationJob(BaseModel):
     attempts: int = 0
     timeout_seconds: int = 900
     cancel_requested: bool = False
+    document_version: str | None = None
 
 
 # --- paper-scoped AI ------------------------------------------------------
@@ -449,11 +481,14 @@ class AIRequest(BaseModel):
     mode: Literal["ask", "explain", "translate"] = "ask"
     question: str = ""
     selection: ReaderSelection | None = None
+    context_paper_ids: list[str] = Field(default_factory=list, max_length=8)
 
 
 class AICitation(BaseModel):
     page: int
     quote: str
+    paper_id: str | None = None
+    paper_title: str | None = None
 
 
 class AIResponse(BaseModel):
@@ -461,12 +496,26 @@ class AIResponse(BaseModel):
     mode: str
     answer: str
     citations: list[AICitation] = Field(default_factory=list)
+    context_paper_ids: list[str] = Field(default_factory=list)
     document_version: str | None = None
     model: str | None = None
     generated_at: str
     stale: bool = False
     available: bool = True
     error: str | None = None
+
+
+class AISaveRequest(BaseModel):
+    title: str = "论文内 AI 回答"
+    mode: str = "ask"
+    question: str = ""
+    answer: str = Field(min_length=1)
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    selection: dict[str, Any] | None = None
+    document_version: str | None = None
+    model: str | None = None
+    generated_at: str = ""
+    context_paper_ids: list[str] = Field(default_factory=list, max_length=8)
 
 
 class Takeaway(BaseModel):
@@ -484,6 +533,58 @@ class TakeawayResponse(BaseModel):
     takeaways: list[Takeaway] = Field(default_factory=list)
     available: bool = True
     error: str | None = None
+
+
+class TakeawayJob(BaseModel):
+    job_id: str
+    paper_id: str
+    status: Literal["queued", "running", "succeeded", "failed"]
+    created_at: str
+    updated_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+    job_key: str = ""
+    document_version: str | None = None
+    cancel_requested: bool = False
+
+
+class WorkspaceEntry(BaseModel):
+    path: str
+    kind: Literal["file", "directory"]
+    size: int = 0
+    updated_at: str | None = None
+
+
+class WorkspaceResponse(BaseModel):
+    project_id: str
+    root: str
+    entries: list[WorkspaceEntry] = Field(default_factory=list)
+
+
+class WorkspaceFileRequest(BaseModel):
+    path: str = Field(min_length=1)
+    content: str = ""
+
+
+class PaperArtifact(BaseModel):
+    path: str
+    label: str
+    kind: Literal["document", "analysis", "translation", "takeaways", "ai", "source", "derived", "other"] = "other"
+    size: int = 0
+
+
+class ProjectArtifactRequest(BaseModel):
+    paper_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
+    destination_path: str | None = None
+    session_id: str | None = None
+
+
+class ProjectArtifactResponse(BaseModel):
+    project: dict[str, Any]
+    workspace_entry: WorkspaceEntry
+    artifact_ref: str
 
 
 class ProjectCreateRequest(BaseModel):
@@ -525,6 +626,7 @@ class Project(BaseModel):
     updated_at: str
     links: list[dict[str, Any]] = Field(default_factory=list)
     session_ids: list[str] = Field(default_factory=list)
+    workspace_root: str = ""
 
 
 class Session(BaseModel):
@@ -540,6 +642,7 @@ class Session(BaseModel):
     events: list[dict[str, Any]] = Field(default_factory=list)
     governance: dict[str, Any] = Field(default_factory=dict)
     closeout: dict[str, Any] | None = None
+    workspace_root: str = ""
 
 
 class GovernanceActionRequest(BaseModel):

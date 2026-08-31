@@ -174,9 +174,18 @@ class AnnotationStore:
             return {"version": 1, "papers": {}}
 
     def _write(self, store: dict[str, Any] | None = None) -> None:
-        value = store or self._read()
+        value = store if store is not None else self._read()
         value.setdefault("version", 1)
         value.setdefault("papers", {})
+        value["papers"] = {
+            paper_id: bucket
+            for paper_id, bucket in value["papers"].items()
+            if any(bucket.get(kind) for kind in ("anchors", "highlights", "notes"))
+        }
+        if not value["papers"]:
+            if self.path.exists():
+                self.path.unlink()
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

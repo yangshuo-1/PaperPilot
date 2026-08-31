@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import llm as _llm
+from .asset_audit import asset_record, sha256_file
 from .models import TranslationJob
+from .reader import document_version
 from .storage import PaperStore
 
 
@@ -24,10 +26,11 @@ class TranslationJobRunner:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
     def start(self, paper_id: str, *, max_units: int) -> TranslationJob:
-        self.store.get_paper(paper_id)
+        paper = self.store.get_paper(paper_id)
         if not _llm.llm_available():
             raise _llm.LLMUnavailable("No LLM provider configured.")
-        job_key = hashlib.sha256(f"{paper_id}|{max_units}".encode()).hexdigest()
+        version = document_version(Path(paper.local_pdf_path)) if paper.local_pdf_path and Path(paper.local_pdf_path).is_file() else ""
+        job_key = hashlib.sha256(f"{paper_id}|{version}|{max_units}".encode()).hexdigest()
         existing = [self.get(path.stem) for path in self.jobs_dir.glob("*.json") if path.stem.isalnum()]
         matching = [item for item in existing if item.paper_id == paper_id and item.job_key == job_key]
         active = [item for item in matching if item.status in {"queued", "running"}]
@@ -42,6 +45,7 @@ class TranslationJobRunner:
             updated_at=now_iso(),
             job_key=job_key,
             checkpoint_path=str(self.jobs_dir / f"{job.job_id}.checkpoint.json"),
+            document_version=document_version(Path(paper.local_pdf_path)) if paper.local_pdf_path and Path(paper.local_pdf_path).is_file() else None,
         )
         self._write(job)
         thread = threading.Thread(
@@ -68,6 +72,7 @@ class TranslationJobRunner:
         return job
 
     def latest_for_paper(self, paper_id: str) -> TranslationJob | None:
+        self.store.get_paper(paper_id)
         jobs: list[TranslationJob] = []
         for path in self.jobs_dir.glob("*.json"):
             try:
@@ -91,6 +96,17 @@ class TranslationJobRunner:
                 job.status = "running"; job.updated_at = now_iso(); self._write(job); self._write_checkpoint(job, "running")
                 try:
                     self.store.generate_translation(job.paper_id, max_units=job.max_units, should_cancel=lambda: self._cancel_requested(job.job_id))
+                    paper = self.store.get_paper(job.paper_id)
+                    output = self.store.paper_dir(job.paper_id) / "translation_zh.json"
+                    if output.is_file():
+                        pdf_path = Path(paper.local_pdf_path or "")
+                        input_version = sha256_file(pdf_path) if pdf_path.is_file() else None
+                        self.store._record_assets(
+                            job.paper_id,
+                            [asset_record(output, output.parent, role="result", generated_by="translation.generate", input_document_version=input_version)],
+                            generator_version="translation.generate.v1",
+                            run={"stage": "translation_generate", "input_document_version": input_version, "outputs": [output.name], "status": "completed"},
+                        )
                     job.status = "succeeded"; job.error = None; break
                 except Exception as exc:
                     job.error = str(exc)

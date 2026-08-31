@@ -244,6 +244,7 @@ export type TranslationJob = {
   started_at?: string | null;
   finished_at?: string | null;
   error?: string | null;
+  document_version?: string | null;
 };
 
 export type CitationResponse = {
@@ -281,6 +282,8 @@ export type ReaderManifest = {
   figures: ReaderFigureItem[];
   error?: string | null;
 };
+export type PaperSearchMatch = { source: "pdf" | "latex" | "document"; name: string; page?: number | null; quote: string; match: string };
+export type PaperSearchResponse = { paper_id: string; query: string; total: number; results: PaperSearchMatch[] };
 
 export type LatexSourceResponse = {
   title?: string | null;
@@ -295,10 +298,14 @@ export type LatexSourceResponse = {
 
 export type AICitation = { page: number; quote: string };
 export type AIResponse = { paper_id: string; mode: string; answer: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; stale: boolean; available: boolean; error?: string | null };
+export type AISavedAnswer = { id: string; paper_id: string; document: string; title: string; mode: string; question: string; selection?: Record<string, unknown> | null; answer: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; saved_at: string; stale: boolean };
 export type Takeaway = { id: string; content: string; citations: AICitation[]; document_version?: string | null; model?: string | null; generated_at: string; stale: boolean };
 export type TakeawayResponse = { paper_id: string; takeaways: Takeaway[]; available: boolean; error?: string | null };
-export type Project = { id: string; name: string; description: string; goal: string; created_at: string; updated_at: string; links: Array<Record<string, unknown>>; session_ids: string[] };
-export type Session = { id: string; project_id: string; title: string; goal: string; status: "active" | "paused" | "completed" | "failed"; created_at: string; updated_at: string; last_activity_at: string; links: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; governance?: Record<string, unknown>; closeout?: { summary: string; handoff: string; next_steps: string[]; model?: string; session_version?: string; document_version?: string | null; citations?: Array<Record<string, unknown>>; confirmed?: boolean } | null };
+export type TakeawayJob = { job_id: string; paper_id: string; status: "queued" | "running" | "succeeded" | "failed"; created_at: string; updated_at: string; started_at?: string | null; finished_at?: string | null; error?: string | null; job_key?: string; document_version?: string | null; cancel_requested?: boolean };
+export type Project = { id: string; name: string; description: string; goal: string; created_at: string; updated_at: string; links: Array<Record<string, unknown>>; session_ids: string[]; workspace_root?: string };
+export type Session = { id: string; project_id: string; title: string; goal: string; status: "active" | "paused" | "completed" | "failed"; created_at: string; updated_at: string; last_activity_at: string; links: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; workspace_root?: string; governance?: Record<string, unknown>; closeout?: { summary: string; handoff: string; next_steps: string[]; model?: string; session_version?: string; document_version?: string | null; citations?: Array<Record<string, unknown>>; confirmed?: boolean } | null };
+export type WorkspaceEntry = { path: string; kind: "file" | "directory"; size: number; updated_at?: string | null };
+export type WorkspaceResponse = { project_id: string; root: string; entries: WorkspaceEntry[] };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -312,6 +319,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const text = await response.text();
     throw new Error(text || response.statusText);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -383,6 +391,7 @@ export const api = {
       body: JSON.stringify(fields)
     }),
   getReaderManifest: (paperId: string) => request<ReaderManifest>(`/api/papers/${paperId}/reader`),
+  searchPaper: (paperId: string, query: string, limit = 50) => request<PaperSearchResponse>(`/api/papers/${paperId}/search?q=${encodeURIComponent(query)}&limit=${limit}`),
   getAnnotations: (paperId: string) => request<AnnotationResponse>(`/api/papers/${paperId}/annotations`),
   createHighlight: (paperId: string, payload: Record<string, unknown>) => request<AnnotationResponse>(`/api/papers/${paperId}/annotations/highlights`, { method: "POST", body: JSON.stringify(payload) }),
   createNote: (paperId: string, payload: Record<string, unknown>) => request<AnnotationResponse>(`/api/papers/${paperId}/annotations/notes`, { method: "POST", body: JSON.stringify(payload) }),
@@ -416,15 +425,29 @@ export const api = {
     }),
   getTranslationJob: (paperId: string, jobId: string) =>
     request<TranslationJob>(`/api/papers/${paperId}/translation/jobs/${jobId}`),
+  getLatestTranslationJob: (paperId: string) =>
+    request<TranslationJob | null>(`/api/papers/${paperId}/translation/jobs/latest`),
+  cancelTranslationJob: (paperId: string, jobId: string) =>
+    request<TranslationJob>(`/api/papers/${paperId}/translation/jobs/${jobId}/cancel`, { method: "POST" }),
   askAI: (paperId: string, payload: Record<string, unknown>) =>
     request<AIResponse>(`/api/papers/${paperId}/ai`, { method: "POST", body: JSON.stringify(payload) }),
+  saveAIAnswer: (paperId: string, payload: Record<string, unknown>) =>
+    request<AISavedAnswer>(`/api/papers/${paperId}/ai/save`, { method: "POST", body: JSON.stringify(payload) }),
+  getAIHistory: (paperId: string) => request<AISavedAnswer[]>(`/api/papers/${paperId}/ai/history`),
   getTakeaways: (paperId: string) => request<TakeawayResponse>(`/api/papers/${paperId}/takeaways`),
-  generateTakeaways: (paperId: string) => request<TakeawayResponse>(`/api/papers/${paperId}/takeaways/generate`, { method: "POST" }),
+  generateTakeaways: (paperId: string) => request<TakeawayJob>(`/api/papers/${paperId}/takeaways/generate`, { method: "POST" }),
+  getLatestTakeawayJob: (paperId: string) => request<TakeawayJob | null>(`/api/papers/${paperId}/takeaways/jobs/latest`),
+  getTakeawayJob: (paperId: string, jobId: string) => request<TakeawayJob>(`/api/papers/${paperId}/takeaways/jobs/${jobId}`),
+  cancelTakeawayJob: (paperId: string, jobId: string) => request<TakeawayJob>(`/api/papers/${paperId}/takeaways/jobs/${jobId}/cancel`, { method: "POST" }),
   listProjects: () => request<Project[]>("/api/projects"),
   createProject: (payload: { name: string; description: string; goal: string }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
   linkProject: (id: string, payload: Record<string, unknown>) => request<Project>(`/api/projects/${id}/links`, { method: "POST", body: JSON.stringify(payload) }),
   deleteProject: (id: string) => request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  getWorkspace: (id: string) => request<WorkspaceResponse>(`/api/projects/${id}/workspace`),
+  readWorkspaceFile: (id: string, path: string) => requestText(`/api/projects/${id}/workspace/file?path=${encodeURIComponent(path)}`),
+  writeWorkspaceFile: (id: string, path: string, content: string) => request<WorkspaceEntry>(`/api/projects/${id}/workspace/file`, { method: "PUT", body: JSON.stringify({ path, content }) }),
+  deleteWorkspaceFile: (id: string, path: string) => request<void>(`/api/projects/${id}/workspace/file?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
   listSessions: (id: string) => request<Session[]>(`/api/projects/${id}/sessions`),
   createSession: (id: string, payload: { title: string; goal: string }) => request<Session>(`/api/projects/${id}/sessions`, { method: "POST", body: JSON.stringify(payload) }),
   updateSession: (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),

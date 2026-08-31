@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +40,7 @@ from .models import (
     PaperListResponse,
     QuickviewResponse,
     ReaderManifest,
+    PaperSearchResponse,
     AnnotationCreateRequest,
     AnnotationResponse,
     NoteUpdateRequest,
@@ -48,11 +50,16 @@ from .models import (
     TranslationResponse,
     AIRequest,
     AIResponse,
+    AISaveRequest,
     TakeawayResponse,
+    TakeawayJob,
+    WorkspaceResponse,
+    WorkspaceFileRequest,
     Project, ProjectCreateRequest, ProjectUpdateRequest, ProjectLinkRequest, Session, SessionCreateRequest, SessionUpdateRequest, GovernanceActionRequest, CloseoutRequest, RelationDecisionRequest,
 )
 from .storage import PaperStore
 from .translation_jobs import TranslationJobRunner
+from .takeaway_jobs import TakeawayJobRunner
 
 
 app = FastAPI(title="paper_valt", version="0.1.0")
@@ -98,6 +105,10 @@ def get_codex_runner(
 
 def get_translation_runner(store: PaperStore = Depends(get_store)) -> TranslationJobRunner:
     return TranslationJobRunner(store)
+
+
+def get_takeaway_runner(store: PaperStore = Depends(get_store)) -> TakeawayJobRunner:
+    return TakeawayJobRunner(store)
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -147,6 +158,33 @@ def delete_project(project_id: str, projects: ProjectStore = Depends(get_project
 def link_project(project_id: str, request: ProjectLinkRequest, projects: ProjectStore = Depends(get_projects)) -> Project:
     try: return Project(**projects.link_project(project_id, request.model_dump()))
     except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.get("/api/projects/{project_id}/workspace", response_model=WorkspaceResponse)
+def get_project_workspace(project_id: str, projects: ProjectStore = Depends(get_projects)) -> WorkspaceResponse:
+    try: return WorkspaceResponse(**projects.workspace(project_id))
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@app.get("/api/projects/{project_id}/workspace/file")
+def get_project_workspace_file(project_id: str, path: str = Query(..., min_length=1), projects: ProjectStore = Depends(get_projects)) -> PlainTextResponse:
+    try: return PlainTextResponse(projects.read_workspace_file(project_id, path), media_type="text/plain; charset=utf-8")
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Workspace file not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/projects/{project_id}/workspace/file")
+def put_project_workspace_file(project_id: str, request: WorkspaceFileRequest, projects: ProjectStore = Depends(get_projects)) -> dict[str, object]:
+    try: return projects.write_workspace_file(project_id, request.path, request.content)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/projects/{project_id}/workspace/file", status_code=204)
+def delete_project_workspace_file(project_id: str, path: str = Query(..., min_length=1), projects: ProjectStore = Depends(get_projects)) -> None:
+    try: projects.delete_workspace_file(project_id, path)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Workspace file not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/sessions", response_model=list[Session])
@@ -688,6 +726,12 @@ def get_asset_manifest(paper_id: str, store: PaperStore = Depends(get_store)) ->
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/api/papers/{paper_id}/assets/audit")
+def audit_assets(paper_id: str, store: PaperStore = Depends(get_store)) -> dict:
+    try: return store.audit_assets(paper_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Paper not found") from exc
+
+
 @app.get("/api/papers/{paper_id}/assets/runs")
 def get_asset_runs(paper_id: str, store: PaperStore = Depends(get_store)) -> list[dict]:
     try:
@@ -720,6 +764,19 @@ def get_reader_manifest(paper_id: str, store: PaperStore = Depends(get_store)) -
         return ReaderManifest(paper_id=paper_id, error=str(exc))
 
 
+@app.get("/api/papers/{paper_id}/search", response_model=PaperSearchResponse)
+def search_paper(
+    paper_id: str,
+    q: str = Query(default="", min_length=0, max_length=300),
+    limit: int = Query(default=50, ge=1, le=100),
+    store: PaperStore = Depends(get_store),
+) -> PaperSearchResponse:
+    try:
+        return PaperSearchResponse(**store.search_paper(paper_id, q, limit=limit))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper not found") from exc
+
+
 def _ai_pdf(store: PaperStore, paper_id: str) -> tuple[Path, str]:
     paper = store.get_paper(paper_id)
     if not paper.local_pdf_path:
@@ -750,7 +807,33 @@ def paper_ai_request(paper_id: str, request: AIRequest, store: PaperStore = Depe
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except llm_mod.LLMUnavailable as exc:
-        return AIResponse(paper_id=paper_id, mode=request.mode, answer="", generated_at="", available=False, error=str(exc))
+        try:
+            version = reader_mod.document_version(path)
+        except OSError:
+            version = None
+        return AIResponse(
+            paper_id=paper_id,
+            mode=request.mode,
+            answer="",
+            document_version=version,
+            model=paper_ai.status().get("model"),
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            available=False,
+            error=str(exc),
+        )
+
+
+@app.post("/api/papers/{paper_id}/ai/save")
+def save_ai_answer(paper_id: str, request: AISaveRequest, store: PaperStore = Depends(get_store)) -> dict[str, object]:
+    try: return store.save_ai_answer(paper_id, request.model_dump())
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/papers/{paper_id}/ai/history")
+def ai_history(paper_id: str, store: PaperStore = Depends(get_store)) -> list[dict[str, object]]:
+    try: return store.list_ai_answers(paper_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Paper not found") from exc
 
 
 @app.get("/api/papers/{paper_id}/takeaways", response_model=TakeawayResponse)
@@ -762,15 +845,38 @@ def get_takeaways(paper_id: str, store: PaperStore = Depends(get_store)) -> Take
         raise HTTPException(status_code=404, detail="Paper not found") from exc
 
 
-@app.post("/api/papers/{paper_id}/takeaways/generate", response_model=TakeawayResponse)
-def generate_takeaways(paper_id: str, store: PaperStore = Depends(get_store)) -> TakeawayResponse:
+@app.get("/api/papers/{paper_id}/takeaways/jobs/latest", response_model=TakeawayJob | None)
+def latest_takeaway_job(paper_id: str, runner: TakeawayJobRunner = Depends(get_takeaway_runner)) -> TakeawayJob | None:
+    try: return runner.latest_for_paper(paper_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Paper not found") from exc
+
+
+@app.post("/api/papers/{paper_id}/takeaways/generate", response_model=TakeawayJob, status_code=202)
+def generate_takeaways(paper_id: str, runner: TakeawayJobRunner = Depends(get_takeaway_runner)) -> TakeawayJob:
     try:
-        path, _ = _ai_pdf(store, paper_id)
-        return TakeawayResponse(**paper_ai.generate_takeaway(path, paper_id, path.parent / "ai_takeaways.json"))
+        return runner.start(paper_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Paper not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except llm_mod.LLMUnavailable as exc:
-        return TakeawayResponse(paper_id=paper_id, available=False, error=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/papers/{paper_id}/takeaways/jobs/{job_id}", response_model=TakeawayJob)
+def get_takeaway_job(paper_id: str, job_id: str, runner: TakeawayJobRunner = Depends(get_takeaway_runner)) -> TakeawayJob:
+    try: job = runner.get(job_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Takeaway job not found") from exc
+    if job.paper_id != paper_id: raise HTTPException(status_code=404, detail="Takeaway job not found")
+    return job
+
+
+@app.post("/api/papers/{paper_id}/takeaways/jobs/{job_id}/cancel", response_model=TakeawayJob)
+def cancel_takeaway_job(paper_id: str, job_id: str, runner: TakeawayJobRunner = Depends(get_takeaway_runner)) -> TakeawayJob:
+    try: job = runner.cancel(job_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Takeaway job not found") from exc
+    if job.paper_id != paper_id: raise HTTPException(status_code=404, detail="Takeaway job not found")
+    return job
 
 
 @app.get("/api/papers/{paper_id}/pdf")
@@ -873,6 +979,12 @@ def generate_translation(
         raise HTTPException(status_code=404, detail="Paper not found") from exc
     except llm_mod.LLMUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/papers/{paper_id}/translation/jobs/latest", response_model=TranslationJob | None)
+def latest_translation_job(paper_id: str, runner: TranslationJobRunner = Depends(get_translation_runner)) -> TranslationJob | None:
+    try: return runner.latest_for_paper(paper_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Paper not found") from exc
 
 
 @app.get("/api/papers/{paper_id}/translation/jobs/{job_id}", response_model=TranslationJob)

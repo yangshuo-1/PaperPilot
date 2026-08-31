@@ -119,6 +119,109 @@ class PaperStore:
         """Public Resolve the paper directory (mirrors _paper_dir)."""
         return self._paper_dir(paper_id)
 
+    def reading_list_path(self) -> Path:
+        return self.settings.references_dir / "reading_list.json"
+
+    def reading_list(self) -> dict[str, Any]:
+        path = self.reading_list_path()
+        if not path.exists():
+            return {"version": 1, "entries": []}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"version": 1, "entries": []}
+        if not isinstance(value, dict) or not isinstance(value.get("entries"), list):
+            return {"version": 1, "entries": []}
+        return {"version": 1, "entries": [item for item in value["entries"] if isinstance(item, dict) and item.get("paper_id")]}
+
+    def reading_list_items(self) -> list[dict[str, Any]]:
+        papers = {paper.id: paper for paper in self.list_papers()}
+        result: list[dict[str, Any]] = []
+        changed = False
+        for item in self.reading_list().get("entries", []):
+            paper_id = str(item.get("paper_id"))
+            if paper_id not in papers:
+                changed = True
+                continue
+            result.append({
+                "paper_id": paper_id,
+                "added_at": str(item.get("added_at") or now_iso()),
+                "priority": max(0, min(100, int(item.get("priority") or 0))),
+            })
+        if changed:
+            self._write_reading_list(result)
+        return sorted(result, key=lambda item: (-item["priority"], item["added_at"], item["paper_id"]))
+
+    def _write_reading_list(self, entries: list[dict[str, Any]]) -> None:
+        self._write_text_atomic(
+            self.reading_list_path(),
+            json.dumps({"version": 1, "entries": entries}, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    def get_reading_list(self) -> dict[str, Any]:
+        papers_by_id = {paper.id: paper for paper in self.list_papers()}
+        entries = self.reading_list_items()
+        return {
+            "papers": [papers_by_id[item["paper_id"]] for item in entries],
+            "entries": entries,
+            "total": len(entries),
+        }
+
+    def add_to_reading_list(self, paper_id: str, priority: int = 0) -> dict[str, Any]:
+        self.get_paper(paper_id)
+        entries = self.reading_list_items()
+        existing = next((item for item in entries if item["paper_id"] == paper_id), None)
+        if existing:
+            existing["priority"] = max(0, min(100, int(priority)))
+        else:
+            entries.append({"paper_id": paper_id, "added_at": now_iso(), "priority": max(0, min(100, int(priority)))})
+        self._write_reading_list(entries)
+        return self.get_reading_list()
+
+    def update_reading_list(self, paper_id: str, priority: int) -> dict[str, Any]:
+        self.get_paper(paper_id)
+        entries = self.reading_list_items()
+        existing = next((item for item in entries if item["paper_id"] == paper_id), None)
+        if not existing:
+            raise KeyError(paper_id)
+        existing["priority"] = max(0, min(100, int(priority)))
+        self._write_reading_list(entries)
+        return self.get_reading_list()
+
+    def remove_from_reading_list(self, paper_id: str) -> dict[str, Any]:
+        self.get_paper(paper_id)
+        entries = [item for item in self.reading_list_items() if item["paper_id"] != paper_id]
+        self._write_reading_list(entries)
+        return self.get_reading_list()
+
+    def list_paper_artifacts(self, paper_id: str) -> list[dict[str, Any]]:
+        self.get_paper(paper_id)
+        paper_dir = self._paper_dir(paper_id)
+        if not paper_dir.is_dir():
+            return []
+        artifacts: list[dict[str, Any]] = []
+        for path in sorted(paper_dir.rglob("*")):
+            if not path.is_file() or path.name in {"manifest.json", "runs.jsonl"}:
+                continue
+            relative = path.relative_to(paper_dir).as_posix()
+            name = path.name
+            if path.suffix.lower() == ".pdf":
+                kind = "source"
+            elif name == "ai_takeaways.json":
+                kind = "takeaways"
+            elif name in {"translation_zh.json", "latex_source.md", "latex_plain.txt", "latex_parsed.json"}:
+                kind = "translation" if name == "translation_zh.json" else "derived"
+            elif name.endswith("_analysis.json"):
+                kind = "analysis"
+            elif name == "ai_answers.jsonl" or "Codex" in name or "AI" in name:
+                kind = "ai"
+            elif path.suffix.lower() in {".md", ".txt", ".json", ".jsonl"}:
+                kind = "document"
+            else:
+                kind = "other"
+            artifacts.append({"path": relative, "label": relative, "kind": kind, "size": path.stat().st_size})
+        return artifacts
+
     def search_papers(self, q: str | None, tags: list[str]) -> list[Paper]:
         papers = self.list_papers()
         if q:
@@ -217,6 +320,145 @@ class PaperStore:
             for path in sorted(paper_dir.glob("*.md")):
                 docs.append(DocumentSummary(name=path.name, title=self._document_title(path), path=str(path)))
         return docs
+
+    def search_paper(self, paper_id: str, query: str, *, limit: int = 50) -> dict[str, Any]:
+        self.get_paper(paper_id)
+        needle = re.sub(r"\s+", " ", query).strip().casefold()
+        if not needle:
+            return {"paper_id": paper_id, "query": query, "total": 0, "results": []}
+        paper_dir = self._paper_dir(paper_id)
+        results: list[dict[str, Any]] = []
+        total = 0
+
+        def collect(source: str, name: str, text: str, page: int | None = None) -> None:
+            nonlocal total
+            normalized = re.sub(r"\s+", " ", text)
+            haystack = normalized.casefold()
+            offset = 0
+            while len(results) < limit:
+                index = haystack.find(needle, offset)
+                if index < 0:
+                    break
+                total += 1
+                left = max(0, index - 120)
+                right = min(len(normalized), index + len(needle) + 160)
+                results.append({"source": source, "name": name, "page": page, "quote": normalized[left:right].strip(), "match": normalized[index:index + len(needle)]})
+                offset = index + max(1, len(needle))
+            while True:
+                index = haystack.find(needle, offset)
+                if index < 0:
+                    break
+                total += 1
+                offset = index + max(1, len(needle))
+
+        paper = self.get_paper(paper_id)
+        pdf_path = Path(paper.local_pdf_path) if paper.local_pdf_path else None
+        if pdf_path and pdf_path.is_file():
+            try:
+                reader = _reader.PdfReader(str(pdf_path))
+                for page_number, page_obj in enumerate(reader.pages, start=1):
+                    collect("pdf", pdf_path.name, page_obj.extract_text() or "", page_number)
+            except Exception:
+                pass
+        plain_path = paper_dir / "latex_plain.txt"
+        if plain_path.is_file():
+            collect("latex", plain_path.name, plain_path.read_text(encoding="utf-8"))
+        for document_path in sorted(paper_dir.glob("*.md")):
+            collect("document", document_path.name, document_path.read_text(encoding="utf-8"))
+        return {"paper_id": paper_id, "query": query, "total": total, "results": results[:limit]}
+
+    def save_ai_answer(self, paper_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        paper = self.get_paper(paper_id)
+        paper_dir = self._paper_dir(paper_id)
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        title = str(payload.get("title") or "论文内 AI 回答").strip() or "论文内 AI 回答"
+        safe_stem = re.sub(r"[^0-9A-Za-z_-]+", "-", title).strip("-")[:48] or "ai-answer"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        document_name = f"{safe_stem}-{timestamp}-{uuid.uuid4().hex[:8]}.md"
+        document_path = paper_dir / document_name
+        citations = payload.get("citations") if isinstance(payload.get("citations"), list) else []
+        selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else None
+        document_version = payload.get("document_version") or None
+        lines = [
+            f"# {title}",
+            "",
+            f"- paper_id: {paper.id}",
+            f"- mode: {payload.get('mode') or 'ask'}",
+            f"- model: {payload.get('model') or 'unknown'}",
+            f"- generated_at: {payload.get('generated_at') or now_iso()}",
+            f"- document_version: {document_version or 'unknown'}",
+            "",
+        ]
+        question = str(payload.get("question") or "").strip()
+        if question:
+            lines.extend(["## 问题", "", question, ""])
+        if selection:
+            lines.extend(["## 选中文本", "", f"> 第 {selection.get('page', '?')} 页：{selection.get('quote', '')}", ""])
+        lines.extend(["## 回答", "", str(payload.get("answer") or "").strip(), ""])
+        valid_citations = [item for item in citations if isinstance(item, dict)]
+        if valid_citations:
+            lines.extend(["## 引用", ""])
+            for citation in valid_citations:
+                page = citation.get("page", "?")
+                quote = str(citation.get("quote") or citation.get("exact quote") or citation.get("exact_quote") or "").strip()
+                lines.append(f"- 第 {page} 页：{quote}")
+            lines.append("")
+        self._write_text_atomic(document_path, "\n".join(lines).rstrip() + "\n")
+        record = {
+            "id": uuid.uuid4().hex,
+            "paper_id": paper_id,
+            "document": document_name,
+            "title": title,
+            "mode": payload.get("mode") or "ask",
+            "question": question,
+            "selection": selection,
+            "answer": str(payload.get("answer") or "").strip(),
+            "citations": citations,
+            "document_version": document_version,
+            "model": payload.get("model") or None,
+            "generated_at": payload.get("generated_at") or now_iso(),
+            "saved_at": now_iso(),
+        }
+        history_path = paper_dir / "ai_answers.jsonl"
+        existing = history_path.read_text(encoding="utf-8") if history_path.exists() else ""
+        self._write_text_atomic(history_path, existing + json.dumps(record, ensure_ascii=False) + "\n")
+        input_version = None
+        pdf_path = Path(paper.local_pdf_path) if paper.local_pdf_path else None
+        if pdf_path and pdf_path.is_file():
+            input_version = _reader.document_version(pdf_path)
+        self._record_assets(
+            paper_id,
+            [
+                asset_record(document_path, paper_dir, role="result", generated_by="ai.save", input_document_version=input_version),
+                asset_record(history_path, paper_dir, role="result", generated_by="ai.save", input_document_version=input_version),
+            ],
+            generator_version="ai.save.v1",
+            run={"stage": "ai_save", "input_document_version": input_version, "outputs": [document_name, history_path.name], "status": "completed"},
+        )
+        return record
+
+    def list_ai_answers(self, paper_id: str) -> list[dict[str, Any]]:
+        paper = self.get_paper(paper_id)
+        path = self._paper_dir(paper_id) / "ai_answers.jsonl"
+        if not path.exists():
+            return []
+        current_version = None
+        pdf_path = Path(paper.local_pdf_path) if paper.local_pdf_path else None
+        if pdf_path and pdf_path.is_file():
+            current_version = _reader.document_version(pdf_path)
+        records: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            item["stale"] = bool(current_version and item.get("document_version") and item.get("document_version") != current_version)
+            records.append(item)
+        return list(reversed(records))
 
     def get_document(self, paper_id: str, document_name: str) -> Document:
         self.get_paper(paper_id)
@@ -733,7 +975,14 @@ class PaperStore:
     def _read_tag_store(self) -> dict[str, Any]:
         if not self.tags_path.exists():
             return {"version": 1, "papers": {}}
-        return json.loads(self.tags_path.read_text(encoding="utf-8"))
+        store = json.loads(self.tags_path.read_text(encoding="utf-8"))
+        if not isinstance(store, dict):
+            return {"version": 2, "papers": {}}
+        version = store.get("version", 1)
+        if isinstance(version, (int, float)) and version < 2:
+            store["version"] = 2
+            self._write_text_atomic(self.tags_path, json.dumps(store, ensure_ascii=False, indent=2) + "\n")
+        return store
 
     def _read_tags(self) -> dict[str, list[str]]:
         store = self._read_tag_store()
@@ -993,6 +1242,7 @@ class PaperStore:
         if parsed_json.exists():
             try:
                 parsed = json.loads(parsed_json.read_text(encoding="utf-8"))
+                self.audit_assets(paper_id)
                 return {"downloaded": True, "parsed": parsed}
             except (OSError, json.JSONDecodeError):
                 pass
@@ -1034,14 +1284,17 @@ class PaperStore:
         self.get_paper(paper_id)
         path = self._paper_dir(paper_id) / "manifest.json"
         if not path.exists():
-            return {"schema_version": 1, "paper_id": paper_id, "assets": []}
+            return self.audit_assets(paper_id)
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            manifest = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError("Invalid paper asset manifest") from exc
+        if not manifest.get("assets"):
+            return self.audit_assets(paper_id)
+        return self.audit_assets(paper_id)
 
     def asset_runs(self, paper_id: str) -> list[dict[str, Any]]:
-        self.get_paper(paper_id)
+        self.asset_manifest(paper_id)
         path = self._paper_dir(paper_id) / "runs.jsonl"
         if not path.exists():
             return []
@@ -1049,6 +1302,71 @@ class PaperStore:
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 records.append(json.loads(line))
+        return records
+
+    def audit_assets(self, paper_id: str) -> dict[str, Any]:
+        paper = self.get_paper(paper_id)
+        paper_dir = self._paper_dir(paper_id)
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = Path(paper.local_pdf_path) if paper.local_pdf_path else None
+        input_version = sha256_file(pdf_path) if pdf_path and pdf_path.is_file() else None
+        candidates: list[tuple[Path, str, str]] = []
+        if pdf_path and pdf_path.is_file() and paper_dir.resolve() in pdf_path.resolve().parents:
+            candidates.append((pdf_path, "source", "paper.import"))
+        for path in paper_dir.glob("*.md"):
+            generated_by = "latex.parse_latex" if path.name == "latex_source.md" else "paper.document"
+            role = "derived" if path.name == "latex_source.md" else "result"
+            candidates.append((path, role, generated_by))
+        for path in paper_dir.glob("*.json"):
+            if path.name in {"manifest.json", "latex_parsed.json", "reader_manifest.json", "translation_zh.json", "ai_takeaways.json"} or path.name.endswith("_analysis.json"):
+                generated_by = {
+                    "latex_parsed.json": "latex.parse_latex",
+                    "reader_manifest.json": "reader.build_manifest",
+                    "translation_zh.json": "translation.generate",
+                    "ai_takeaways.json": "ai.takeaways",
+                }.get(path.name, "paper.analysis")
+                role = "derived" if path.name in {"latex_parsed.json", "reader_manifest.json"} else "result"
+                candidates.append((path, role, generated_by))
+        history_path = paper_dir / "ai_answers.jsonl"
+        if history_path.is_file():
+            candidates.append((history_path, "result", "ai.save"))
+        latex_dir = paper_dir / "latex"
+        if latex_dir.is_dir():
+            candidates.extend((path, "source", "latex.download") for path in latex_dir.rglob("*") if path.is_file())
+        files: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for path, role, generated_by in candidates:
+            if not path.is_file():
+                continue
+            try:
+                relative = str(path.resolve().relative_to(paper_dir.resolve()))
+            except ValueError:
+                continue
+            if relative in seen:
+                continue
+            seen.add(relative)
+            files.append(asset_record(path, paper_dir, role=role, generated_by=generated_by, input_document_version=input_version))
+        manifest = update_manifest(paper_dir, paper_id, files, generator_version="paper.asset_audit.v1")
+        output_paths = sorted(item["path"] for item in files)
+        previous = next((item for item in reversed(self._read_asset_runs(paper_dir)) if item.get("stage") == "asset_audit"), None)
+        if not previous or sorted(previous.get("outputs", [])) != output_paths:
+            append_run(paper_dir, {"paper_id": paper_id, "stage": "asset_audit", "input_document_version": input_version, "outputs": output_paths, "status": "completed", "manifest_generator_version": manifest["generator_version"]})
+        return manifest
+
+    def _read_asset_runs(self, paper_dir: Path) -> list[dict[str, Any]]:
+        path = paper_dir / "runs.jsonl"
+        if not path.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
         return records
 
     def asset_dirs(self, paper_id: str) -> dict[str, str]:

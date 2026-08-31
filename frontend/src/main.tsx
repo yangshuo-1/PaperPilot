@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter, Link, Route, Routes, useParams } from "react-router-dom";
+import { BrowserRouter, Link, Route, Routes, useParams, useSearchParams } from "react-router-dom";
 import type {
   CodexAnalysisJob,
   DiscoveryCandidate,
@@ -195,25 +195,248 @@ function TopNav() {
 }
 
 function ProjectsPage() {
+  const [searchParams] = useSearchParams();
   const [projects, setProjects] = useState<import("./api").Project[]>([]);
+  const [papers, setPapers] = useState<Paper[]>([]);
   const [selected, setSelected] = useState<import("./api").Project | null>(null);
   const [sessions, setSessions] = useState<import("./api").Session[]>([]);
-  const [relations, setRelations] = useState<Array<Record<string, unknown>>>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [name, setName] = useState("");
+  const [workspace, setWorkspace] = useState<import("./api").WorkspaceResponse | null>(null);
+  const [workspaceFile, setWorkspaceFile] = useState("");
+  const [workspaceContent, setWorkspaceContent] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [projectGoal, setProjectGoal] = useState("");
+  const [sessionTitle, setSessionTitle] = useState("");
+  const [sessionGoal, setSessionGoal] = useState("");
+  const [linkTarget, setLinkTarget] = useState<"project" | "session">("project");
+  const [linkKind, setLinkKind] = useState<"paper" | "file" | "artifact">("paper");
+  const [linkRef, setLinkRef] = useState("");
+  const [linkLabel, setLinkLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
-  async function load() { try { const values = await api.listProjects(); setProjects(values); if (selected) { setSelected(await api.getProject(selected.id)); setSessions(await api.listSessions(selected.id)); } } catch (e) { setError(String(e)); } }
-  useEffect(() => { void load(); }, []);
-  useEffect(() => { const saved = window.sessionStorage.getItem("paper-vault-project"); const savedSession = window.sessionStorage.getItem("paper-vault-session"); if (saved) void api.getProject(saved).then(async p => { await open(p, true); const owns = savedSession ? (await api.listSessions(p.id)).some(s => s.id === savedSession) : false; setSelectedSessionId(owns ? savedSession : null); if (!owns) window.sessionStorage.removeItem("paper-vault-session"); }).catch(() => {}); }, []);
-  async function create() { if (!name.trim()) return; await api.createProject({ name, description: "", goal: "" }); setName(""); await load(); }
-  async function open(project: import("./api").Project, restoring = false) { setSelected(project); setSelectedSessionId(null); if (!restoring) window.sessionStorage.removeItem("paper-vault-session"); window.sessionStorage.setItem("paper-vault-project", project.id); setSessions(await api.listSessions(project.id)); setRelations(await api.getRelations(project.id)); }
-  async function createSession() { if (!selected) return; const title = window.prompt("Session 标题", "阅读与分析")?.trim(); if (!title) return; const session = await api.createSession(selected.id, { title, goal: "" }); setSessions([...sessions, session]); setSelectedSessionId(session.id); window.sessionStorage.setItem("paper-vault-session", session.id); }
-  async function decideRelation(id: string, accepted: boolean) { if (selected) setRelations(await api.decideRelation(selected.id, id, accepted)); }
-  async function link(kind: "paper" | "file" | "artifact") { if (!selected) return; const ref = window.prompt(`${kind} 引用（路径或 ID）`)?.trim(); if (!ref) return; await api.linkProject(selected.id, { kind, ref, label: `${kind} 快照`, metadata: { snapshot_at: new Date().toISOString() } }); await load(); }
-  async function removeProject() { if (!selected || !window.confirm(`确认删除 Project“${selected.name}”？只删除容器和 Session，不删除论文、文件或 AI 产物。`)) return; await api.deleteProject(selected.id); setSelected(null); setSelectedSessionId(null); window.sessionStorage.removeItem("paper-vault-project"); window.sessionStorage.removeItem("paper-vault-session"); await load(); }
-  async function removeSession(id: string) { if (!window.confirm("确认删除此 Session？只删除 Session 引用和历史，不删除论文、文件或 AI 产物。")) return; await api.deleteSession(id); setSelectedSessionId(null); window.sessionStorage.removeItem("paper-vault-session"); await load(); }
-  async function linkSessionResource(sessionId: string, kind: "paper" | "file" | "artifact") { const ref = window.prompt(`${kind} 快照引用`)?.trim(); if (!ref) return; await api.linkSession(sessionId, { kind, ref, label: `${kind} 快照`, metadata: { snapshot_at: new Date().toISOString() } }); await load(); }
-  return <AppShell><div className="paperHeader"><div><h1>Projects</h1><p className="muted">本地研究容器；删除不级联论文、文件或 AI 产物。</p></div></div>{error && <div className="errorBanner">{error}</div>}<div className="projectGrid"><section className="asideCard"><h3>新建 Project</h3><div className="aiQuestion"><input value={name} onChange={e => setName(e.target.value)} placeholder="Project 名称" /><button className="primaryBtn" onClick={create}>创建</button></div>{projects.map(p => <button className={cls("projectRow", selected?.id === p.id && "active")} key={p.id} onClick={() => void open(p)}>{p.name}<small>{p.session_ids.length} sessions · {p.links.length} links</small></button>)}</section>{selected ? <section className="asideCard"><div className="annotationHeader"><h2>{selected.name}</h2><button className="quietBtn" onClick={() => void removeProject()}>删除 Project</button></div><p>{selected.goal || "未设置目标"}</p><ResearchOverviewPanel projectId={selected.id}/><RelationSuggestions projectId={selected.id}/><h3>关联资源</h3>{selected.links.length ? selected.links.map((link, i) => <div className="projectLink" key={i}>{String(link.kind)} · {String(link.label || link.ref)}{link.orphaned ? <em>孤立引用：目标不存在或已移除</em> : null}</div>) : <p className="muted">暂无资源</p>}<div className="projectButtons"><button className="quietBtn" onClick={() => void link("paper")}>关联论文</button><button className="quietBtn" onClick={() => void link("file")}>关联文件</button><button className="quietBtn" onClick={() => void link("artifact")}>关联 AI/Codex 产物</button></div><h3>Sessions <button className="quietBtn" onClick={() => void createSession()}>新建</button></h3>{sessions.map(s => <div className={cls("sessionRow", selectedSessionId === s.id && "active")} key={s.id}><button type="button" className="sessionTitle" onClick={() => { setSelectedSessionId(s.id); window.sessionStorage.setItem("paper-vault-session", s.id); }}><b>{s.title}</b><span>{s.status}</span></button>{selectedSessionId === s.id && <p>{s.goal || "未设置目标"}</p>}{selectedSessionId === s.id && <GovernanceInbox session={s} onRefresh={() => void load()} />}<small>最近活动 {s.last_activity_at}</small>{selectedSessionId === s.id && <><div><button className="quietBtn" disabled={s.status !== "active"} onClick={() => void api.updateSession(s.id, { status: "paused" }).then(load)}>暂停</button><button className="quietBtn" disabled={s.status !== "paused"} onClick={() => void api.updateSession(s.id, { status: "active" }).then(load)}>恢复</button><button className="quietBtn" disabled={s.status === "completed" || s.status === "failed"} onClick={() => void api.updateSession(s.id, { status: "completed" }).then(load)}>结束</button><button className="quietBtn" onClick={() => void removeSession(s.id)}>删除</button></div><div className="projectButtons"><button className="quietBtn" onClick={() => void linkSessionResource(s.id, "paper")}>关联论文</button><button className="quietBtn" onClick={() => void linkSessionResource(s.id, "file")}>关联文件</button><button className="quietBtn" onClick={() => void linkSessionResource(s.id, "artifact")}>关联 AI/Codex</button></div>{s.links.map((link, i) => <small key={`link-${i}`}>↳ {String(link.kind)} · {String(link.ref)} {link.orphaned ? "（孤立引用）" : ""}</small>)}{s.events.map((event, i) => <small key={i}>· {String(event.action)} {String(event.at)}</small>)}</>}</div>)}</section> : <section className="asideCard"><h2>选择一个 Project</h2><p className="muted">刷新后项目与 Session 从本地存储恢复。</p></section>}</div></AppShell>;
+  const [busy, setBusy] = useState(false);
+
+  async function openProject(projectId: string, sessionId?: string | null) {
+    try {
+      const [project, projectSessions, projectWorkspace] = await Promise.all([
+        api.getProject(projectId),
+        api.listSessions(projectId),
+        api.getWorkspace(projectId),
+      ]);
+      setSelected(project);
+      setSessions(projectSessions);
+      setWorkspace(projectWorkspace);
+      const nextSession = projectSessions.find((session) => session.id === sessionId) || projectSessions[0];
+      setSelectedSessionId(nextSession?.id || null);
+      window.sessionStorage.setItem("paper-vault-project", project.id);
+      if (nextSession) window.sessionStorage.setItem("paper-vault-session", nextSession.id);
+      else window.sessionStorage.removeItem("paper-vault-session");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function loadProjects(preferredId?: string | null) {
+    try {
+      const [values, paperResponse] = await Promise.all([api.listProjects(), api.listPapers("", [])]);
+      setProjects(values);
+      setPapers(paperResponse.papers);
+      const storedId = window.sessionStorage.getItem("paper-vault-project");
+      const queryPaper = searchParams.get("paper");
+      setLinkKind("paper");
+      setLinkRef(queryPaper && paperResponse.papers.some((paper) => paper.id === queryPaper) ? queryPaper : "");
+      const target = preferredId || storedId || values[0]?.id;
+      if (target && values.some((project) => project.id === target)) {
+        await openProject(target, window.sessionStorage.getItem("paper-vault-session"));
+      } else if (queryPaper && values[0]) {
+        await openProject(values[0].id);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  useEffect(() => { void loadProjects(); }, [searchParams]);
+
+  async function createProject() {
+    if (!projectName.trim()) return;
+    setBusy(true);
+    try {
+      const project = await api.createProject({ name: projectName.trim(), description: "", goal: projectGoal.trim() });
+      setProjectName("");
+      setProjectGoal("");
+      await loadProjects(project.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createSession() {
+    if (!selected || !sessionTitle.trim()) return;
+    setBusy(true);
+    try {
+      const session = await api.createSession(selected.id, { title: sessionTitle.trim(), goal: sessionGoal.trim() });
+      setSessionTitle("");
+      setSessionGoal("");
+      await openProject(selected.id, session.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitLink() {
+    if (!selected || !linkRef.trim()) return;
+    setBusy(true);
+    try {
+      const payload = { kind: linkKind, ref: linkRef.trim(), label: linkLabel.trim() || `${linkKind} 快照`, metadata: { snapshot_at: new Date().toISOString() } };
+      if (linkTarget === "project") await api.linkProject(selected.id, payload);
+      else if (selectedSessionId) await api.linkSession(selectedSessionId, payload);
+      setLinkRef("");
+      setLinkLabel("");
+      await openProject(selected.id, selectedSessionId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveWorkspaceFile() {
+    if (!selected || !workspaceFile.trim()) return;
+    setBusy(true);
+    try {
+      await api.writeWorkspaceFile(selected.id, workspaceFile.trim(), workspaceContent);
+      setWorkspace(await api.getWorkspace(selected.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function readWorkspaceFile(path: string) {
+    if (!selected) return;
+    try {
+      setWorkspaceFile(path);
+      setWorkspaceContent(await api.readWorkspaceFile(selected.id, path));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeWorkspaceFile(path: string) {
+    if (!selected || !window.confirm(`确认删除 workspace 文件“${path}”？`)) return;
+    try {
+      await api.deleteWorkspaceFile(selected.id, path);
+      setWorkspace(await api.getWorkspace(selected.id));
+      if (workspaceFile === path) {
+        setWorkspaceFile("");
+        setWorkspaceContent("");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function updateSession(sessionId: string, status: "active" | "paused" | "completed") {
+    if (!selected) return;
+    try {
+      await api.updateSession(sessionId, { status });
+      await openProject(selected.id, sessionId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeSession(sessionId: string) {
+    if (!window.confirm("确认删除此 Session？将同时删除该 Session workspace 文件；不会删除论文、文件或 AI 产物。")) return;
+    if (!selected) return;
+    try {
+      await api.deleteSession(sessionId);
+      await openProject(selected.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeProject() {
+    if (!selected || !window.confirm(`确认删除 Project“${selected.name}”？将同时删除 Project workspace 文件、容器和 Session；不会删除论文、文件或 AI 产物。`)) return;
+    try {
+      await api.deleteProject(selected.id);
+      setSelected(null);
+      setSessions([]);
+      setWorkspace(null);
+      window.sessionStorage.removeItem("paper-vault-project");
+      window.sessionStorage.removeItem("paper-vault-session");
+      await loadProjects();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const selectedSession = sessions.find((session) => session.id === selectedSessionId) || null;
+  const workspaceFiles = workspace?.entries.filter((entry) => entry.kind === "file") || [];
+  const paperFromQuery = searchParams.get("paper");
+
+  return (
+    <AppShell>
+      <div className="paperHeader">
+        <div>
+          <h1>Projects</h1>
+          <p className="muted">把论文、AI/Codex 产物和可编辑研究文件放进同一个可追踪容器。</p>
+        </div>
+      </div>
+      {error && <div className="errorBanner">{error}<button type="button" className="quietBtn" onClick={() => setError(null)}>关闭</button></div>}
+      <div className="projectGrid">
+        <section className="asideCard">
+          <h3>新建 Project</h3>
+          <div className="formStack">
+            <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Project 名称" />
+            <input value={projectGoal} onChange={(event) => setProjectGoal(event.target.value)} placeholder="研究目标（可选）" />
+            <button type="button" className="primaryBtn" disabled={busy || !projectName.trim()} onClick={() => void createProject()}>创建 Project</button>
+          </div>
+          <h3 className="sectionLabel">已有 Projects</h3>
+          {projects.map((project) => <button type="button" className={cls("projectRow", selected?.id === project.id && "active")} key={project.id} onClick={() => void openProject(project.id)}><b>{project.name}</b><small>{project.session_ids.length} sessions · {project.links.length} links</small></button>)}
+          {!projects.length && <p className="muted">还没有 Project。</p>}
+        </section>
+        {selected ? (
+          <section className="asideCard projectDetail">
+            <div className="annotationHeader"><div><h2>{selected.name}</h2><small className="muted">workspace: {selected.workspace_root || `projects/${selected.id}`}</small></div><button type="button" className="quietBtn" onClick={() => void removeProject()}>删除 Project</button></div>
+            <p>{selected.goal || "未设置研究目标"}</p>
+            {paperFromQuery && <div className="notice">已从论文页进入：选择下面的论文资源并提交关联。</div>}
+            <ResearchOverviewPanel projectId={selected.id}/>
+            <RelationSuggestions projectId={selected.id}/>
+            <h3>关联资源</h3>
+            {selected.links.length ? selected.links.map((link, index) => <div className="projectLink" key={`${String(link.kind)}-${String(link.ref)}-${index}`}><b>{String(link.kind)}</b> · {String(link.label || link.ref)}{link.orphaned ? <em>孤立引用：目标不存在或已移除</em> : null}</div>) : <p className="muted">暂无资源</p>}
+            <div className="resourceForm">
+              <div className="formRow"><select value={linkTarget} onChange={(event) => setLinkTarget(event.target.value as "project" | "session")}><option value="project">关联到 Project</option><option value="session" disabled={!selectedSessionId}>关联到当前 Session</option></select><select value={linkKind} onChange={(event) => { const next = event.target.value as "paper" | "file" | "artifact"; setLinkKind(next); setLinkRef(next === "paper" ? paperFromQuery || "" : ""); }}><option value="paper">论文</option><option value="file">文件</option><option value="artifact">AI/Codex 产物</option></select></div>
+              {linkKind === "paper" ? <select value={linkRef} onChange={(event) => setLinkRef(event.target.value)}><option value="">选择论文…</option>{papers.map((paper) => <option key={paper.id} value={paper.id}>{paper.title}</option>)}</select> : <input value={linkRef} onChange={(event) => setLinkRef(event.target.value)} placeholder={linkKind === "artifact" ? "document:paper_id:file.md 或 codex-job:..." : "仓库内相对/绝对文件路径"} />}
+              <div className="formRow"><input value={linkLabel} onChange={(event) => setLinkLabel(event.target.value)} placeholder="显示名称（可选）" /><button type="button" className="quietBtn" disabled={busy || !linkRef.trim() || (linkTarget === "session" && !selectedSessionId)} onClick={() => void submitLink()}>保存关联</button></div>
+            </div>
+
+            <div className="workspacePanel">
+              <div className="annotationHeader"><div><h3>Workspace</h3><small className="muted">项目内文件可直接编辑，路径会限制在当前 Project。</small></div><span className="chip">{workspaceFiles.length} files</span></div>
+              {workspaceFiles.length ? <div className="workspaceFiles">{workspaceFiles.map((entry) => <div className={cls("workspaceFile", workspaceFile === entry.path && "active")} key={entry.path}><button type="button" onClick={() => void readWorkspaceFile(entry.path)}>{entry.path}</button><small>{entry.size} B</small><button type="button" className="annotationDelete" onClick={() => void removeWorkspaceFile(entry.path)}>删除</button></div>)}</div> : <p className="muted">还没有 workspace 文件。</p>}
+              <div className="formStack"><input value={workspaceFile} onChange={(event) => setWorkspaceFile(event.target.value)} placeholder="例如 notes/reading-log.md" /><textarea value={workspaceContent} onChange={(event) => setWorkspaceContent(event.target.value)} placeholder="写入研究记录、决策或下一步…" rows={7} /><button type="button" className="primaryBtn" disabled={busy || !workspaceFile.trim()} onClick={() => void saveWorkspaceFile()}>{workspaceFiles.some((entry) => entry.path === workspaceFile) ? "保存文件" : "创建文件"}</button></div>
+            </div>
+
+            <div className="sessionPanel">
+              <div className="annotationHeader"><h3>Sessions</h3><span className="chip">{sessions.length}</span></div>
+              <div className="formRow"><input value={sessionTitle} onChange={(event) => setSessionTitle(event.target.value)} placeholder="Session 标题" /><input value={sessionGoal} onChange={(event) => setSessionGoal(event.target.value)} placeholder="Session 目标（可选）" /><button type="button" className="quietBtn" disabled={busy || !sessionTitle.trim()} onClick={() => void createSession()}>新建</button></div>
+              {sessions.map((session) => <div className={cls("sessionRow", selectedSessionId === session.id && "active")} key={session.id}><button type="button" className="sessionTitle" onClick={() => { setSelectedSessionId(session.id); window.sessionStorage.setItem("paper-vault-session", session.id); }}><b>{session.title}</b><span>{session.status}</span></button><small>{session.goal || "未设置目标"} · workspace: {session.workspace_root || "—"}</small>{selectedSessionId === session.id && <><GovernanceInbox session={session} onRefresh={() => void openProject(selected.id, session.id)} /><div className="projectButtons"><button type="button" className="quietBtn" disabled={session.status !== "active"} onClick={() => void updateSession(session.id, "paused")}>暂停</button><button type="button" className="quietBtn" disabled={session.status !== "paused"} onClick={() => void updateSession(session.id, "active")}>恢复</button><button type="button" className="quietBtn" disabled={session.status === "completed" || session.status === "failed"} onClick={() => void updateSession(session.id, "completed")}>结束</button><button type="button" className="quietBtn" onClick={() => void removeSession(session.id)}>删除</button></div>{session.links.map((link, index) => <small key={`link-${session.id}-${index}`}>↳ {String(link.kind)} · {String(link.label || link.ref)} {link.orphaned ? "（孤立引用）" : ""}</small>)}{session.events.slice(-8).map((event, index) => <small key={`event-${session.id}-${index}`}>· {String(event.action)} {String(event.at)}</small>)}</>}</div>)}
+              {!sessions.length && <p className="muted">还没有 Session。</p>}
+            </div>
+            {selectedSession && <p className="muted">当前 Session：{selectedSession.title}</p>}
+          </section>
+        ) : (
+          <section className="asideCard"><h2>选择一个 Project</h2><p className="muted">Project 会保存论文关联、Session、治理状态和 workspace 文件。</p></section>
+        )}
+      </div>
+    </AppShell>
+  );
 }
 
 function LegacyResearchOverviewPanel({ projectId }: { projectId: string }) {
@@ -273,11 +496,11 @@ function GovernanceInbox({ session, onRefresh }: { session: import("./api").Sess
   useEffect(() => { setCloseout(session.closeout || null); }, [session.closeout]);
   async function load() { setError(""); try { setGovernance(await api.getGovernance(session.id)); } catch { setGovernance(null); setError("治理状态加载失败，可重试"); } }
   useEffect(() => { void load(); }, [session.id]);
-  async function action(id: string, name: string) { setBusy(true); setError(""); try { await api.applyGovernance(session.id, name, id, name === "snooze" ? new Date(Date.now() + 86400000).toISOString() : undefined); await load(); onRefresh(); } catch { setError("治理操作失败，可重试"); } finally { setBusy(false); } }
+  async function action(id: string | undefined, name: string) { setBusy(true); setError(""); try { await api.applyGovernance(session.id, name, id, name === "snooze" ? new Date(Date.now() + 86400000).toISOString() : undefined); await load(); onRefresh(); } catch { setError("治理操作失败，可重试"); } finally { setBusy(false); } }
   async function save() { if (!closeout) return; try { const summary = window.prompt("编辑 summary", closeout.summary) ?? closeout.summary; const handoff = window.prompt("编辑 handoff", closeout.handoff) ?? closeout.handoff; const steps = window.prompt("编辑 next steps（逗号分隔）", closeout.next_steps.join(",")) ?? closeout.next_steps.join(","); const next = await api.saveCloseout(session.id, { summary, handoff, next_steps: steps.split(",").map(x => x.trim()).filter(Boolean) }); setCloseout(next.closeout || null); onRefresh(); } catch { setError("closeout 保存失败，可重试"); } }
   const locked = session.governance?.state === "closed" || session.governance?.state === "archived";
   const canConfirm = !!closeout && !locked && !closeout.confirmed && closeout.session_version === session.updated_at;
-  return <div className="governancePanel"><h4>治理候选</h4>{error && <><p className="errorBanner">{error}</p><button className="quietBtn" onClick={() => void load()}>重试</button></>}{locked && <p className="muted">治理状态：{String(session.governance?.state)}，候选与 closeout 已锁定。</p>}{governance?.candidates.length ? governance.candidates.map(candidate => <div className="projectLink" key={String(candidate.id)}><b>{String(candidate.reason)}</b><small>证据时间：{String(candidate.evidence_at)} · 建议：{String(candidate.suggested_action)}</small><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "ignore")}>忽略</button><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "snooze")}>稍后</button><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "archive")}>归档</button></div>) : !error && !locked && <p className="muted">暂无候选。</p>}<CloseoutEditorV2 session={session} onRefresh={onRefresh}/>{closeout && <div className="projectLink"><p>{closeout.summary}</p><small>模型：{String(closeout.model)} · 版本：{String(closeout.session_version)} · 引用：{(closeout.citations || []).map(item => String(item.label || item.ref)).join("、") || "暂无"}</small><button className="quietBtn" disabled={locked} onClick={() => void save()}>编辑草稿</button><button className="quietBtn" disabled={!canConfirm || busy} onClick={() => void action(session.id, "confirm_close")}>确认关闭</button></div>}</div>;
+  return <div className="governancePanel"><h4>治理候选</h4>{error && <><p className="errorBanner">{error}</p><button className="quietBtn" onClick={() => void load()}>重试</button></>}{locked && <p className="muted">治理状态：{String(session.governance?.state)}，候选与 closeout 已锁定。</p>}{governance?.candidates.length ? governance.candidates.map(candidate => <div className="projectLink" key={String(candidate.id)}><b>{String(candidate.reason)}</b><small>证据时间：{String(candidate.evidence_at)} · 建议：{String(candidate.suggested_action)}</small><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "ignore")}>忽略</button><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "snooze")}>稍后</button><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "archive")}>归档</button></div>) : !error && !locked && <p className="muted">暂无候选。</p>}<CloseoutEditorV2 session={session} onRefresh={onRefresh}/>{closeout && <div className="projectLink"><p>{closeout.summary}</p><small>模型：{String(closeout.model)} · 版本：{String(closeout.session_version)} · 引用：{(closeout.citations || []).map(item => String(item.label || item.ref)).join("、") || "暂无"}</small><button className="quietBtn" disabled={locked} onClick={() => void save()}>编辑草稿</button><button className="quietBtn" disabled={!canConfirm || busy} onClick={() => void action(undefined, "confirm_close")}>确认关闭</button></div>}</div>;
 }
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -407,6 +630,7 @@ function LibraryPage() {
   const [folderEditing, setFolderEditing] = useState<string | null>(null);
   const [quickviewId, setQuickviewId] = useState<string | null>(null);
   const [discovery, setDiscovery] = useState<DiscoveryCandidate[]>([]);
+  const [discoveryErrors, setDiscoveryErrors] = useState<string[]>([]);
   const [discoveryDays, setDiscoveryDays] = useState(1);
   const [discovering, setDiscovering] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
@@ -454,6 +678,7 @@ function LibraryPage() {
     try {
       const response = await api.discoverPapers(discoveryDays, true);
       setDiscovery(response.candidates);
+      setDiscoveryErrors(response.errors);
       setDiscoveryOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -734,8 +959,14 @@ function LibraryPage() {
                   <button type="button" className="quietBtn" onClick={() => setDiscoveryOpen(false)}>收起</button>
                 </div>
               </div>
+              {discoveryErrors.length > 0 && (
+                <div className="errorBanner">
+                  {discovery.length > 0 ? "部分论文来源抓取失败，当前结果可能不完整：" : "论文来源暂时不可用，尚未获得候选："}
+                  <ul>{discoveryErrors.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>
+              )}
               {discovery.length === 0 ? (
-                <div className="empty">没有达到当前关键词阈值的候选。</div>
+                <div className="empty">{discoveryErrors.length ? "请稍后重试，或检查网络连接。" : "没有达到当前关键词阈值的候选。"}</div>
               ) : (
                 <div className="discoveryList">
                   {discovery.map((candidate) => (
@@ -1196,10 +1427,17 @@ function PaperPage() {
   const [annotations, setAnnotations] = useState<import("./api").AnnotationResponse | null>(null);
   const [jumpCommand, setJumpCommand] = useState<{ page: number; nonce: number } | null>(null);
   const [annotationError, setAnnotationError] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
   const [aiQuestion, setAiQuestion] = useState("");
   const [aiResponse, setAiResponse] = useState<import("./api").AIResponse | null>(null);
+  const [aiHistory, setAiHistory] = useState<import("./api").AISavedAnswer[]>([]);
+  const [aiSaveTitle, setAiSaveTitle] = useState("论文内 AI 回答");
   const [takeaways, setTakeaways] = useState<import("./api").TakeawayResponse | null>(null);
+  const [takeawayJob, setTakeawayJob] = useState<import("./api").TakeawayJob | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
+  const [paperSearchQuery, setPaperSearchQuery] = useState("");
+  const [paperSearchResults, setPaperSearchResults] = useState<import("./api").PaperSearchResponse | null>(null);
+  const [paperSearchBusy, setPaperSearchBusy] = useState(false);
 
   async function load() {
     if (!paperId) return;
@@ -1217,6 +1455,14 @@ function PaperPage() {
       setCodexJob(latestJob);
       setAnnotations(await api.getAnnotations(paperId).catch(() => null));
       setTakeaways(await api.getTakeaways(paperId).catch(() => null));
+      setAiHistory(await api.getAIHistory(paperId).catch(() => []));
+      const [latestTranslation, latestTakeaway] = await Promise.all([
+        api.getLatestTranslationJob(paperId).catch(() => null),
+        api.getLatestTakeawayJob(paperId).catch(() => null),
+      ]);
+      setTranslationJob(latestTranslation);
+      setTranslating(Boolean(latestTranslation && ["queued", "running"].includes(latestTranslation.status)));
+      setTakeawayJob(latestTakeaway);
       if (docsResponse[0] && !activeDoc) {
         setActiveDoc(docsResponse[0].name);
         setDocumentContent((await api.getDocument(paperId, docsResponse[0].name)).content);
@@ -1290,6 +1536,9 @@ function PaperPage() {
     if (!paperId) return;
     try {
       setTranslation(await api.getTranslation(paperId));
+      const job = await api.getLatestTranslationJob(paperId).catch(() => null);
+      setTranslationJob(job);
+      setTranslating(Boolean(job && ["queued", "running"].includes(job.status)));
       setTab("translation");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1317,6 +1566,21 @@ function PaperPage() {
     return () => window.clearInterval(timer);
   }, [paperId, translationJob?.job_id, translationJob?.status]);
 
+  useEffect(() => {
+    if (!paperId || !takeawayJob || !["queued", "running"].includes(takeawayJob.status)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const job = await api.getTakeawayJob(paperId, takeawayJob.job_id);
+        setTakeawayJob(job);
+        if (job.status === "succeeded") setTakeaways(await api.getTakeaways(paperId));
+        if (job.status === "failed") setError(job.error || "Takeaways 生成失败");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [paperId, takeawayJob?.job_id, takeawayJob?.status]);
+
   async function generateTranslation() {
     if (!paperId) return;
     setTranslating(true);
@@ -1324,9 +1588,24 @@ function PaperPage() {
     try {
       const job = await api.generateTranslation(paperId);
       setTranslationJob(job);
+      if (job.status === "succeeded") {
+        setTranslation(await api.getTranslation(paperId));
+        setTranslating(false);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setTranslating(false);
+    }
+  }
+
+  async function cancelTranslation() {
+    if (!paperId || !translationJob) return;
+    try {
+      const job = await api.cancelTranslationJob(paperId, translationJob.job_id);
+      setTranslationJob(job);
+      setTranslating(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -1340,6 +1619,7 @@ function PaperPage() {
         selection: lastSelection,
       });
       setAiResponse(response);
+      setAiSaveTitle(mode === "ask" ? "论文内 AI 回答" : mode === "explain" ? "选中文本解释" : "选中文本翻译");
       setTab("ai");
     } catch (err) {
       setAiResponse({ paper_id: paperId, mode, answer: "", citations: [], generated_at: new Date().toISOString(), stale: false, available: false, error: err instanceof Error ? err.message : String(err) });
@@ -1351,9 +1631,59 @@ function PaperPage() {
   async function regenerateTakeaways() {
     if (!paperId) return;
     setAiBusy(true);
-    try { setTakeaways(await api.generateTakeaways(paperId)); }
+    try {
+      const job = await api.generateTakeaways(paperId);
+      setTakeawayJob(job);
+      setTab("ai");
+    }
     catch (err) { setTakeaways({ paper_id: paperId, takeaways: [], available: false, error: err instanceof Error ? err.message : String(err) }); }
     finally { setAiBusy(false); }
+  }
+
+  async function cancelTakeaways() {
+    if (!paperId || !takeawayJob) return;
+    try {
+      setTakeawayJob(await api.cancelTakeawayJob(paperId, takeawayJob.job_id));
+      setAiBusy(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function searchPaper() {
+    if (!paperId || !paperSearchQuery.trim()) return;
+    setPaperSearchBusy(true);
+    try {
+      setPaperSearchResults(await api.searchPaper(paperId, paperSearchQuery.trim()));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPaperSearchBusy(false);
+    }
+  }
+
+  async function saveAIAnswer() {
+    if (!paperId || !aiResponse?.answer.trim()) return;
+    setAiBusy(true);
+    try {
+      const saved = await api.saveAIAnswer(paperId, {
+        title: aiSaveTitle.trim() || "论文内 AI 回答",
+        mode: aiResponse.mode,
+        question: aiQuestion,
+        answer: aiResponse.answer,
+        citations: aiResponse.citations,
+        selection: lastSelection,
+        document_version: aiResponse.document_version,
+        model: aiResponse.model,
+        generated_at: aiResponse.generated_at,
+      });
+      setAiHistory((current) => [saved, ...current]);
+      setDocuments(await api.listDocuments(paperId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAiBusy(false);
+    }
   }
 
   async function downloadCitation(fmt: "bibtex" | "gbt7714" | "apa") {
@@ -1385,10 +1715,11 @@ function PaperPage() {
     if (!paperId || !lastSelection) return;
     setAnnotationError(null);
     try {
-      const payload = { ...lastSelection, content: kind === "note" ? window.prompt("笔记内容", "") || "" : undefined };
+      const payload = { ...lastSelection, content: kind === "note" ? noteDraft.trim() : undefined };
       if (kind === "note" && !payload.content) return;
       const result = kind === "highlight" ? await api.createHighlight(paperId, payload) : await api.createNote(paperId, payload);
       setAnnotations(result);
+      if (kind === "note") setNoteDraft("");
     } catch (err) {
       setAnnotationError(err instanceof Error ? err.message : String(err));
     }
@@ -1455,6 +1786,9 @@ function PaperPage() {
           <button type="button" className="quietBtn" onClick={downloadExport}>
             Markdown 导出
           </button>
+          <Link className="quietBtn" to={`/projects?paper=${encodeURIComponent(paper.id)}`}>
+            加入 Project
+          </Link>
         </div>
       </div>
 
@@ -1521,11 +1855,22 @@ function PaperPage() {
         </button>
       </div>
 
+      <div className="paperSearchPanel">
+        <form className="paperSearchForm" onSubmit={(event) => { event.preventDefault(); void searchPaper(); }}>
+          <label htmlFor="paper-search">论文内全文搜索</label>
+          <input id="paper-search" value={paperSearchQuery} onChange={(event) => setPaperSearchQuery(event.target.value)} placeholder="搜索 PDF、LaTeX 和分析文档…" />
+          <button type="submit" className="quietBtn" disabled={paperSearchBusy || !paperSearchQuery.trim()}>{paperSearchBusy ? "搜索中…" : "搜索"}</button>
+          {paperSearchResults && <button type="button" className="quietBtn" onClick={() => setPaperSearchResults(null)}>清除</button>}
+        </form>
+        {paperSearchResults && <div className="paperSearchResults"><small>“{paperSearchResults.query}”命中 {paperSearchResults.total} 处，显示前 {paperSearchResults.results.length} 处</small>{paperSearchResults.results.map((result, index) => <button type="button" className="paperSearchResult" key={`${result.source}-${result.name}-${result.page}-${index}`} onClick={() => { if (result.page) { setJumpCommand({ page: result.page, nonce: Date.now() }); setTab("pdf"); } else { setTab("notes"); setActiveDoc(result.name); void api.getDocument(paper.id, result.name).then((document) => setDocumentContent(document.content)).catch(() => {}); } }}><span><b>{result.source === "pdf" ? `PDF · p.${result.page}` : `${result.source} · ${result.name}`}</b><mark>{result.match}</mark></span><small>{result.quote}</small></button>)}{paperSearchResults.total === 0 && <p className="muted">没有命中。</p>}</div>}
+      </div>
+
       {tab === "pdf" && lastSelection && (
         <div className="annotationActionBar">
           <span>已选第 {lastSelection.page} 页文本：{lastSelection.quote.slice(0, 120)}{lastSelection.quote.length > 120 ? "…" : ""}</span>
           <button type="button" className="primaryBtn" onClick={() => createAnnotation("highlight")}>创建高亮</button>
-          <button type="button" className="quietBtn" onClick={() => createAnnotation("note")}>添加笔记</button>
+          <input className="noteDraft" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="输入笔记内容" />
+          <button type="button" className="quietBtn" disabled={!noteDraft.trim()} onClick={() => createAnnotation("note")}>保存笔记</button>
           <button type="button" className="quietBtn" disabled={aiBusy} onClick={() => runAI("explain")}>Explain</button>
           <button type="button" className="quietBtn" disabled={aiBusy} onClick={() => runAI("translate")}>Translate</button>
         </div>
@@ -1557,11 +1902,12 @@ function PaperPage() {
       {tab === "ai" && (
         <div className="reader aiResults">
           <div className="readerInner">
-            {aiResponse && <AIAnswer response={aiResponse} onJump={(page) => { setJumpCommand({ page, nonce: Date.now() }); setTab("pdf"); }} />}
-            <div className="annotationHeader"><strong>AI Takeaways</strong><button type="button" className="quietBtn" disabled={aiBusy} onClick={regenerateTakeaways}>重新生成</button></div>
+            {aiResponse && <><AIAnswer response={aiResponse} onJump={(page) => { setJumpCommand({ page, nonce: Date.now() }); setTab("pdf"); }} onSave={saveAIAnswer} /><div className="aiSaveRow"><input value={aiSaveTitle} onChange={(event) => setAiSaveTitle(event.target.value)} placeholder="保存文档标题" /><button type="button" className="quietBtn" disabled={aiBusy || !aiResponse.answer.trim()} onClick={() => void saveAIAnswer()}>保存为 Markdown</button></div></>}
+            <div className="annotationHeader"><strong>AI Takeaways</strong><div className="headerActions"><span className="muted">{takeawayJob && ["queued", "running"].includes(takeawayJob.status) ? `任务${takeawayJob.status === "queued" ? "排队中" : "运行中"}` : takeaways?.takeaways.length ? `${takeaways.takeaways.length} 条` : "未生成"}</span><button type="button" className="quietBtn" disabled={aiBusy || !!takeawayJob && ["queued", "running"].includes(takeawayJob.status)} onClick={regenerateTakeaways}>重新生成</button>{takeawayJob && ["queued", "running"].includes(takeawayJob.status) && <button type="button" className="quietBtn" onClick={() => void cancelTakeaways()}>取消</button>}</div></div>
             {takeaways?.error && <div className="errorBanner">{takeaways.error}（阅读器与已有标注未受影响）</div>}
             {takeaways?.takeaways.map((item) => <AIAnswer key={item.id} response={{ paper_id: paperId || "", mode: "takeaway", answer: `${item.stale ? "[版本已失效] " : ""}${item.content}`, citations: item.citations, generated_at: item.generated_at, document_version: item.document_version, model: item.model, stale: item.stale, available: true }} onJump={(page) => { setJumpCommand({ page, nonce: Date.now() }); setTab("pdf"); }} />)}
             {!takeaways?.takeaways.length && !takeaways?.error && <p className="readerMuted">尚无 Takeaways，可点击“重新生成”。</p>}
+            {aiHistory.length > 0 && <div className="savedAnswers"><h4>已保存回答</h4>{aiHistory.slice(0, 8).map((item) => <button type="button" key={item.id} onClick={() => { setAiResponse({ paper_id: item.paper_id, mode: item.mode, answer: item.answer, citations: item.citations, document_version: item.document_version, model: item.model, generated_at: item.generated_at, stale: item.stale, available: true }); setAiQuestion(item.question); setAiSaveTitle(item.title); }}>{item.title}{item.stale ? " · 旧版本" : ""}<small>{item.saved_at}</small></button>)}</div>}
           </div>
         </div>
       )}
@@ -1596,6 +1942,7 @@ function PaperPage() {
           onGenerate={generateTranslation}
           translating={translating}
           job={translationJob}
+          onCancel={cancelTranslation}
         />
       )}
 
@@ -1645,13 +1992,15 @@ function PaperPage() {
   );
 }
 
-function AIAnswer({ response, onJump }: { response: import("./api").AIResponse; onJump: (page: number) => void }) {
+function AIAnswer({ response, onJump, onSave }: { response: import("./api").AIResponse; onJump: (page: number) => void; onSave?: () => void }) {
   return <div className="aiAnswer">
-    {response.error ? <div className="errorBanner">{response.error}（阅读器与已有标注未受影响，可重试）</div> : <>
+    {response.error && <div className="errorBanner">{response.error}（阅读器与已有标注未受影响，可重试）</div>}
+    {response.answer ? <>
       <div className="aiAnswerMeta">{response.mode} · {response.model || "未配置模型"} · {response.stale ? "文档版本已失效" : "当前文档版本"}</div>
-      <MarkdownView content={response.answer || "AI 未返回可靠答案。"} />
+      <MarkdownView content={response.answer} />
       {!!response.citations.length && <div className="aiCitations"><strong>引用{response.stale ? "（版本已失效，已禁用回跳）" : ""}</strong>{response.citations.map((citation, index) => <button type="button" disabled={response.stale} key={`${citation.page}-${index}`} onClick={() => onJump(citation.page)}>p.{citation.page}：{citation.quote}</button>)}</div>}
-    </>}
+      {onSave && <button type="button" className="quietBtn" onClick={onSave}>保存当前回答</button>}
+    </> : !response.error && <p className="readerMuted">AI 未返回可靠答案。</p>}
   </div>;
 }
 
@@ -1706,11 +2055,13 @@ function TranslationPane({
   onGenerate,
   translating,
   job,
+  onCancel,
 }: {
   translation: TranslationResponse | null;
   onGenerate: () => void;
   translating: boolean;
   job: TranslationJob | null;
+  onCancel: () => void;
 }) {
   return (
     <div className="translationPane">
@@ -1723,9 +2074,12 @@ function TranslationPane({
             </span>
           )}
           {translation && (
-            <button type="button" className="primaryBtn" disabled={translating} onClick={onGenerate}>
-              {translating ? `翻译任务${job?.status === "queued" ? "排队中" : "运行中"}…` : translation.translated_count === 0 ? "生成译文" : "继续翻译"}
-            </button>
+            <>
+              <button type="button" className="primaryBtn" disabled={translating} onClick={onGenerate}>
+                {translating ? `翻译任务${job?.status === "queued" ? "排队中" : "运行中"}…` : translation.translated_count === 0 ? "生成译文" : "继续翻译"}
+              </button>
+              {translating && <button type="button" className="quietBtn" onClick={onCancel}>取消</button>}
+            </>
           )}
         </div>
       </div>

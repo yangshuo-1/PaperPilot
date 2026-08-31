@@ -42,7 +42,7 @@ Library -> Reader -> AI -> Project
 3. **阅读状态与解析状态分开**：阅读状态使用 `unread / reading / read`；解析状态独立记录索引、抽取、翻译、分析和失败等处理阶段。
 4. **Reading List 使用独立关系**：不复制论文数据，论文移出 Reading List 不会从 Library 删除。
 5. **第一版锚点采用页面加引文**：至少保存 `paper_id + page + quote + document_version`；文本 offset 能可靠获取时再作为增强字段。
-6. **Project / Session 暂不进入当前实现**：保留关系设计和未来挂载点，待 Reader 与本地笔记闭环稳定后再实现。
+6. **Project / Session 已进入当前实现**：Reader、AI 结果和本地研究文件可以通过 Project / Session 关联和继续管理。
 
 ## 3. 功能分层
 
@@ -444,19 +444,19 @@ Project 保存长期上下文，Session 保存当前执行现场，论文和文�
 - 异步翻译任务和段落缓存。
 - Codex 全文解析任务。
 - Markdown、BibTeX、GB/T 7714、APA 导出。
+- PDF 文本层选区、高亮、锚点笔记和失效提示。
+- 论文内全文搜索和结果页码回跳。
+- 当前论文 Ask AI、选区 Explain/Translate、来源引用和保存为 Markdown。
+- AI Takeaways 异步任务、取消、版本标记和来源锚点。
+- Project、Session、资源关系、workspace 文件和基础状态治理。
+- 论文资产 manifest、SHA-256 和 runs 审计。
 
 ### 主要缺口
 
-- PDF 阅读器无法向前端回传真实页码和选区。
-- 阅读进度目前不能可靠地从 PDF 阅读行为派生。
-- 没有 Contents 和 Figures 的统一定位模型。
-- 没有高亮和锚点笔记。
-- 没有论文内全文搜索。
-- 没有当前论文上下文的 Ask AI。
-- 没有 AI Takeaways 的来源锚点模型。
-- 没有 Reading List 的独立产品视图。
-- 没有 Project、工作区文件和 Session 模型。
-- Quickview 仍偏摘要和图表，缺少继续阅读和状态操作的完整闭环。
+- 尚未支持多篇论文共同作为 AI 上下文，当前 AI 以单篇论文为边界。
+- Reading List 仍复用 Library 的状态/筛选能力，尚无独立的产品视图。
+- AI/Codex 产物需要显式关联到 Project，尚未按任务自动复制进 workspace。
+- OCR、云端同步和多人协作仍属于明确非目标。
 
 ## 6. 分阶段实现建议
 
@@ -576,10 +576,10 @@ Project 保存长期上下文，Session 保存当前执行现场，论文和文�
 
 验收标准：
 
-- 用户可以从一篇论文进入一个 Project Session。
+- 用户可以从一篇论文进入 Projects，并创建或选择一个 Project Session 关联论文。
 - Session 恢复时能看到目标、关联资源、最近状态和下一步。
 - AI/Codex 产物不会只停留在运行日志中，可以作为文件或文档访问。
-- Project 删除、Session 删除和论文删除的关系处理是明确的。
+- Project 删除会同时清理其 workspace 和 Session；Session 删除会清理自身 workspace；两者都不会删除论文源文件或论文 AI 产物。
 
 ### Phase 5：治理和智能化
 
@@ -722,7 +722,7 @@ Reader adapter
   -> local highlights and notes
   -> in-paper search
   -> paper-context AI
-  -> Project
+  -> Project / Session
   -> Session
   -> session governance
 ```

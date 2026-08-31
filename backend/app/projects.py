@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import uuid
 from datetime import timedelta
 from datetime import datetime, timezone
@@ -77,6 +79,7 @@ class ProjectStore:
             project = dict(project)
             project["session_ids"] = [s["id"] for s in sessions.values() if s.get("project_id") == project["id"]]
             project["links"] = self.refresh_links(project.get("links", []))
+            project["workspace_root"] = self._workspace_label(project["id"])
             result.append(project)
         return result
 
@@ -88,7 +91,7 @@ class ProjectStore:
     def create_project(self, name: str, description: str, goal: str) -> dict[str, Any]:
         data = self._read(); now = _now(); pid = uuid.uuid4().hex[:12]
         project = {"id": pid, "name": name, "description": description, "goal": goal, "created_at": now, "updated_at": now, "links": []}
-        data.setdefault("projects", {})[pid] = project; data.setdefault("sessions", {}); self._write(data); return project
+        data.setdefault("projects", {})[pid] = project; data.setdefault("sessions", {}); self._workspace_path(pid, "").mkdir(parents=True, exist_ok=True); self._write(data); return self.project(pid)
 
     def update_project(self, project_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); project = data.get("projects", {}).get(project_id)
@@ -102,6 +105,8 @@ class ProjectStore:
         if project_id not in projects: raise KeyError(project_id)
         data["sessions"] = {k: v for k, v in data.get("sessions", {}).items() if v.get("project_id") != project_id}
         del projects[project_id]; self._write(data)
+        workspace = self._workspace_path(project_id, "")
+        if workspace.is_dir() and not workspace.is_symlink(): shutil.rmtree(workspace)
 
     def link_project(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); project = data.get("projects", {}).get(project_id)
@@ -114,18 +119,18 @@ class ProjectStore:
         data = self._read(); result = []
         for value in data.get("sessions", {}).values():
             if value.get("project_id") == project_id:
-                value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = sorted(value.get("events", []), key=lambda x: (x.get("at", ""), x.get("action", ""))); result.append(value)
+                value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = sorted(value.get("events", []), key=lambda x: (x.get("at", ""), x.get("action", ""))); value["workspace_root"] = self._session_workspace_label(value["project_id"], value["id"]); result.append(value)
         return result
 
     def session(self, session_id: str) -> dict[str, Any]:
         value = self._read().get("sessions", {}).get(session_id)
         if not value: raise KeyError(session_id)
-        value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = [{"seq": i, **event} if "seq" not in event else event for i, event in enumerate(value.get("events", []))]; return value
+        value = dict(value); value["links"] = self.refresh_links(value.get("links", [])); value["events"] = [{"seq": i, **event} if "seq" not in event else event for i, event in enumerate(value.get("events", []))]; value["workspace_root"] = self._session_workspace_label(value["project_id"], value["id"]); return value
 
     def create_session(self, project_id: str, title: str, goal: str) -> dict[str, Any]:
         self.project(project_id); data = self._read(); now = _now(); sid = uuid.uuid4().hex[:12]
         session = {"id": sid, "project_id": project_id, "title": title, "goal": goal, "status": "active", "created_at": now, "updated_at": now, "last_activity_at": now, "links": [], "events": [{"seq": 0, "at": now, "action": "created"}]}
-        data.setdefault("sessions", {})[sid] = session; self._write(data); return session
+        data.setdefault("sessions", {})[sid] = session; self._workspace_path(project_id, f"sessions/{sid}").mkdir(parents=True, exist_ok=True); self._write(data); return self.session(sid)
 
     def update_session(self, session_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         data = self._read(); session = data.get("sessions", {}).get(session_id)
@@ -157,7 +162,11 @@ class ProjectStore:
     def delete_session(self, session_id: str) -> None:
         data = self._read();
         if session_id not in data.get("sessions", {}): raise KeyError(session_id)
+        project_id = data["sessions"][session_id].get("project_id")
         del data["sessions"][session_id]; self._write(data)
+        if project_id:
+            workspace = self._workspace_path(project_id, f"sessions/{session_id}")
+            if workspace.is_dir() and not workspace.is_symlink(): shutil.rmtree(workspace)
 
     def governance(self, session_id: str) -> dict[str, Any]:
         session = self.session(session_id); reasons = []
@@ -252,3 +261,75 @@ class ProjectStore:
         now = _now(); decisions[relation_id] = {"accepted": accepted, "at": now}
         project.setdefault("events", []).append({"seq": len(project.get("events", [])), "at": now, "action": "relation_accepted" if accepted else "relation_rejected", "relation_id": relation_id, "source": relation["source"], "target": relation["target"]})
         self._write(data); return self.relations(project_id)
+
+    def workspace(self, project_id: str) -> dict[str, Any]:
+        self.project(project_id)
+        root = self._workspace_path(project_id, "")
+        root.mkdir(parents=True, exist_ok=True)
+        entries = []
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root).as_posix()
+            stat = path.stat()
+            entries.append({"path": relative, "kind": "directory" if path.is_dir() else "file", "size": 0 if path.is_dir() else stat.st_size, "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).replace(microsecond=0).isoformat()})
+        return {"project_id": project_id, "root": self._workspace_label(project_id), "entries": entries}
+
+    def read_workspace_file(self, project_id: str, relative_path: str) -> str:
+        path = self._workspace_path(project_id, relative_path)
+        if not path.is_file():
+            raise KeyError(relative_path)
+        return path.read_text(encoding="utf-8")
+
+    def write_workspace_file(self, project_id: str, relative_path: str, content: str) -> dict[str, Any]:
+        path = self._workspace_path(project_id, relative_path)
+        if len(content.encode("utf-8")) > 2_000_000:
+            raise ValueError("workspace 文件不能超过 2 MB")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+        self._touch_project(path)
+        stat = path.stat()
+        return {"path": path.relative_to(self._workspace_path(project_id, "")).as_posix(), "kind": "file", "size": stat.st_size, "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).replace(microsecond=0).isoformat()}
+
+    def delete_workspace_file(self, project_id: str, relative_path: str) -> None:
+        path = self._workspace_path(project_id, relative_path)
+        if not path.is_file():
+            raise KeyError(relative_path)
+        path.unlink()
+        self._touch_project(path)
+
+    def _data_root(self) -> Path:
+        return self.path.parent.parent.resolve()
+
+    def _workspace_label(self, project_id: str) -> str:
+        return (Path("projects") / project_id).as_posix()
+
+    def _session_workspace_label(self, project_id: str, session_id: str) -> str:
+        return (Path("projects") / project_id / "sessions" / session_id).as_posix()
+
+    def _workspace_path(self, project_id: str, relative_path: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{12}", project_id):
+            raise KeyError(project_id)
+        root = (self._data_root() / "projects" / project_id).resolve()
+        if relative_path:
+            normalized = relative_path.replace("\\", "/")
+            candidate = (root / normalized).resolve()
+        else:
+            candidate = root
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("workspace 路径必须位于当前 Project 内") from exc
+        if relative_path and (not normalized or not Path(normalized).parts or any(part in {"", ".", ".."} for part in Path(normalized).parts)):
+            raise ValueError("workspace 路径格式无效")
+        return candidate
+
+    def _touch_project(self, path: Path) -> None:
+        parts = path.resolve().relative_to(self._data_root()).parts
+        if len(parts) < 2 or parts[0] != "projects":
+            return
+        project_id = parts[1]
+        data = self._read(); project = data.get("projects", {}).get(project_id)
+        if project:
+            project["updated_at"] = _now()
+            self._write(data)
