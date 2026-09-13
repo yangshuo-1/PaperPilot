@@ -2,11 +2,11 @@
 
 Codex URL:
 
-- [PAPER_UNDERSTANDING_UI_DESIGN.md](/home/yang/project/paper_valt/docs/PAPER_UNDERSTANDING_UI_DESIGN.md)
+- [paper-understanding-ui-design.md](./paper-understanding-ui-design.md)
 
 Base URL:
 
-- `/home/yang/project/paper_valt`
+- 仓库根目录（本文件所在仓库的根）
 
 This document now serves as the implementation plan for the paper-understanding UI and workflow, not just a static repo description. It describes the current system, the target behavior, and the TODO list required to finish the feature set.
 
@@ -45,7 +45,7 @@ Build a paper-understanding workflow that can:
 - [ ] Verify the backend job runner persists status, stdout/stderr, and target document path.
 - [ ] Add or finish the paper-page UI entry point for "start full-paper analysis".
 - [ ] Make the generated analysis document discoverable in the paper document list.
-- [ ] Ensure the generated analysis follows the coverage, method, experiment, conclusion, and limitations sections from `FULL_PAPER_ANALYSIS_SPEC.md`.
+- [ ] Ensure the generated analysis follows the coverage, method, experiment, conclusion, and limitations sections from `full-paper-analysis-spec.md`.
 - [ ] Add failure states for missing PDF, unreadable PDF, or incomplete extraction.
 - [ ] Add a retry path that can overwrite a stale or partial analysis document.
 - [ ] Verify the job result is visible in the paper page without a refresh loop.
@@ -534,7 +534,7 @@ Detailed analysis documents should:
 ## Codex Analysis TODO
 
 - [ ] Define the prompt template so the model must read the full PDF and cite only extracted text.
-- [ ] Validate that the prompt asks for the 12 required sections from `FULL_PAPER_ANALYSIS_SPEC.md`.
+- [ ] Validate that the prompt asks for the 12 required sections from `full-paper-analysis-spec.md`.
 - [ ] Persist the analysis job record with `status`, `paper_id`, `target_document`, `created_at`, `updated_at`, and `error`.
 - [ ] Make the UI poll the latest job until completion, then stop.
 - [ ] Ensure the generated markdown is saved in the paper folder and listed as a normal document.
@@ -593,7 +593,7 @@ All features below share one bottleneck: **turn the PDF into structured, address
 - The document is linked from the repo path above and can be opened directly in Codex.
 - The TODO list covers the remaining implementation work.
 - The Codex analysis workflow is described as an executable, local-first pipeline.
-- The output document format matches `FULL_PAPER_ANALYSIS_SPEC.md`.
+- The output document format matches `full-paper-analysis-spec.md`.
 - The UI exposes a visible entry point for running and reviewing the analysis.
 
 ### Shared prerequisite: PDF text extraction

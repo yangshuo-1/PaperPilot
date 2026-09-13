@@ -1,3 +1,5 @@
+> ⚠️ **已归档（ARCHIVED）**：本文档描述的是上一代系统，内容已过时，仅存档参考。局限与迭代方向见 docs/legacy/README.md；现行设计见 docs/design/。禁止作为开发或重建依据。
+
 # paper-vault Reproduction Design
 
 This document describes the current `paper-vault` repository well enough for another agent to recreate the system from scratch.

@@ -2,6 +2,8 @@
 
 本项目是一个本地优先的论文管理与理解平台：用 FastAPI 管理论文索引、标签、文件夹、PDF/LaTeX 资产和分析文档，用 React/Vite 提供论文库与阅读工作台。
 
+> 面向 AI 编码 agent 的说明见 `AGENTS.md`；文档总索引见 `docs/README.md`（`docs/design/` 为现行设计，`docs/legacy/` 为归档）。
+
 ## 功能
 
 - 论文库：搜索、标签过滤、星标、阅读状态、文件夹、表格/卡片视图和批量操作。
@@ -62,4 +64,4 @@ node scripts/chrome_acceptance.mjs
 - `backend/app/latex.py`：arXiv LaTeX 下载与轻量解析。
 - `backend/app/discovery.py`：多源论文抓取、关键词筛选、历史去重与 arXiv HTML 富化（不含 Zotero）。
 - `frontend/src/main.tsx`：论文库和详情工作台。
-- `docs/`：设计文档、重构计划和数据资产说明。
+- `docs/`：文档总索引为 `docs/README.md`；`docs/design/` 现行设计，`docs/legacy/` 历史归档。

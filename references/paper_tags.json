@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "papers": {
+    "qwen3-vl-2511-21631": {
+      "entity_id": null,
+      "path": "/home/yang/project/paper_valt/papers/Qwen3VL_2511.21631/2511.21631.pdf",
+      "title": "Qwen3-VL Technical Report",
+      "tags": [
+        "cs.CV",
+        "multimodal",
+        "qwen",
+        "vlm"
+      ],
+      "read_status": "reading",
+      "starred": false,
+      "folder_id": null,
+      "reading_progress": 2.4,
+      "current_page": 1,
+      "total_pages": 42,
+      "document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380",
+      "last_read_at": "2026-09-13T08:16:30.007Z"
+    }
+  }
+}

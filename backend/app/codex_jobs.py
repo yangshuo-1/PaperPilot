@@ -241,7 +241,7 @@ class CodexJobRunner:
         docs = self.store.list_documents(paper.id)
         docs_text = "\n".join(f"- {doc.path}" for doc in docs) or "- 无"
         pdf_path = Path(paper.local_pdf_path or "")
-        spec_path = self.settings.repo_root / "docs" / "FULL_PAPER_ANALYSIS_SPEC.md"
+        spec_path = self.settings.repo_root / "docs" / "full-paper-analysis-spec.md"
         return f"""你是一个严谨的论文阅读与技术写作助手。请根据本地 PDF 和全文解析规范，生成一份中文论文全文详细解析文档。
 
 任务边界：

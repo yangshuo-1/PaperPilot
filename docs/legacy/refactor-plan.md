@@ -1,7 +1,9 @@
+> ⚠️ **已归档（ARCHIVED）**：本文档为 2026-08 第一轮重构计划，大部分已落地，后续迭代不再依据本文。局限与迭代方向见 docs/legacy/README.md；现行计划见 docs/design/roadmap.md。
+
 # paper_valt 重新设计实施计划
 
 今天: 2026-08-04
-目标: 对照 `docs/PAPER_UNDERSTANDING_UI_DESIGN.md` 完成三件事：
+目标: 对照 `docs/paper-understanding-ui-design.md` 完成三件事：
 1. 前端仿照 Anthropic 风格重做界面。
 2. 论文处理：下载 LaTeX 源码 → 解析 → 翻译。
 3. 审计设计文档中尚待实现项，并把可本地落地的项补齐。
@@ -117,7 +119,7 @@
 
 ---
 
-## 设计文档待实现项清单（对照 `PAPER_UNDERSTANDING_UI_DESIGN.md`）
+## 设计文档待实现项清单（对照 `paper-understanding-ui-design.md`）
 
 ### A 可落地（本轮实现）
 | 项 | 现状 | 处置 |
@@ -220,4 +222,4 @@ references/
 
 ### 备注（待完善）
 - 具体 ignore 规则落在 `.gitignore`，与本节对应。
-- 数据字典（每个文件的 schema / 生成命令 / 是否入 git）后续沉淀到 `docs/DATA_ASSETS.md`，作为唯一权威说明。
+- 数据字典（每个文件的 schema / 生成命令 / 是否入 git）后续沉淀到 `docs/data-assets.md`，作为唯一权威说明。

@@ -18,14 +18,15 @@ frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 
-# ---- Data assets (heavy / LLM-cost / reproducible) ----
-# 论文本体、解析产物和运行时清单保留在本地，不进入代码仓库。
-papers/
-references/*.json
-references/*.jsonl
-# 二进制与可重拉数据，见 docs/DATA_ASSETS.md
+# ---- Data assets ----
+# 决策表见 docs/design/data-organization.md：分析成果/图源/审计入 git，大二进制/可复现/成本产物不入。
+# 迁移期新旧布局并存：旧平铺按文件忽略，新四层按目录忽略。
+
+# 大二进制与可重拉（新旧布局通用）
 papers/**/*.pdf
 papers/**/latex/
+
+# 旧平铺布局的可复现/成本产物（过渡，随四层迁移逐步消失）
 papers/**/latex_parsed.json
 papers/**/latex_plain.txt
 papers/**/latex_source.md
@@ -34,10 +35,23 @@ papers/**/translation_zh.json
 papers/**/ai_answers.jsonl
 papers/**/ai_takeaways.json
 
+# 新四层布局：source 不可变重数据、derived 可复现、exports 用户临时导出
+papers/*/source/
+papers/*/derived/
+papers/*/exports/
+# 新四层布局的 LLM 成本产物
+papers/*/results/translation_zh.json
+papers/*/results/ai_answers.jsonl
+papers/*/results/ai_takeaways.json
+
+# SQLite 运行态库（含 WAL/SHM 伴生文件）
+references/paper_valt.db*
+
 # ---- Runtime job artifacts ----
 references/codex_jobs/
 references/translation_jobs/
 references/takeaway_jobs/
+references/diagram_jobs/
 projects/
 references/paper_discovery.json
 references/paper_discovery_history.json
