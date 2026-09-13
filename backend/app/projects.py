@@ -50,6 +50,23 @@ class ProjectStore:
                 if not orphaned:
                     try: orphaned = json.loads(job.read_text(encoding="utf-8")).get("job_id") != job_id
                     except (OSError, json.JSONDecodeError): orphaned = True
+            elif ref.startswith("paper-artifact:"):
+                parts = ref.split(":", 2)
+                orphaned = len(parts) != 3 or not re.fullmatch(r"[A-Za-z0-9_-]+", parts[1])
+                relative = parts[2] if len(parts) == 3 else ""
+                if not orphaned:
+                    normalized = relative.replace("\\", "/")
+                    path_parts = Path(normalized).parts
+                    orphaned = not normalized or Path(normalized).is_absolute() or any(part in {"", ".", ".."} for part in path_parts)
+                if not orphaned:
+                    index = root / "references" / "paper_index.jsonl"
+                    record = next((json.loads(line) for line in index.read_text(encoding="utf-8").splitlines() if line.strip() and json.loads(line).get("id") == parts[1]), None) if index.exists() else None
+                    if not record or not record.get("local_pdf_path"):
+                        orphaned = True
+                    else:
+                        paper_dir = Path(record["local_pdf_path"]).resolve().parent
+                        candidate = (paper_dir / normalized).resolve()
+                        orphaned = paper_dir not in candidate.parents or not candidate.is_file()
             elif ref.startswith("takeaway:"):
                 parts = ref.split(":", 2); orphaned = len(parts) != 3
                 if not orphaned:

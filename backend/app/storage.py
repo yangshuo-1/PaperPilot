@@ -138,15 +138,21 @@ class PaperStore:
         papers = {paper.id: paper for paper in self.list_papers()}
         result: list[dict[str, Any]] = []
         changed = False
+        seen: set[str] = set()
         for item in self.reading_list().get("entries", []):
             paper_id = str(item.get("paper_id"))
-            if paper_id not in papers:
+            if paper_id not in papers or paper_id in seen:
                 changed = True
                 continue
+            seen.add(paper_id)
+            try:
+                priority = int(item.get("priority") or 0)
+            except (TypeError, ValueError):
+                priority = 0
             result.append({
                 "paper_id": paper_id,
                 "added_at": str(item.get("added_at") or now_iso()),
-                "priority": max(0, min(100, int(item.get("priority") or 0))),
+                "priority": max(0, min(100, priority)),
             })
         if changed:
             self._write_reading_list(result)
@@ -221,6 +227,28 @@ class PaperStore:
                 kind = "other"
             artifacts.append({"path": relative, "label": relative, "kind": kind, "size": path.stat().st_size})
         return artifacts
+
+    def read_paper_artifact(self, paper_id: str, relative_path: str) -> tuple[Path, dict[str, Any]]:
+        self.get_paper(paper_id)
+        normalized = relative_path.replace("\\", "/")
+        parts = Path(normalized).parts
+        if not normalized or Path(normalized).is_absolute() or any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("论文产物路径格式无效")
+        artifact = next((item for item in self.list_paper_artifacts(paper_id) if item["path"] == normalized), None)
+        if artifact is None:
+            raise KeyError(relative_path)
+        if artifact["kind"] == "source" or normalized in {"manifest.json", "runs.jsonl"}:
+            raise ValueError("只能复制论文的解析、AI 或分析产物，不能复制源 PDF 或审计文件")
+        path = (self._paper_dir(paper_id).resolve() / normalized).resolve()
+        try:
+            path.relative_to(self._paper_dir(paper_id).resolve())
+        except ValueError as exc:
+            raise ValueError("论文产物路径必须位于当前论文目录") from exc
+        if not path.is_file():
+            raise KeyError(relative_path)
+        if path.stat().st_size > 2_000_000:
+            raise ValueError("论文产物不能超过 2 MB")
+        return path, artifact
 
     def search_papers(self, q: str | None, tags: list[str]) -> list[Paper]:
         papers = self.list_papers()
