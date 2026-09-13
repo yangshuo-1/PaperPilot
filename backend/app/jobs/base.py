@@ -1,9 +1,4 @@
-"""Shared persistent job contracts.
-
-This module deliberately contains orchestration primitives only.  Concrete jobs
-own their domain work and implement :meth:`JobRunner.run_job` (or provide an
-executor callback) in a later migration stage.
-"""
+"""Persistent job lifecycle primitives shared by asynchronous paper tasks."""
 
 from __future__ import annotations
 
@@ -22,16 +17,12 @@ ResultT = TypeVar("ResultT")
 
 
 class JobStatus(str, Enum):
-    """The only states a persisted job may occupy."""
-
     queued = "queued"
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
     cancelled = "cancelled"
 
-    # Upper-case aliases keep the Python API conventional while the lower-case
-    # names mirror the wire-format state values in the contract.
     QUEUED = queued
     RUNNING = running
     SUCCEEDED = succeeded
@@ -61,8 +52,6 @@ def now_iso() -> str:
 
 
 def _json_ready(value: Any) -> Any:
-    """Convert common parameter values into deterministic JSON-compatible data."""
-
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Path):
@@ -80,36 +69,27 @@ def _json_ready(value: Any) -> Any:
 
 
 def canonical_json(value: Any) -> str:
-    """Return the canonical representation used by the job-key contract."""
-
     return json.dumps(
-        _json_ready(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
+        _json_ready(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
     )
 
 
 def make_job_key(
-    paper_id: str, input_version: str, task_params: Any | None = None
+    paper_id: str, document_version: str, task_params: Any | None = None
 ) -> str:
-    """Hash paper identity, input version, and canonical task parameters."""
+    """Hash paper identity, document version, and canonical task parameters."""
 
-    params = {} if task_params is None else task_params
     material = "\x1f".join(
-        (str(paper_id), str(input_version), canonical_json(params))
+        (str(paper_id), str(document_version), canonical_json(task_params or {}))
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 @dataclass
 class Job:
-    """The JSON-serializable state for one logical execution."""
-
     job_id: str
     paper_id: str
-    input_version: str
+    document_version: str
     task_params: Any
     job_key: str
     status: JobStatus = JobStatus.QUEUED
@@ -126,26 +106,11 @@ class Job:
     def __post_init__(self) -> None:
         self.status = JobStatus(self.status)
 
-    @property
-    def parameters(self) -> Any:
-        """Alias used by callers that call task parameters simply parameters."""
-
-        return self.task_params
-
-    @property
-    def params(self) -> Any:
-        return self.task_params
-
-    @property
-    def document_version(self) -> str:
-        return self.input_version
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "job_id": self.job_id,
             "paper_id": self.paper_id,
-            "input_version": self.input_version,
-            "document_version": self.input_version,
+            "document_version": self.document_version,
             "task_params": _json_ready(self.task_params),
             "job_key": self.job_key,
             "status": self.status.value,
@@ -162,17 +127,13 @@ class Job:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "Job":
-        status = JobStatus(str(payload.get("status", JobStatus.QUEUED.value)))
-        task_params = payload.get("task_params", payload.get("parameters", {}))
         return cls(
             job_id=str(payload["job_id"]),
             paper_id=str(payload["paper_id"]),
-            input_version=str(
-                payload.get("input_version", payload.get("document_version", ""))
-            ),
-            task_params=task_params,
+            document_version=str(payload.get("document_version", "")),
+            task_params=payload.get("task_params", {}),
             job_key=str(payload.get("job_key", "")),
-            status=status,
+            status=JobStatus(str(payload.get("status", JobStatus.QUEUED.value))),
             created_at=str(payload.get("created_at", now_iso())),
             updated_at=str(payload.get("updated_at", now_iso())),
             started_at=payload.get("started_at"),
@@ -187,8 +148,6 @@ class Job:
 
 @dataclass
 class Checkpoint:
-    """A resumable progress snapshot stored beside its job state."""
-
     job_id: str
     paper_id: str
     status: str = JobStatus.RUNNING.value
@@ -235,7 +194,7 @@ class JobExecutor(Protocol[ResultT]):
 
 
 class JobCancelled(RuntimeError):
-    """Optional signal for an executor that observes cancellation mid-step."""
+    """Signal that an executor observed cooperative cancellation."""
 
 
 class InvalidStateTransition(ValueError):
@@ -243,20 +202,14 @@ class InvalidStateTransition(ValueError):
 
 
 class JobRunner(Generic[ResultT]):
-    """Persistent job lifecycle shared by future concrete runners.
-
-    ``create_job`` only persists/enforces idempotency.  ``start`` additionally
-    launches ``run`` in a daemon thread.  Tests and batch callers may invoke
-    ``run`` directly, and concrete runners may override ``_launch`` when they
-    use a different scheduler.
-    """
+    """Own persistence, idempotency, transitions, cancellation and recovery."""
 
     def __init__(
         self,
         jobs_dir: str | Path,
         *,
         executor: JobExecutor[ResultT] | None = None,
-        auto_recover: bool = True,
+        auto_recover: bool = False,
     ) -> None:
         self.jobs_dir = Path(jobs_dir)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -267,144 +220,87 @@ class JobRunner(Generic[ResultT]):
         if auto_recover:
             self.recover()
 
-    @staticmethod
-    def make_job_key(
-        paper_id: str, input_version: str, task_params: Any | None = None
+    def _compute_job_key(
+        self, paper_id: str, document_version: str, task_params: Any
     ) -> str:
-        return make_job_key(paper_id, input_version, task_params)
-
-    @staticmethod
-    def job_key(
-        paper_id: str, input_version: str, task_params: Any | None = None
-    ) -> str:
-        return make_job_key(paper_id, input_version, task_params)
-
-    def _job_key(
-        self, paper_id: str, input_version: str, task_params: Any | None = None
-    ) -> str:
-        return self.make_job_key(paper_id, input_version, task_params)
+        return make_job_key(paper_id, document_version, task_params)
 
     def create_job(
         self,
         paper_id: str,
-        input_version: str | None = None,
+        document_version: str,
         task_params: Any | None = None,
         *,
-        document_version: str | None = None,
-        parameters: Any | None = None,
-        params: Any | None = None,
         overwrite: bool = False,
     ) -> Job:
         job, _ = self._create_or_reuse(
-            paper_id,
-            self._resolve_input_version(input_version, document_version),
-            self._resolve_params(task_params, parameters, params),
-            overwrite=overwrite,
+            paper_id, str(document_version), {} if task_params is None else task_params, overwrite=overwrite
         )
         return job
 
     def start(
         self,
         paper_id: str,
-        input_version: str | None = None,
+        document_version: str,
         task_params: Any | None = None,
         *,
-        document_version: str | None = None,
-        parameters: Any | None = None,
-        params: Any | None = None,
         overwrite: bool = False,
     ) -> Job:
         job, created = self._create_or_reuse(
-            paper_id,
-            self._resolve_input_version(input_version, document_version),
-            self._resolve_params(task_params, parameters, params),
-            overwrite=overwrite,
+            paper_id, str(document_version), {} if task_params is None else task_params, overwrite=overwrite
         )
-        should_launch = False
         with self._lock:
-            if created or (
-                job.status == JobStatus.QUEUED
-                and job.job_id not in self._dispatched
-            ):
+            should_launch = created or (
+                job.status == JobStatus.QUEUED and job.job_id not in self._dispatched
+            )
+            if should_launch:
                 self._dispatched.add(job.job_id)
-                should_launch = True
         if should_launch:
             try:
                 self._launch(job)
             except Exception as exc:
                 self._fail_from_dispatch(job.job_id, str(exc))
-        return self.get_job(job.job_id)
-
-    def submit(self, *args: Any, **kwargs: Any) -> Job:
-        return self.start(*args, **kwargs)
-
-    def start_job(self, *args: Any, **kwargs: Any) -> Job:
-        return self.start(*args, **kwargs)
+        return self._read_job(job.job_id)
 
     def _create_or_reuse(
         self,
         paper_id: str,
-        input_version: str,
+        document_version: str,
         task_params: Any,
         *,
         overwrite: bool,
     ) -> tuple[Job, bool]:
-        params = {} if task_params is None else task_params
-        normalized_params = json.loads(canonical_json(params))
-        job_key = self.make_job_key(paper_id, input_version, normalized_params)
+        normalized = json.loads(canonical_json(task_params))
+        job_key = self._compute_job_key(paper_id, document_version, normalized)
         with self._lock:
             matching = [job for job in self.list_jobs() if job.job_key == job_key]
             active = [job for job in matching if job.status in ACTIVE_STATUSES]
             if active:
                 return max(active, key=lambda item: item.created_at), False
-            succeeded = [
-                job for job in matching if job.status == JobStatus.SUCCEEDED
-            ]
+            succeeded = [job for job in matching if job.status == JobStatus.SUCCEEDED]
             if succeeded and not overwrite:
                 return max(succeeded, key=lambda item: item.created_at), False
-
             job_id = uuid.uuid4().hex
             job = Job(
                 job_id=job_id,
                 paper_id=str(paper_id),
-                input_version=str(input_version),
-                task_params=normalized_params,
+                document_version=str(document_version),
+                task_params=normalized,
                 job_key=job_key,
                 checkpoint_path=str(self.checkpoint_path(job_id)),
             )
             self._write_job(job)
             return job, True
 
-    @staticmethod
-    def _resolve_input_version(
-        input_version: str | None, document_version: str | None
-    ) -> str:
-        if input_version is not None and document_version is not None:
-            if input_version != document_version:
-                raise ValueError("input_version and document_version must match")
-        return str(input_version if input_version is not None else document_version or "")
-
-    @staticmethod
-    def _resolve_params(
-        task_params: Any | None, parameters: Any | None, params: Any | None
-    ) -> Any:
-        supplied = [value for value in (task_params, parameters, params) if value is not None]
-        if len(supplied) > 1 and any(value != supplied[0] for value in supplied[1:]):
-            raise ValueError("task_params, parameters, and params must match")
-        return supplied[0] if supplied else {}
-
     def get_job(self, job_id: str) -> Job:
+        return self._read_job(job_id)
+
+    def _read_job(self, job_id: str) -> Job:
         path = self.job_path(job_id)
         with self._lock:
             if not path.is_file():
                 raise KeyError(job_id)
             return Job.from_dict(json.loads(path.read_text(encoding="utf-8")))
-
-    def get(self, job_id: str) -> Job:
-        return self.get_job(job_id)
-
-    def load_job(self, job_id: str) -> Job:
-        return self.get_job(job_id)
 
     def list_jobs(self) -> list[Job]:
         jobs: list[Job] = []
@@ -428,65 +324,31 @@ class JobRunner(Generic[ResultT]):
         self._validate_job_id(job_id)
         return self.jobs_dir / f"{job_id}.checkpoint.json"
 
-    def _job_path(self, job_id: str) -> Path:
-        return self.job_path(job_id)
-
-    def _checkpoint_path(self, job_id: str) -> Path:
-        return self.checkpoint_path(job_id)
-
     @staticmethod
     def _validate_job_id(job_id: str) -> None:
         if not job_id or Path(job_id).name != job_id or job_id in {".", ".."}:
             raise KeyError(job_id)
 
     def transition(
-        self,
-        job_id: str,
-        status: JobStatus | str,
-        *,
-        error: str | None = None,
+        self, job_id: str, status: JobStatus | str, *, error: str | None = None
     ) -> Job:
         target = JobStatus(status)
         with self._lock:
-            job = self.get_job(job_id)
+            job = self._read_job(job_id)
             if target == job.status:
                 return job
             self._transition_locked(job, target, error=error)
             self._write_job(job)
             return job
 
-    def update_status(
-        self,
-        job_id: str,
-        status: JobStatus | str,
-        *,
-        error: str | None = None,
-    ) -> Job:
-        return self.transition(job_id, status, error=error)
-
-    def set_status(
-        self,
-        job_id: str,
-        status: JobStatus | str,
-        *,
-        error: str | None = None,
-    ) -> Job:
-        return self.transition(job_id, status, error=error)
-
     def _transition_locked(
         self, job: Job, target: JobStatus, *, error: str | None = None
     ) -> None:
         if target == job.status:
             return
-        if job.status in TERMINAL_STATUSES:
+        if job.status in TERMINAL_STATUSES or target not in ALLOWED_TRANSITIONS[job.status]:
             raise InvalidStateTransition(
-                f"terminal job {job.job_id} cannot transition from "
-                f"{job.status.value} to {target.value}"
-            )
-        if target not in ALLOWED_TRANSITIONS[job.status]:
-            raise InvalidStateTransition(
-                f"job {job.job_id} cannot transition from "
-                f"{job.status.value} to {target.value}"
+                f"job {job.job_id} cannot transition from {job.status.value} to {target.value}"
             )
         job.status = target
         job.updated_at = now_iso()
@@ -498,13 +360,13 @@ class JobRunner(Generic[ResultT]):
             job.error = error
         if target == JobStatus.SUCCEEDED:
             job.error = None
-        if target == JobStatus.CANCELLED:
+        elif target == JobStatus.CANCELLED:
             job.cancel_requested = True
             job.error = error or job.error or "Cancellation requested"
 
     def cancel(self, job_id: str) -> Job:
         with self._lock:
-            job = self.get_job(job_id)
+            job = self._read_job(job_id)
             if job.status in TERMINAL_STATUSES:
                 return job
             job.cancel_requested = True
@@ -515,74 +377,44 @@ class JobRunner(Generic[ResultT]):
             self._write_job(job)
             return job
 
-    def request_cancel(self, job_id: str) -> Job:
-        return self.cancel(job_id)
-
     def should_cancel(self, job_id: str) -> bool:
         try:
-            job = self.get_job(job_id)
+            job = self._read_job(job_id)
         except KeyError:
             return False
         return job.cancel_requested or job.status == JobStatus.CANCELLED
 
-    def is_cancel_requested(self, job_id: str) -> bool:
-        return self.should_cancel(job_id)
-
     def save_checkpoint(
-        self,
-        job_id: str,
-        payload: Any,
-        *,
-        status: str | None = None,
+        self, job_id: str, payload: Any, *, status: str | None = None
     ) -> Checkpoint:
-        job = self.get_job(job_id)
+        job = self._read_job(job_id)
         checkpoint = Checkpoint(
             job_id=job.job_id,
             paper_id=job.paper_id,
             status=status or job.status.value,
             payload=payload,
         )
-        self._atomic_write_json(self.checkpoint_path(job_id), checkpoint.to_dict())
+        path = Path(job.checkpoint_path) if job.checkpoint_path else self.checkpoint_path(job_id)
+        self._atomic_write_json(path, checkpoint.to_dict())
         return checkpoint
 
-    def write_checkpoint(
-        self,
-        job_id: str,
-        payload: Any,
-        *,
-        status: str | None = None,
-    ) -> Checkpoint:
-        return self.save_checkpoint(job_id, payload, status=status)
-
-    def checkpoint(
-        self,
-        job_id: str,
-        payload: Any,
-        *,
-        status: str | None = None,
-    ) -> Checkpoint:
-        return self.save_checkpoint(job_id, payload, status=status)
-
     def load_checkpoint(self, job_id: str) -> Checkpoint | None:
-        path = self.checkpoint_path(job_id)
+        job = self._read_job(job_id)
+        path = Path(job.checkpoint_path) if job.checkpoint_path else self.checkpoint_path(job_id)
         if not path.is_file():
             return None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(raw, Mapping) and "job_id" in raw and "paper_id" in raw:
                 return Checkpoint.from_dict(raw)
-            job = self.get_job(job_id)
             return Checkpoint(job_id=job.job_id, paper_id=job.paper_id, payload=raw)
         except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
             return None
 
-    def restore_checkpoint(self, job_id: str) -> Checkpoint | None:
-        return self.load_checkpoint(job_id)
-
     def run(self, job_or_id: Job | str) -> Job:
         job_id = job_or_id.job_id if isinstance(job_or_id, Job) else job_or_id
         with self._lock:
-            job = self.get_job(job_id)
+            job = self._read_job(job_id)
             if job.status in TERMINAL_STATUSES:
                 return job
             if job.cancel_requested and job.status == JobStatus.QUEUED:
@@ -594,18 +426,14 @@ class JobRunner(Generic[ResultT]):
             job.attempts += 1
             job.updated_at = now_iso()
             self._write_job(job)
-
         checkpoint = self.load_checkpoint(job_id)
         if checkpoint is None:
             checkpoint = self.save_checkpoint(
-                job_id,
-                {"attempts": self.get_job(job_id).attempts},
-                status=JobStatus.RUNNING.value,
+                job_id, {"attempts": self._read_job(job_id).attempts}, status=JobStatus.RUNNING.value
             )
-
         try:
             result = self.execute(
-                self.get_job(job_id),
+                self._read_job(job_id),
                 checkpoint=checkpoint,
                 should_cancel=lambda: self.should_cancel(job_id),
                 save_checkpoint=lambda payload, *, status=None: self.save_checkpoint(
@@ -613,7 +441,7 @@ class JobRunner(Generic[ResultT]):
                 ),
             )
             with self._lock:
-                current = self.get_job(job_id)
+                current = self._read_job(job_id)
                 if current.status in TERMINAL_STATUSES:
                     return current
                 if current.cancel_requested or self.should_cancel(job_id):
@@ -626,11 +454,7 @@ class JobRunner(Generic[ResultT]):
         except JobCancelled as exc:
             return self._finish_terminal(job_id, JobStatus.CANCELLED, str(exc))
         except Exception as exc:
-            status = (
-                JobStatus.CANCELLED
-                if self.should_cancel(job_id)
-                else JobStatus.FAILED
-            )
+            status = JobStatus.CANCELLED if self.should_cancel(job_id) else JobStatus.FAILED
             return self._finish_terminal(job_id, status, str(exc))
 
     def execute(
@@ -657,9 +481,7 @@ class JobRunner(Generic[ResultT]):
         save_checkpoint: SaveCheckpoint,
     ) -> ResultT:
         if self._executor is None:
-            raise NotImplementedError(
-                "Concrete JobRunner must implement run_job or provide an executor"
-            )
+            raise NotImplementedError("Concrete JobRunner must implement run_job or provide an executor")
         return self._executor(
             job,
             checkpoint=checkpoint,
@@ -668,34 +490,21 @@ class JobRunner(Generic[ResultT]):
         )
 
     def recover(self) -> list[Job]:
-        """Launch all queued/running jobs found on process startup."""
-
-        recovered: list[Job] = []
-        for job in self.list_jobs():
-            if job.status not in ACTIVE_STATUSES:
-                continue
-            recovered.append(job)
-            should_launch = False
+        recovered = [job for job in self.list_jobs() if job.status in ACTIVE_STATUSES]
+        for job in recovered:
             with self._lock:
-                if job.job_id not in self._dispatched:
-                    self._dispatched.add(job.job_id)
-                    should_launch = True
-            if should_launch:
-                try:
-                    self._launch(job)
-                except Exception as exc:
-                    self._fail_from_dispatch(job.job_id, str(exc))
+                if job.job_id in self._dispatched:
+                    continue
+                self._dispatched.add(job.job_id)
+            try:
+                self._launch(job)
+            except Exception as exc:
+                self._fail_from_dispatch(job.job_id, str(exc))
         return recovered
-
-    def resume_incomplete(self) -> list[Job]:
-        return self.recover()
 
     def _launch(self, job: Job) -> None:
         thread = threading.Thread(
-            target=self._run_thread,
-            args=(job.job_id,),
-            name=f"job-{job.job_id}",
-            daemon=True,
+            target=self._run_thread, args=(job.job_id,), name=f"job-{job.job_id}", daemon=True
         )
         self._threads[job.job_id] = thread
         thread.start()
@@ -710,7 +519,7 @@ class JobRunner(Generic[ResultT]):
         self, job_id: str, status: JobStatus, error: str | None = None
     ) -> Job:
         with self._lock:
-            job = self.get_job(job_id)
+            job = self._read_job(job_id)
             if job.status in TERMINAL_STATUSES:
                 return job
             self._transition_locked(job, status, error=error)
@@ -726,19 +535,14 @@ class JobRunner(Generic[ResultT]):
     def _write_job(self, job: Job) -> None:
         self._atomic_write_json(self.job_path(job.job_id), job.to_dict())
 
-    def _atomic_write_json(self, path: Path, payload: Mapping[str, Any]) -> None:
+    @staticmethod
+    def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
-            encoding="utf-8",
+        temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
         )
-        tmp_path.replace(path)
-
-
-JobRecord = Job
-JobState = Job
-JobCheckpoint = Checkpoint
+        temp.replace(path)
 
 
 __all__ = [
@@ -748,11 +552,8 @@ __all__ = [
     "InvalidStateTransition",
     "Job",
     "JobCancelled",
-    "JobCheckpoint",
     "JobExecutor",
-    "JobRecord",
     "JobRunner",
-    "JobState",
     "JobStatus",
     "SaveCheckpoint",
     "ShouldCancel",

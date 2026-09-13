@@ -1,5 +1,14 @@
-"""Persistence package contracts.
+"""SQLite persistence and four-layer paper-data path helpers."""
 
-SQLite connection and migration code will be added by the data track.  The
-versioned DDL is kept here so that consumers share one schema source.
-"""
+from .db import Database, DatabaseError, MigrationError, open_database
+from .paths import DataPathError, DataPaths, PaperPaths
+
+__all__ = [
+    "DataPathError",
+    "DataPaths",
+    "Database",
+    "DatabaseError",
+    "MigrationError",
+    "PaperPaths",
+    "open_database",
+]

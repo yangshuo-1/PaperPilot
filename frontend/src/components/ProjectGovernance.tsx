@@ -1,0 +1,23 @@
+import type { Session } from "../api";
+import { useGovernanceInbox, useRelationSuggestions, useResearchOverview } from "../hooks/useProjectGovernance";
+
+export function ResearchOverviewPanel({ projectId }: { projectId: string }) {
+  const { overview, error, load } = useResearchOverview(projectId);
+  const list = (key: string) => Array.isArray(overview?.[key]) ? overview[key] as Array<Record<string, unknown>> : [];
+  const sessions = list("sessions"); const resources = list("key_resources"); const unresolved = list("unresolved"); const activity = list("recent_activity");
+  return <div className="projectLink"><b>研究概览</b>{error ? <><small>研究概览加载失败</small><button className="quietBtn" onClick={load}>重试</button></> : overview ? <><small>Sessions：{sessions.map((item) => `${String(item.title)}（${String(item.status)}）`).join("、") || "暂无"}</small><small>关键资源：{resources.map((item) => String(item.label || item.ref)).join("、") || "暂无"}</small><small>未解决：{unresolved.map((item) => String(item.label || item.ref)).join("、") || "暂无"}</small><small>最近活动：{activity.slice(-5).map((item) => `${String(item.action)} ${String(item.at)}`).join("；") || "暂无"}</small></> : <small>正在加载研究概览…</small>}</div>;
+}
+
+export function RelationSuggestions({ projectId }: { projectId: string }) {
+  const { items, error, load, decide } = useRelationSuggestions(projectId);
+  return <div><h4>关系建议</h4>{error && <><p className="errorBanner">{error}</p><button className="quietBtn" onClick={load}>重试</button></>}{items.length === 0 && !error && <p className="muted">暂无关系建议。</p>}{items.map((item) => <div className="projectLink" key={String(item.id)}><b>{String(item.source)} → {String(item.target)}</b><small>{String(item.reason)} · 证据：{JSON.stringify(item.evidence)} · 状态：{String(item.status)}</small>{item.status === "pending" && <><button className="quietBtn" onClick={() => void decide(String(item.id), true)}>接受</button><button className="quietBtn" onClick={() => void decide(String(item.id), false)}>拒绝</button></>}</div>)}</div>;
+}
+
+function CloseoutEditor({ session, closeout, locked, error, onGenerate }: { session: Session; closeout: Session["closeout"]; locked: boolean; error: string; onGenerate: () => void }) {
+  return <div className="projectLink"><b>Closeout editor</b>{locked && <small>状态：{String(session.governance?.state)}，已锁定</small>}{closeout ? <><small>摘要：{closeout.summary}</small><small>交接：{closeout.handoff}</small><small>下一步：{closeout.next_steps.join("；") || "暂无"}</small><small>引用：{(closeout.citations || []).map((item) => String(item.label || item.ref)).join("、") || "暂无"}</small></> : <small>暂无草稿</small>}{error && <><small>{error}</small><button className="quietBtn" disabled={locked} onClick={onGenerate}>重试</button></>}<button className="quietBtn" disabled={locked} onClick={onGenerate}>生成草稿</button></div>;
+}
+
+export function GovernanceInbox({ session, onRefresh }: { session: Session; onRefresh: () => void }) {
+  const { governance, busy, error, closeout, closeoutError, locked, canConfirm, load, action, generate, save } = useGovernanceInbox(session, onRefresh);
+  return <div className="governancePanel"><h4>治理候选</h4>{error && <><p className="errorBanner">{error}</p><button className="quietBtn" onClick={() => void load()}>重试</button></>}{locked && <p className="muted">治理状态：{String(session.governance?.state)}，候选与 closeout 已锁定。</p>}{governance?.candidates.length ? governance.candidates.map((candidate) => <div className="projectLink" key={String(candidate.id)}><b>{String(candidate.reason)}</b><small>证据时间：{String(candidate.evidence_at)} · 建议：{String(candidate.suggested_action)}</small><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "ignore")}>忽略</button><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "snooze")}>稍后</button><button className="quietBtn" disabled={busy || locked} onClick={() => void action(String(candidate.id), "archive")}>归档</button></div>) : !error && !locked && <p className="muted">暂无候选。</p>}<CloseoutEditor session={session} closeout={closeout} locked={locked} error={closeoutError} onGenerate={() => void generate()} />{closeout && <div className="projectLink"><p>{closeout.summary}</p><small>模型：{String(closeout.model)} · 版本：{String(closeout.session_version)} · 引用：{(closeout.citations || []).map((item) => String(item.label || item.ref)).join("、") || "暂无"}</small><button className="quietBtn" disabled={locked} onClick={() => void save()}>编辑草稿</button><button className="quietBtn" disabled={!canConfirm || busy} onClick={() => void action(undefined, "confirm_close")}>确认关闭</button></div>}</div>;
+}

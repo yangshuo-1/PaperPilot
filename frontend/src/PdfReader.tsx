@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist";
-import type { Paper, ReaderManifest } from "./api";
-import { api } from "./api";
+import { pdfUrl, type Paper } from "./api";
+import { useReaderData } from "./hooks/useReaderData";
 import "./pdf-reader.css";
 
 GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
@@ -34,7 +34,6 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
   const renderGenerationRef = useRef(0);
-  const [manifest, setManifest] = useState<ReaderManifest | null>(null);
   const [page, setPage] = useState(paper.current_page || 1);
   const [totalPages, setTotalPages] = useState(paper.total_pages || 0);
   const [pdfReady, setPdfReady] = useState(0);
@@ -46,25 +45,23 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
   const [indexOpen, setIndexOpen] = useState(false);
 
   useEffect(() => {
+    setLoading(true);
+    setError(null);
+  }, [paper.id]);
+
+  useEffect(() => {
     if (jumpToPage && jumpToPage >= 1) setPage(jumpToPage);
   }, [jumpToPage, jumpNonce]);
 
+  const { manifest, manifestError } = useReaderData(paper, page, totalPages, onPaperChange);
+
   useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setError(null);
-    api.getReaderManifest(paper.id).then((value) => {
-      if (!alive) return;
-      setManifest(value);
-      if (value.total_pages) setTotalPages(value.total_pages);
-      if (value.error && !paper.local_pdf_path) setError(value.error);
-    }).catch((reason) => alive && setError(reason instanceof Error ? reason.message : String(reason)));
-    return () => { alive = false; };
-  }, [paper.id, paper.local_pdf_path]);
+    if (manifest?.total_pages) setTotalPages(manifest.total_pages);
+  }, [manifest?.total_pages]);
 
   useEffect(() => {
     let alive = true;
-    const loadingTask = getDocument({ url: api.pdfUrl(paper.id) });
+    const loadingTask = getDocument({ url: pdfUrl(paper.id) });
     loadingTask.promise.then((pdf) => {
       if (!alive) { void pdf.destroy(); return; }
       pdfRef.current = pdf;
@@ -100,25 +97,6 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
       renderTaskRef.current = null;
     };
   }, [page, scale, totalPages, pdfReady]);
-
-  useEffect(() => {
-    if (!totalPages || !paper.id) return;
-    const timer = window.setTimeout(async () => {
-      try {
-        const progress = Math.round((page / totalPages) * 1000) / 10;
-        const updated = await api.updateMetadata(paper.id, {
-          current_page: page,
-          total_pages: totalPages,
-          reading_progress: progress,
-          read_status: page >= totalPages ? "read" : "reading",
-          document_version: manifest?.document_version || paper.document_version || null,
-          last_read_at: new Date().toISOString(),
-        });
-        if (updated[0]) onPaperChange(updated[0]);
-      } catch { /* reader progress must not break reading */ }
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [page, totalPages, manifest?.document_version, paper.id]);
 
   async function renderPage(pdf: PDFDocumentProxy, pageNumber: number, zoom: number, generation: number) {
     renderTaskRef.current?.cancel();
@@ -217,7 +195,7 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
         </aside>
         <div className="pdfStage">
           {loading && <div className="readerNotice">正在加载 PDF…</div>}
-          {error && <div className="readerNotice readerError">{error}。可切换“笔记”查看已有 Markdown 文档，或<a href={api.pdfUrl(paper.id)} target="_blank" rel="noreferrer">打开原始 PDF</a>。</div>}
+          {(error || manifestError) && <div className="readerNotice readerError">{error || manifestError}。可切换“笔记”查看已有 Markdown 文档，或<a href={pdfUrl(paper.id)} target="_blank" rel="noreferrer">打开原始 PDF</a>。</div>}
           <div className="pdfPage" onMouseUp={handleSelection}>
             <canvas ref={canvasRef} />
             <div ref={textLayerRef} className="pdfTextLayer" aria-label="PDF 文本层" />

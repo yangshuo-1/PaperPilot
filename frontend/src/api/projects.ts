@@ -1,0 +1,27 @@
+import { request, requestText } from "./client";
+
+export type Project = { id: string; name: string; description: string; goal: string; created_at: string; updated_at: string; links: Array<Record<string, unknown>>; session_ids: string[]; workspace_root?: string };
+export type Session = { id: string; project_id: string; title: string; goal: string; status: "active" | "paused" | "completed" | "failed"; created_at: string; updated_at: string; last_activity_at: string; links: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; workspace_root?: string; governance?: Record<string, unknown>; closeout?: { summary: string; handoff: string; next_steps: string[]; model?: string; session_version?: string; document_version?: string | null; citations?: Array<Record<string, unknown>>; confirmed?: boolean } | null };
+export type WorkspaceEntry = { path: string; kind: "file" | "directory"; size: number; updated_at?: string | null };
+export type WorkspaceResponse = { project_id: string; root: string; entries: WorkspaceEntry[] };
+export const listProjects = () => request<Project[]>("/api/projects");
+export const createProject = (payload: { name: string; description: string; goal: string }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) });
+export const getProject = (id: string) => request<Project>(`/api/projects/${id}`);
+export const linkProject = (id: string, payload: Record<string, unknown>) => request<Project>(`/api/projects/${id}/links`, { method: "POST", body: JSON.stringify(payload) });
+export const deleteProject = (id: string) => request<void>(`/api/projects/${id}`, { method: "DELETE" });
+export const getWorkspace = (id: string) => request<WorkspaceResponse>(`/api/projects/${id}/workspace`);
+export const readWorkspaceFile = (id: string, path: string) => requestText(`/api/projects/${id}/workspace/file?path=${encodeURIComponent(path)}`);
+export const writeWorkspaceFile = (id: string, path: string, content: string) => request<WorkspaceEntry>(`/api/projects/${id}/workspace/file`, { method: "PUT", body: JSON.stringify({ path, content }) });
+export const deleteWorkspaceFile = (id: string, path: string) => request<void>(`/api/projects/${id}/workspace/file?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+export const listSessions = (id: string) => request<Session[]>(`/api/projects/${id}/sessions`);
+export const createSession = (id: string, payload: { title: string; goal: string }) => request<Session>(`/api/projects/${id}/sessions`, { method: "POST", body: JSON.stringify(payload) });
+export const updateSession = (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+export const linkSession = (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}/links`, { method: "POST", body: JSON.stringify(payload) });
+export const deleteSession = (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" });
+export const getGovernance = (id: string) => request<{ candidates: Array<Record<string, unknown>>; generated_at: string }>(`/api/sessions/${id}/governance`);
+export const applyGovernance = (id: string, action: string, candidateId?: string, snoozeUntil?: string) => request<Session>(`/api/sessions/${id}/governance`, { method: "POST", body: JSON.stringify({ action, candidate_id: candidateId, snooze_until: snoozeUntil }) });
+export const saveCloseout = (id: string, payload: { summary: string; handoff: string; next_steps: string[] }) => request<Session>(`/api/sessions/${id}/closeout`, { method: "POST", body: JSON.stringify(payload) });
+export const getRelations = (id: string) => request<Array<Record<string, unknown>>>(`/api/projects/${id}/relations`);
+export const getResearchOverview = (id: string) => request<Record<string, unknown>>(`/api/projects/${id}/overview`);
+export const generateCloseout = (id: string) => request<Session>(`/api/sessions/${id}/closeout/generate`, { method: "POST" });
+export const decideRelation = (id: string, relationId: string, accepted: boolean) => request<Array<Record<string, unknown>>>(`/api/projects/${id}/relations/${relationId}`, { method: "POST", body: JSON.stringify({ accepted }) });

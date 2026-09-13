@@ -1,150 +1,160 @@
 from __future__ import annotations
 
-import threading
-import uuid
+import json
 import hashlib
-from datetime import datetime, timezone
+import threading
+import time
+import uuid
 from pathlib import Path
+from typing import Any, Mapping
 
 from . import llm as _llm
 from .asset_audit import asset_record, sha256_file
+from .jobs.base import Job, JobRunner, JobStatus
 from .models import TranslationJob
 from .reader import document_version
 from .storage import PaperStore
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-class TranslationJobRunner:
-    """Run long-running paragraph translation outside the FastAPI request thread."""
+class TranslationJobRunner(JobRunner[dict[str, Any]]):
+    """Paragraph translation runner using the shared persistent lifecycle."""
 
     def __init__(self, store: PaperStore) -> None:
         self.store = store
         self.jobs_dir = store.settings.references_dir / "translation_jobs"
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(self.jobs_dir, auto_recover=False)
+        self._migrate_legacy_records()
+        self.recover()
+
+    def _launch(self, job: Job) -> None:
+        thread = threading.Thread(
+            target=self._run_thread,
+            args=(job.job_id,),
+            name=f"translation-{job.job_id}",
+            daemon=True,
+        )
+        self._threads[job.job_id] = thread
+        thread.start()
 
     def start(self, paper_id: str, *, max_units: int) -> TranslationJob:
         paper = self.store.get_paper(paper_id)
         if not _llm.llm_available():
             raise _llm.LLMUnavailable("No LLM provider configured.")
-        version = document_version(Path(paper.local_pdf_path)) if paper.local_pdf_path and Path(paper.local_pdf_path).is_file() else ""
-        job_key = hashlib.sha256(f"{paper_id}|{version}|{max_units}".encode()).hexdigest()
-        existing = [self.get(path.stem) for path in self.jobs_dir.glob("*.json") if path.stem.isalnum()]
-        matching = [item for item in existing if item.paper_id == paper_id and item.job_key == job_key]
-        active = [item for item in matching if item.status in {"queued", "running"}]
+        pdf = Path(paper.local_pdf_path) if paper.local_pdf_path and Path(paper.local_pdf_path).is_file() else None
+        version = document_version(pdf) if pdf else ""
+        self._migrate_legacy_records()
+        task_params = {"max_units": max_units}
+        key = hashlib.sha256(f"{paper_id}|{version}|{max_units}".encode()).hexdigest()
+        matching = [job for job in self.list_jobs() if job.paper_id == paper_id and job.job_key in {key, self._compute_job_key(paper_id, version, task_params)}]
+        active = [job for job in matching if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}]
         if active:
-            return max(active, key=lambda item: item.created_at)
-        job = TranslationJob(
-            job_id=uuid.uuid4().hex,
-            paper_id=paper_id,
-            status="queued",
-            max_units=max_units,
-            created_at=now_iso(),
-            updated_at=now_iso(),
-            job_key=job_key,
-            checkpoint_path=str(self.jobs_dir / f"{job.job_id}.checkpoint.json"),
-            document_version=document_version(Path(paper.local_pdf_path)) if paper.local_pdf_path and Path(paper.local_pdf_path).is_file() else None,
-        )
-        self._write(job)
-        thread = threading.Thread(
-            target=self._run,
-            args=(job,),
-            name=f"translation-{job.job_id}",
-            daemon=True,
-        )
-        thread.start()
-        return self.get(job.job_id)
+            return self._job_to_public(max(active, key=lambda item: item.created_at))
+        succeeded = [job for job in matching if job.status == JobStatus.SUCCEEDED]
+        if succeeded:
+            return self._job_to_public(max(succeeded, key=lambda item: item.created_at))
+        return self._job_to_public(super().start(paper_id, version, task_params))
 
     def get(self, job_id: str) -> TranslationJob:
-        path = self._path(job_id)
-        if not path.exists():
-            raise KeyError(job_id)
-        return TranslationJob.model_validate_json(path.read_text(encoding="utf-8"))
+        self._migrate_legacy_records()
+        return self._job_to_public(self._read_job(job_id))
 
     def cancel(self, job_id: str) -> TranslationJob:
-        job = self.get(job_id)
-        if job.status in {"queued", "running"}:
-            job.cancel_requested = True
-            job.error = "Cancellation requested"
-            self._write(job)
-        return job
+        self._migrate_legacy_records()
+        return self._job_to_public(super().cancel(job_id))
 
     def latest_for_paper(self, paper_id: str) -> TranslationJob | None:
         self.store.get_paper(paper_id)
-        jobs: list[TranslationJob] = []
-        for path in self.jobs_dir.glob("*.json"):
+        self._migrate_legacy_records()
+        jobs = [job for job in self.list_jobs() if job.paper_id == paper_id]
+        return self._job_to_public(max(jobs, key=lambda item: item.created_at)) if jobs else None
+
+    def run_job(self, job: Job, *, checkpoint, should_cancel, save_checkpoint) -> dict[str, Any]:
+        max_units = int(job.task_params["max_units"])
+        for attempt in range(3):
+            if should_cancel():
+                raise RuntimeError("translation cancelled")
+            current = self._read_job(job.job_id)
+            current.attempts = max(current.attempts, attempt + 1)
+            self._write_job(current)
+            save_checkpoint({"attempt": attempt + 1}, status="running")
             try:
-                job = TranslationJob.model_validate_json(path.read_text(encoding="utf-8"))
+                self.store.generate_translation(
+                    job.paper_id,
+                    max_units=max_units,
+                    should_cancel=should_cancel,
+                )
+                paper = self.store.get_paper(job.paper_id)
+                output = self.store.paper_dir(job.paper_id) / "translation_zh.json"
+                if output.is_file():
+                    pdf = Path(paper.local_pdf_path or "")
+                    input_version = sha256_file(pdf) if pdf.is_file() else None
+                    self.store._record_assets(
+                        job.paper_id,
+                        [asset_record(output, output.parent, role="result", generated_by="translation.generate", input_document_version=input_version)],
+                        generator_version="translation.generate.v1",
+                        run={"stage": "translation_generate", "input_document_version": input_version, "outputs": [output.name], "status": "completed"},
+                    )
+                return {"max_units": max_units}
+            except Exception:
+                if attempt == 2 or should_cancel():
+                    raise
+                save_checkpoint({"attempt": attempt + 1}, status="retrying")
+                time.sleep(0.2 * (attempt + 1))
+        raise RuntimeError("translation failed")
+
+    def _job_to_public(self, job: Job) -> TranslationJob:
+        params = job.task_params if isinstance(job.task_params, Mapping) else {}
+        return TranslationJob(
+            job_id=job.job_id,
+            paper_id=job.paper_id,
+            status="failed" if job.status == JobStatus.CANCELLED else job.status.value,
+            max_units=int(params.get("max_units", 200)),
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            job_key=job.job_key,
+            checkpoint_path=job.checkpoint_path,
+            attempts=job.attempts,
+            document_version=job.document_version or None,
+        )
+
+    def _migrate_legacy_records(self) -> None:
+        for path in sorted(self.jobs_dir.glob("*.json")):
+            if path.name.endswith(".checkpoint.json") or path.name.startswith("."):
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if "task_params" in payload:
+                continue
+            try:
+                legacy = TranslationJob.model_validate(payload)
             except Exception:
                 continue
-            if job.paper_id == paper_id:
-                jobs.append(job)
-        return max(jobs, key=lambda item: item.created_at) if jobs else None
+            job = Job(
+                job_id=legacy.job_id,
+                paper_id=legacy.paper_id,
+                document_version=legacy.document_version or "",
+                task_params={"max_units": legacy.max_units},
+                job_key=legacy.job_key,
+                status=legacy.status,
+                created_at=legacy.created_at,
+                updated_at=legacy.updated_at,
+                started_at=legacy.started_at,
+                finished_at=legacy.finished_at,
+                error=legacy.error,
+                cancel_requested=legacy.cancel_requested,
+                attempts=legacy.attempts,
+                checkpoint_path=legacy.checkpoint_path or str(self.checkpoint_path(legacy.job_id)),
+            )
+            backup = path.with_name(path.name + ".migrated")
+            if backup.exists():
+                backup = path.with_name(path.name + ".migrated." + uuid.uuid4().hex)
+            path.replace(backup)
+            self._write_job(job)
 
-    def _run(self, job: TranslationJob) -> None:
-        job.status = "running"
-        job.started_at = now_iso()
-        job.updated_at = job.started_at
-        self._write(job)
-        try:
-            for attempt in range(3):
-                if self._cancel_requested(job.job_id):
-                    raise RuntimeError("translation cancelled")
-                job.attempts = attempt + 1
-                job.status = "running"; job.updated_at = now_iso(); self._write(job); self._write_checkpoint(job, "running")
-                try:
-                    self.store.generate_translation(job.paper_id, max_units=job.max_units, should_cancel=lambda: self._cancel_requested(job.job_id))
-                    paper = self.store.get_paper(job.paper_id)
-                    output = self.store.paper_dir(job.paper_id) / "translation_zh.json"
-                    if output.is_file():
-                        pdf_path = Path(paper.local_pdf_path or "")
-                        input_version = sha256_file(pdf_path) if pdf_path.is_file() else None
-                        self.store._record_assets(
-                            job.paper_id,
-                            [asset_record(output, output.parent, role="result", generated_by="translation.generate", input_document_version=input_version)],
-                            generator_version="translation.generate.v1",
-                            run={"stage": "translation_generate", "input_document_version": input_version, "outputs": [output.name], "status": "completed"},
-                        )
-                    job.status = "succeeded"; job.error = None; break
-                except Exception as exc:
-                    job.error = str(exc)
-                    if attempt == 2 or self._cancel_requested(job.job_id):
-                        raise
-                    self._write_checkpoint(job, "retrying")
-                    import time
-                    time.sleep(0.2 * (attempt + 1))
-        except Exception as exc:
-            job.status = "failed"
-            job.error = str(exc)
-        finally:
-            job.finished_at = now_iso()
-            job.updated_at = job.finished_at
-            self._write(job)
 
-    def _cancel_requested(self, job_id: str) -> bool:
-        try:
-            return bool(self.get(job_id).cancel_requested)
-        except KeyError:
-            return False
-
-    def _write_checkpoint(self, job: TranslationJob, status: str) -> None:
-        if not job.checkpoint_path:
-            return
-        path = Path(job.checkpoint_path)
-        tmp = path.with_name(f".{path.name}.tmp")
-        tmp.write_text(f'{{"job_id":"{job.job_id}","paper_id":"{job.paper_id}","status":"{status}","attempts":{job.attempts}}}\n', encoding="utf-8")
-        tmp.replace(path)
-
-    def _path(self, job_id: str) -> Path:
-        # Job IDs are generated hex strings; reject path-like values on lookup.
-        if not job_id or any(char not in "0123456789abcdef" for char in job_id):
-            raise KeyError(job_id)
-        return self.jobs_dir / f"{job_id}.json"
-
-    def _write(self, job: TranslationJob) -> None:
-        path = self._path(job.job_id)
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        tmp.write_text(job.model_dump_json(indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
+__all__ = ["TranslationJobRunner"]
