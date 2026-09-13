@@ -10,7 +10,7 @@
 
 | 阶段 | 状态 | 备注 |
 |---|---|---|
-| Stage 0 地基 + 契约 | 进行中 | 0.2 ✅（`AGENTS.md` + `.agents/skills/` 约束 skill）；0.3 ✅（.gitignore 按新旧双布局修正，check-ignore 逐路径验证）；0.1 / 0.4 / 0.5–0.8 未开始 |
+| Stage 0 地基 + 契约 | 已完成（review 通过，待 commit） | 0.1 ✅（Makefile+doctor，7 项自检通过）；0.2 ✅；0.3 ✅；0.4 ✅（pyproject/ruff/pyright/import-linter 3 契约/CI/禁内嵌 prompt 检查）；0.5–0.8 ✅（`jobs/base.py`、`stores/ddl.sql` trigram、`ir-schema.v1.json` evidence 强制、`routers/diagrams.py` 501 骨架）。深度 review 修复一处契约 bug（jobs 互导契约误伤 base，已加 ignore_imports 并探针验证）。遗留待办（记入 Stage 1）：base.py 别名瘦身、auto_recover 默认关、legacy F821 豁免收紧。 |
 | Stage 1 四轨并行 | 未开始 | 契约冻结后解冻 |
 | Stage 2 集成点 | 未开始 | I4 为 go/no-go |
 | Stage 3 拆分与解析升级 | 未开始 | "够用即停" |
