@@ -5,6 +5,7 @@
 > **开发约束（必读）**：任何代码改动前先读 `.agents/skills/paper-valt-dev-constraints/SKILL.md`。
 > 设计依据：`docs/design/`（code-organization / data-organization / paper-diagrams / roadmap）。
 > 文档索引与维护规范：`docs/README.md`。
+> subagent定义：.codex/agents
 
 ## 环境
 

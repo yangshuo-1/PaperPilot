@@ -324,6 +324,24 @@ class JobRunner(Generic[ResultT]):
         self._validate_job_id(job_id)
         return self.jobs_dir / f"{job_id}.checkpoint.json"
 
+    def _checkpoint_path_for_job(self, job: Job) -> Path:
+        """Resolve a persisted checkpoint path without allowing it outside jobs_dir."""
+        default = self.checkpoint_path(job.job_id)
+        if not job.checkpoint_path:
+            return default
+        try:
+            candidate = Path(job.checkpoint_path)
+            if not candidate.is_absolute():
+                candidate = self.jobs_dir / candidate
+            jobs_root = self.jobs_dir.resolve()
+            candidate = candidate.resolve()
+            candidate.relative_to(jobs_root)
+            if candidate == jobs_root:
+                return default
+            return candidate
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return default
+
     @staticmethod
     def _validate_job_id(job_id: str) -> None:
         if not job_id or Path(job_id).name != job_id or job_id in {".", ".."}:
@@ -394,13 +412,13 @@ class JobRunner(Generic[ResultT]):
             status=status or job.status.value,
             payload=payload,
         )
-        path = Path(job.checkpoint_path) if job.checkpoint_path else self.checkpoint_path(job_id)
+        path = self._checkpoint_path_for_job(job)
         self._atomic_write_json(path, checkpoint.to_dict())
         return checkpoint
 
     def load_checkpoint(self, job_id: str) -> Checkpoint | None:
         job = self._read_job(job_id)
-        path = Path(job.checkpoint_path) if job.checkpoint_path else self.checkpoint_path(job_id)
+        path = self._checkpoint_path_for_job(job)
         if not path.is_file():
             return None
         try:

@@ -13,6 +13,9 @@ dist/
 # Self-contained LLM config holds the api_key; only the example is committed.
 backend/llm_config.json
 
+# ---- Local Codex agents ----
+.codex
+
 # ---- Node / Vite ----
 frontend/node_modules/
 frontend/dist/

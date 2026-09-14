@@ -1,4 +1,5 @@
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -60,9 +61,16 @@ from .models import (
 from .storage import PaperStore
 from .translation_jobs import TranslationJobRunner
 from .takeaway_jobs import TakeawayJobRunner
+from .routers.diagrams import initialize_diagram_runner, router as diagrams_router
 
 
-app = FastAPI(title="paper_valt", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.diagram_runner = initialize_diagram_runner(get_settings())
+    yield
+
+
+app = FastAPI(title="paper_valt", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1011,3 +1019,6 @@ def cancel_translation_job(paper_id: str, job_id: str, runner: TranslationJobRun
     if job.paper_id != paper_id:
         raise HTTPException(status_code=404, detail="Translation job not found")
     return job
+
+
+app.include_router(diagrams_router)

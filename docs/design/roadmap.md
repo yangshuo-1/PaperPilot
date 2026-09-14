@@ -12,7 +12,7 @@
 |---|---|---|
 | Stage 0 地基 + 契约 | ✅ 已完成（f07f11e） | 0.1–0.8 全部落地并 review 通过。深度 review 修复一处契约 bug（jobs 互导契约误伤 base，已加 ignore_imports 并探针验证）。 |
 | Stage 1 四轨并行 | 已完成（待 review） | J/D/V/U 四轨全部交付，合并树独立验收：compileall 干净、62 测试 OK（+26）、ruff 全过、import-linter 3 kept/0 broken。并行竞态已自愈（D 当时报 3 个 diagram 测试失败、V 当时报 lint-imports 无匹配——均因彼此文件未落地，合并后消失）。待 review 后 commit，再进 Stage 2 集成。 |
-| Stage 2 集成点 | 未开始 | I4 为 go/no-go |
+| Stage 2 集成点 | ✅ I1/I2 已完成（三轮复审至 Ready to merge，随本提交入库） | I3 待宿主 Chrome/CDP 权限；I4 待维护者提供 diagram_ir prompt。验证：75 unittest 全绿、frontend build/compileall/ruff/diff-check 通过 |
 | Stage 3 拆分与解析升级 | 未开始 | "够用即停" |
 
 ## 协作模型

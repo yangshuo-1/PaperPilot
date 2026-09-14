@@ -87,6 +87,24 @@ class JobRunnerContractTests(unittest.TestCase):
                 recovered.load_checkpoint(job.job_id).payload, {"cursor": 2}
             )
 
+    def test_persisted_checkpoint_path_cannot_escape_jobs_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            jobs_dir = root / "jobs"
+            outside = root / "outside.checkpoint.json"
+            runner = MemoryRunner(jobs_dir)
+            job = runner.create_job("paper-1", "doc-v1", {"kind": "diagram"})
+            job.checkpoint_path = str(outside)
+            runner._write_job(job)
+
+            outside.write_text('{"payload": "outside"}\n', encoding="utf-8")
+            self.assertIsNone(runner.load_checkpoint(job.job_id))
+
+            runner.save_checkpoint(job.job_id, {"cursor": 3}, status="running")
+            self.assertEqual(runner.load_checkpoint(job.job_id).payload, {"cursor": 3})
+            self.assertFalse(outside.read_text(encoding="utf-8").endswith('"cursor": 3}\n'))
+            self.assertTrue(runner.checkpoint_path(job.job_id).is_file())
+
     def test_running_job_cancellation_is_observed_by_should_cancel(self):
         with tempfile.TemporaryDirectory() as temp:
             runner = MemoryRunner(Path(temp))

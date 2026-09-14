@@ -2,16 +2,39 @@ import json
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.app.codex_jobs import CodexJobRunner
 from backend.app import llm
+from backend.app.jobs.diagram import DiagramJobRunner
+from backend.app.llm.loader import PromptNotConfigured
 from backend.app.models import CodexAnalysisJob, Paper
 
 
 class JobReliabilityTests(unittest.TestCase):
+    def test_missing_full_analysis_prompt_fails_job_explicitly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            paper = Paper(id="paper-1", title="Paper", local_pdf_path=str(pdf))
+            store = SimpleNamespace(get_paper=lambda paper_id: paper)
+            runner = CodexJobRunner(settings, store)
+            with patch("backend.app.codex_jobs.document_version", return_value="sha256:paper-v1"), patch(
+                "backend.app.codex_jobs.shutil.which", return_value="codex"
+            ), patch(
+                "backend.app.codex_jobs.load_prompt",
+                side_effect=PromptNotConfigured("prompt 未配置: full_analysis"),
+            ):
+                result = runner.start_analysis("paper-1")
+            self.assertEqual(result.status, "failed")
+            self.assertIn("prompt 未配置: full_analysis", result.error or "")
+            self.assertFalse(Path(result.prompt_path).exists())
+
     def test_repeated_default_submission_reuses_succeeded_job(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -71,9 +94,12 @@ class JobReliabilityTests(unittest.TestCase):
             def kill(self): pass
             def wait(self, **_kwargs): pass
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp); settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
-            settings.references_dir.mkdir(); (settings.references_dir / "codex_jobs").mkdir()
-            target = root / "analysis.md"; target.write_text("旧文档", encoding="utf-8")
+            root = Path(temp)
+            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            settings.references_dir.mkdir()
+            (settings.references_dir / "codex_jobs").mkdir()
+            target = root / "analysis.md"
+            target.write_text("旧文档", encoding="utf-8")
             job = CodexAnalysisJob(job_id="c" * 32, paper_id="paper-1", status="queued", target_document=str(target), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"))
             runner = CodexJobRunner(settings, SimpleNamespace())
             (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
@@ -84,8 +110,10 @@ class JobReliabilityTests(unittest.TestCase):
 
     def test_cancel_before_start_is_cooperative(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp); settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
-            settings.references_dir.mkdir(); (settings.references_dir / "codex_jobs").mkdir()
+            root = Path(temp)
+            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            settings.references_dir.mkdir()
+            (settings.references_dir / "codex_jobs").mkdir()
             job = CodexAnalysisJob(job_id="d" * 32, paper_id="paper-1", status="queued", target_document=str(root / "out.md"), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"))
             runner = CodexJobRunner(settings, SimpleNamespace())
             (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
@@ -103,8 +131,10 @@ class JobReliabilityTests(unittest.TestCase):
             def kill(self): pass
             def wait(self, **_kwargs): pass
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp); settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
-            settings.references_dir.mkdir(); (settings.references_dir / "codex_jobs").mkdir()
+            root = Path(temp)
+            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+            settings.references_dir.mkdir()
+            (settings.references_dir / "codex_jobs").mkdir()
             job = CodexAnalysisJob(job_id="e" * 32, paper_id="paper-1", status="queued", target_document=str(root / "out.md"), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"), timeout_seconds=1)
             runner = CodexJobRunner(settings, SimpleNamespace())
             (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
@@ -129,6 +159,39 @@ class JobReliabilityTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     llm.translate_paragraphs(paper_dir, ["first", "second"])
             self.assertFalse((paper_dir / "translation_zh.json").exists())
+
+    def test_diagram_rejects_ir_for_requested_type_and_repairs(self):
+        mismatched = {
+            "version": 1,
+            "type": "data_flow",
+            "title": "Data flow",
+            "nodes": [],
+            "edges": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"), patch(
+                "backend.app.jobs.diagram.load_prompt", return_value="diagram prompt"
+            ):
+                runner = DiagramJobRunner(
+                    root / "references" / "diagram_jobs",
+                    paper_root=root,
+                    llm=lambda _prompt: json.dumps(mismatched),
+                    validator=lambda _ir, **_: [],
+                )
+                runner._launch = lambda _job: None
+                final = runner.run(runner.generate("paper", "doc-v1", "workflow", "source").job_id)
+            self.assertEqual(final.status.value, "failed")
+            self.assertIn("TYPE_MISMATCH", final.error or "")
+
+    def test_diagram_atomic_overwrite_leaves_no_shared_temp_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "workflow.ir.json"
+            values = [json.dumps({"value": index}) for index in range(8)]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(lambda value: DiagramJobRunner._atomic_text(target, value), values))
+            self.assertIn(target.read_text(encoding="utf-8"), values)
+            self.assertEqual(list(target.parent.glob("*.tmp")), [])
 
 
 if __name__ == "__main__":
