@@ -11,9 +11,9 @@
 | 阶段 | 状态 | 备注 |
 |---|---|---|
 | Stage 0 地基 + 契约 | ✅ 已完成（f07f11e） | 0.1–0.8 全部落地并 review 通过。深度 review 修复一处契约 bug（jobs 互导契约误伤 base，已加 ignore_imports 并探针验证）。 |
-| Stage 1 四轨并行 | 已完成（待 review） | J/D/V/U 四轨全部交付，合并树独立验收：compileall 干净、62 测试 OK（+26）、ruff 全过、import-linter 3 kept/0 broken。并行竞态已自愈（D 当时报 3 个 diagram 测试失败、V 当时报 lint-imports 无匹配——均因彼此文件未落地，合并后消失）。待 review 后 commit，再进 Stage 2 集成。 |
-| Stage 2 集成点 | ✅ I1/I2 已完成（三轮复审至 Ready to merge，随本提交入库） | I3 待宿主 Chrome/CDP 权限；I4 待维护者提供 diagram_ir prompt。验证：75 unittest 全绿、frontend build/compileall/ruff/diff-check 通过 |
-| Stage 3 拆分与解析升级 | 未开始 | "够用即停" |
+| Stage 1 四轨并行 | ✅ 已完成 | J/D/V/U 四轨交付并通过 compileall、unittest、ruff、import-linter；SQLite 迁移器与 trigram DDL 已落地，运行态切换仍属于后续集成边界。 |
+| Stage 2 集成点 | 进行中（I1/I2/I3 完成，I4 blocked） | 路由已挂载，图解 schema/job/HTML 与真实 Chrome/CDP 基线验收通过；`diagram_ir.v1.md` 已补齐，但当前 provider 配置的 `deepseek-v4-flash` 对真实 chat 请求返回 HTTP 503，无法完成 Qwen3-VL 图解人工评估。 |
+| Stage 3 拆分与解析升级 | ✅ 完成（迁移期） | storage 按域拆分；全部 HTTP 适配层已迁出 `main.py`；tier0/tier1 parser、manifest quality/AI capability、SQLite runtime 初始化与 FTS 已接入。更深层 domain 拆分仍按需推进。 |
 
 ## 协作模型
 
@@ -99,10 +99,10 @@
 
 | # | owner | 任务 |
 |---|---|---|
-| S1 | DATA | `storage.py` 按域拆 stores/domain，拆到够用即停，不追求教科书完整度 |
-| S2 | DATA | `main.py` 拆 routers（紧随 S1 单 agent 执行，防冲突） |
-| S3 | DATA | `parsers/base.py` + pypdf tier0 封装 + arXiv HTML tier1 |
-| S4 | DATA | manifest 写入 quality tier；AI 功能按 tier 声明能力边界 |
+| S1 | DATA | ✅ `storage.py` 按域拆 stores/domain，拆到够用即停，不追求教科书完整度 |
+| S2 | DATA | ✅ `main.py` 已拆为 health/papers/folders/discovery/annotations/reader/AI/jobs/projects/sessions routers |
+| S3 | DATA | ✅ `parsers/base.py` + pypdf tier0 封装 + arXiv HTML tier1 |
+| S4 | DATA | ✅ arXiv 导入写入 manifest quality tier；AI capability boundary 随解析结果声明 |
 
 ## 增强项（P3，独立小任务，可随时插入任何空档）
 

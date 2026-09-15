@@ -1,7 +1,5 @@
-import json
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -71,7 +69,6 @@ class Phase5ProjectTests(unittest.TestCase):
 
     def test_archive_closes_candidate_view_without_deleting_sources(self):
         session = self.session()
-        candidate = self.store.governance(session["id"])["candidates"]
         self.store.governance_action(session["id"], "archive")
         self.assertEqual(self.store.governance(session["id"])["candidates"], [])
         self.assertEqual(self.store.session(session["id"])["status"], "active")

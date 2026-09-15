@@ -17,7 +17,7 @@ Archify（`tt-a1i/archify`，MIT）的核心思想值得借鉴：**Typed JSON IR
 
 ```text
 Method 章节（derived/latex_plain.txt，tier1 时用结构化章节）
-  → LLM 生成 IR（prompt: llm/prompts/diagram_ir.md，输出受 schema 约束）
+  → LLM 生成 IR（prompt: llm/prompts/diagram_ir.v1.md，输出受 schema 约束）
   → 校验器（domain/diagrams.py + jobs/diagram.py）
       - schema 校验：节点/边/角色类型
       - 布局 / 连通 / 标签避让（Archify 五层的简化实现）

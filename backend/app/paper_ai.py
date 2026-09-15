@@ -12,6 +12,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from . import llm
+from .parsers import parser_capabilities
 from .reader import document_version
 
 
@@ -176,7 +177,21 @@ def status() -> dict[str, Any]:
     return llm.llm_status()
 
 
+def parse_capabilities(pdf_path: Path) -> dict[str, Any]:
+    """Load the parser quality boundary used to constrain text AI requests."""
+
+    return parser_capabilities(pdf_path.parent)
+
+
+def _require_text_ai(pdf_path: Path) -> dict[str, Any]:
+    capabilities = parse_capabilities(pdf_path)
+    if not capabilities["ai_capabilities"]["text_analysis"]:
+        raise ValueError("当前解析质量不支持基于论文文本的 AI 功能")
+    return capabilities
+
+
 def ask(pdf_path: Path, paper_id: str, *, mode: str, question: str, selection: dict[str, Any] | None) -> dict[str, Any]:
+    capabilities = _require_text_ai(pdf_path)
     version = document_version(pdf_path)
     context, pages = _pdf_context(pdf_path, query=question if mode == "ask" else "")
     page_texts = _page_texts(pdf_path)
@@ -227,6 +242,11 @@ def ask(pdf_path: Path, paper_id: str, *, mode: str, question: str, selection: d
         "paper_id": paper_id, "mode": mode, "answer": answer, "citations": citations,
         "document_version": version, "model": cfg.get("model"), "generated_at": _now(),
         "stale": False, "available": True, "error": response_error,
+        "quality_tier": capabilities["quality_tier"],
+        "parser": capabilities["parser"],
+        "source_provenance": capabilities["source_provenance"],
+        "ai_capabilities": capabilities["ai_capabilities"],
+        "parse_warnings": capabilities["parse_warnings"],
     }
 
 
@@ -239,6 +259,7 @@ def list_takeaways(path: Path, paper_id: str, current_version: str) -> dict[str,
 
 
 def generate_takeaway(pdf_path: Path, paper_id: str, path: Path) -> dict[str, Any]:
+    capabilities = _require_text_ai(pdf_path)
     version = document_version(pdf_path)
     context, pages = _pdf_context(pdf_path)
     page_texts = _page_texts(pdf_path)
@@ -262,4 +283,10 @@ def generate_takeaway(pdf_path: Path, paper_id: str, path: Path) -> dict[str, An
         return {"paper_id": paper_id, "takeaways": [], "available": False, "error": "AI 未生成至少 3 条可用 Takeaways，未覆盖已有内容。"}
     data = {"paper_id": paper_id, "takeaways": items}
     _save(path, data)
-    return data | {"available": True, "error": None}
+    return data | {
+        "available": True,
+        "error": None,
+        "quality_tier": capabilities["quality_tier"],
+        "ai_capabilities": capabilities["ai_capabilities"],
+        "parse_warnings": capabilities["parse_warnings"],
+    }

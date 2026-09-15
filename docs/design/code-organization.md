@@ -69,6 +69,8 @@ frontend/src/
 
 新功能只进新结构；旧文件按域逐块搬迁，每步保持 `compileall` + unittest + `npm run build` 通过。建议顺序：`jobs`（最独立，且新 diagram job 直接落在 base 上）→ `llm/loader` 加载机制（prompt 文件内容由维护者另行设计，不在代码任务内）→ `stores`（SQLite 切换）→ routers 拆分 → 前端分页拆分。
 
+当前迁移进度：项目与 session HTTP 适配层已拆入 `routers/projects.py` 与 `routers/sessions.py`；papers、folders、discovery、annotations、reader、AI、jobs 与 health 适配层也已拆入对应 router，由 `main.py` 统一注册。路由仍可暂时调用迁移期兼容 store，直到对应 domain/store 已完整替换。
+
 ## 配套工程化
 
 - `pyproject.toml`：ruff + pyright + pytest 配置；pre-commit；GitHub Actions（backend unittest + frontend build，`chrome_acceptance.mjs` 可选 job）。

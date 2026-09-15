@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .parsers import parser_capabilities
+
 try:
     from pypdf import PdfReader
 except ImportError:  # pragma: no cover - dependency is required at runtime
@@ -41,6 +43,7 @@ def build_manifest(pdf_path: Path, paper_id: str) -> dict[str, Any]:
             "document_version": document_version(pdf_path),
             "outline": outlines,
             "figures": figures,
+            **parser_capabilities(pdf_path.parent),
             "error": None,
         }
     except Exception as exc:
@@ -100,11 +103,12 @@ def _figure_items(pages: list[Any]) -> list[dict[str, Any]]:
 
 def load_or_build(pdf_path: Path, paper_id: str, cache_path: Path) -> dict[str, Any]:
     version = document_version(pdf_path) if pdf_path.is_file() else None
+    capabilities = parser_capabilities(pdf_path.parent)
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
             if cached.get("document_version") == version:
-                return cached
+                return {**cached, **capabilities}
         except (OSError, json.JSONDecodeError):
             pass
     manifest = build_manifest(pdf_path, paper_id)

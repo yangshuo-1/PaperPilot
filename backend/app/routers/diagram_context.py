@@ -60,7 +60,11 @@ def paper_context(paper_id: str, store: PaperStore, *, require_source: bool = Fa
     source = paper_source_text(paper_dir)
     if require_source and not source.strip():
         raise HTTPException(status_code=409, detail="Parsed paper text is unavailable; parse the paper before generating diagrams")
-    pdf = Path(paper.local_pdf_path).resolve() if paper.local_pdf_path else None
+    if paper.local_pdf_path:
+        raw_pdf_path = Path(paper.local_pdf_path).expanduser()
+        pdf = (raw_pdf_path if raw_pdf_path.is_absolute() else store.settings.data_root / raw_pdf_path).resolve()
+    else:
+        pdf = None
     if pdf is not None:
         try:
             pdf.relative_to(store.settings.data_root.resolve())

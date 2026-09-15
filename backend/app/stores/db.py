@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
+from ..asset_audit import sha256_file
 from .paths import (
     LAYERS,
     DataPathError,
@@ -42,7 +43,7 @@ from .paths import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DDL_PATH = Path(__file__).with_name("ddl.sql")
 
 LEGACY_FILENAMES: dict[str, str] = {
@@ -131,9 +132,27 @@ def _migration_1(connection: sqlite3.Connection) -> None:
     connection.executescript(_read_ddl())
 
 
+def _migration_2(connection: sqlite3.Connection) -> None:
+    """Add the persistent page-text cache to existing v1 databases."""
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS paper_pages (
+            paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            page INTEGER NOT NULL CHECK (page >= 1),
+            text TEXT NOT NULL,
+            document_version TEXT,
+            PRIMARY KEY (paper_id, page)
+        );
+        CREATE INDEX IF NOT EXISTS idx_paper_pages_version
+            ON paper_pages(paper_id, document_version);
+        """
+    )
+
+
 # The mapping is deliberately numbered.  A later schema change adds a new
 # function under its number; existing migrations are never rewritten.
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migration_1}
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migration_1, 2: _migration_2}
 
 
 def _coerce_version(value: Any) -> int:
@@ -220,6 +239,9 @@ class Database:
         self.connection.execute(f"PRAGMA busy_timeout = {max(1, int(timeout * 1000))}")
         if initialize:
             self.apply_migrations()
+            # Existing v1 databases have no page rows.  Populate the cache once
+            # at runtime migration/startup; request handlers only read SQLite.
+            self.ensure_page_index()
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -467,6 +489,52 @@ class Database:
 
     insert_reading_list = upsert_reading_list
 
+    def update_paper(self, paper_id: str, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply a partial runtime metadata update through the normalized store."""
+
+        existing = self.get_paper(paper_id)
+        if existing is None:
+            raise KeyError(paper_id)
+        merged = {**existing, **dict(fields), "id": str(paper_id)}
+        return self.upsert_paper(merged, rebuild_fts=False)
+
+    def replace_tags(self, paper_id: str, tags: Iterable[str]) -> list[dict[str, Any]]:
+        """Replace a paper's tag set atomically."""
+
+        if self.get_paper(paper_id) is None:
+            raise KeyError(paper_id)
+        clean = sorted({str(tag).strip() for tag in tags if str(tag).strip()})
+        with self.transaction():
+            self.connection.execute("DELETE FROM tags WHERE paper_id = ?", (str(paper_id),))
+            for tag in clean:
+                self._upsert_tag_no_tx(str(paper_id), tag)
+        return self.list_tags(str(paper_id))
+
+    def delete_paper(self, paper_id: str) -> None:
+        """Delete one paper and its FK-owned runtime state."""
+
+        with self.transaction():
+            cursor = self.connection.execute("DELETE FROM papers WHERE id = ?", (str(paper_id),))
+            if cursor.rowcount == 0:
+                raise KeyError(paper_id)
+            self.connection.execute("DELETE FROM paper_fts WHERE paper_id = ?", (str(paper_id),))
+
+    def delete_folder(self, folder_id: str) -> None:
+        """Delete a folder subtree; paper folder references are set null by FK."""
+
+        with self.transaction():
+            cursor = self.connection.execute("DELETE FROM folders WHERE id = ?", (str(folder_id),))
+            if cursor.rowcount == 0:
+                raise KeyError(folder_id)
+
+    def delete_reading_list(self, paper_id: str) -> None:
+        with self.transaction():
+            cursor = self.connection.execute(
+                "DELETE FROM reading_list WHERE paper_id = ?", (str(paper_id),)
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(paper_id)
+
     # ------------------------------------------------------------------
     # Read helpers and FTS
 
@@ -581,6 +649,92 @@ class Database:
             return direct
         return papers_root
 
+    def _paper_pdf_path(self, row: Mapping[str, Any]) -> Path | None:
+        """Return a contained source PDF for migration-time page extraction."""
+
+        local_value = _mapping_get(row, "local_pdf_path")
+        if not local_value:
+            return None
+        candidate = Path(str(local_value)).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.data_root / candidate
+        candidate = candidate.resolve()
+        papers_root = papers_directory(self.data_root)
+        try:
+            candidate.relative_to(papers_root)
+        except ValueError:
+            return None
+        if candidate.suffix.lower() != ".pdf" or not candidate.is_file():
+            return None
+        return candidate
+
+    def replace_page_texts(
+        self,
+        paper_id: str,
+        pages: Iterable[str],
+        *,
+        document_version: str | None = None,
+    ) -> int:
+        """Replace one paper's persisted page text atomically."""
+
+        normalized_pages = [str(page or "") for page in pages]
+        with self.transaction():
+            self.connection.execute("DELETE FROM paper_pages WHERE paper_id = ?", (str(paper_id),))
+            self.connection.executemany(
+                "INSERT INTO paper_pages(paper_id, page, text, document_version) VALUES (?, ?, ?, ?)",
+                [
+                    (str(paper_id), page_number, text, document_version)
+                    for page_number, text in enumerate(normalized_pages, start=1)
+                ],
+            )
+        return len(normalized_pages)
+
+    def ensure_page_index(self) -> dict[str, int]:
+        """Populate missing/stale page text from contained PDFs.
+
+        This is deliberately called while the database is opened or rebuilt.
+        The request-time paper search path uses only ``paper_pages`` rows.
+        """
+
+        rows = self.connection.execute(
+            "SELECT id, local_pdf_path FROM papers ORDER BY rowid"
+        ).fetchall()
+        indexed = 0
+        skipped = 0
+        failed = 0
+        try:
+            from ..parsers.pypdf_parser import PypdfParser
+        except ImportError:
+            return {"papers_indexed": 0, "papers_skipped": 0, "papers_failed": len(rows)}
+        parser = PypdfParser()
+        for row in rows:
+            pdf_path = self._paper_pdf_path(row)
+            if pdf_path is None:
+                skipped += 1
+                continue
+            try:
+                version = f"sha256:{sha256_file(pdf_path)}"
+                cached = self.connection.execute(
+                    "SELECT COUNT(*) AS count, MIN(document_version) AS document_version "
+                    "FROM paper_pages WHERE paper_id = ?",
+                    (str(row["id"]),),
+                ).fetchone()
+                if cached is not None and int(cached["count"] or 0) > 0 and cached["document_version"] == version:
+                    skipped += 1
+                    continue
+                parsed = parser.parse(pdf_path)
+                page_values = (parsed.structured or {}).get("pages")
+                if not isinstance(page_values, (list, tuple)):
+                    failed += 1
+                    continue
+                self.replace_page_texts(str(row["id"]), page_values, document_version=version)
+                indexed += 1
+            except Exception:
+                # A malformed or image-only PDF remains searchable through any
+                # existing derived text; it must not prevent database startup.
+                failed += 1
+        return {"papers_indexed": indexed, "papers_skipped": skipped, "papers_failed": failed}
+
     def _parsed_text_for_paper(self, row: Mapping[str, Any]) -> str:
         paper_dir = self._paper_directory(row)
         # Prefer any available new-layout text over every legacy candidate.
@@ -595,13 +749,42 @@ class Database:
             legacy_paper_path(paper_dir, "latex_plain.txt"),
             legacy_paper_path(paper_dir, "latex_source.md"),
         ]
-        for path in (*new_candidates, *old_candidates):
+        selected_text: str | None = None
+        for path in new_candidates:
             if not path.is_file():
                 continue
             try:
-                return path.read_text(encoding="utf-8", errors="replace")
+                selected_text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
-                return ""
+                selected_text = ""
+            break
+        if selected_text is None:
+            for path in old_candidates:
+                if not path.is_file():
+                    continue
+                try:
+                    selected_text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    selected_text = ""
+                break
+        if selected_text is None:
+            selected_text = ""
+
+        # Keep analysis documents in the FTS document while retaining the
+        # new-before-legacy rule for the canonical parsed text.
+        documents: list[str] = []
+        try:
+            document_paths = sorted(paper_dir.glob("*.md"))
+        except OSError:
+            document_paths = []
+        for path in document_paths:
+            try:
+                documents.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+        combined = [selected_text, *documents]
+        if any(combined):
+            return "\n\n".join(text for text in combined if text)
         # A parsed JSON file is a useful final fallback when a caller has not
         # materialized latex_plain.txt yet; apply the same new-before-legacy
         # ordering.
@@ -642,7 +825,12 @@ class Database:
                         content,
                     ),
                 )
-        return {"papers_indexed": len(rows), "text_files_read": sum(bool(content) for content in contents)}
+        page_index = self.ensure_page_index()
+        return {
+            "papers_indexed": len(rows),
+            "text_files_read": sum(bool(content) for content in contents),
+            "pages_indexed": page_index["papers_indexed"],
+        }
 
     populate_fts = rebuild_fts
     rebuild_search_index = rebuild_fts
@@ -722,6 +910,51 @@ class Database:
             if len(result) >= requested:
                 break
         return result
+
+    def search_page_text(
+        self,
+        paper_id: str,
+        query: str,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Search persisted page text without opening or parsing a PDF."""
+
+        needle = re.sub(r"\s+", " ", str(query or "")).strip()
+        if not needle:
+            return {"total": 0, "results": []}
+        try:
+            requested = max(1, min(int(limit), 1000))
+        except (TypeError, ValueError):
+            requested = 50
+        rows = self.connection.execute(
+            "SELECT page, text FROM paper_pages WHERE paper_id = ? ORDER BY page",
+            (str(paper_id),),
+        ).fetchall()
+        lowered_needle = needle.casefold()
+        results: list[dict[str, Any]] = []
+        total = 0
+        for row in rows:
+            normalized = re.sub(r"\s+", " ", str(row["text"] or "")).strip()
+            lowered = normalized.casefold()
+            offset = 0
+            while True:
+                index = lowered.find(lowered_needle, offset)
+                if index < 0:
+                    break
+                total += 1
+                if len(results) < requested:
+                    left = max(0, index - 120)
+                    right = min(len(normalized), index + len(needle) + 160)
+                    results.append(
+                        {
+                            "page": int(row["page"]),
+                            "quote": normalized[left:right].strip(),
+                            "match": normalized[index:index + len(needle)],
+                        }
+                    )
+                offset = index + max(1, len(needle))
+        return {"total": total, "results": results}
 
     search_papers = search
 

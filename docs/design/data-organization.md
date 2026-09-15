@@ -44,6 +44,12 @@ papers/<ShortTitle>_<arxiv_id>/
 - 现有 `paper_index.jsonl` / `paper_tags.json` 等降级为导入导出格式，不再是运行态存储。
 - `codex_jobs/` `translation_jobs/` `takeaway_jobs/` `diagram_jobs/` — 运行态，不入 git。
 
+### 运行态切换约定
+
+服务启动时以 `references/paper_valt.db` 作为 papers、tags、阅读元数据、文件夹、阅读清单和全文检索的唯一运行态。若该数据库尚未有运行态初始化标记，服务只读取一次现有 JSON/JSONL 快照并导入 SQLite；导入完成后记录标记，后续启动绝不以旧文件覆盖 SQLite 中的用户修改。旧 JSON/JSONL 保留为迁移导入、导出和回滚兼容格式，运行态 API 不再写回它们。
+
+全文检索只查询 SQLite FTS5 索引，索引由导入及确定性解析产物写入后重建；请求路径不现场打开或抽取 PDF。新四层布局中的 `source/<file>.pdf` 解析为其上一级论文目录，不能将 `source/` 误作论文目录。
+
 ## git 策略（修正现状矛盾）
 
 现状问题：`data-assets.md` 声明 index/tags/manifest/runs 入 git，但 `.gitignore` 实际忽略了 `papers/` 整目录与 `references/*.json(l)`，导致分析成果一个都没被跟踪。按下表统一：

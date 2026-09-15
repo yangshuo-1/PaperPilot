@@ -51,7 +51,7 @@ class DiagramIntegrationTests(unittest.TestCase):
             root = Path(temp)
             settings = _Settings(root)
             settings.ensure_dirs()
-            paper_dir = root / "indexed" / "Paper"
+            paper_dir = root / "papers" / "indexed" / "Paper"
             paper_dir.mkdir(parents=True)
             (paper_dir / "latex_plain.txt").write_text("The model learns representations.", encoding="utf-8")
             (settings.references_dir / "paper_index.jsonl").write_text(

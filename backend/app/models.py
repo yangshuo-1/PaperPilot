@@ -352,6 +352,11 @@ class ReaderManifest(BaseModel):
     document_version: str | None = None
     outline: list[ReaderOutlineItem] = Field(default_factory=list)
     figures: list[ReaderFigureItem] = Field(default_factory=list)
+    quality_tier: Literal["tier0", "tier1", "tier2"] = "tier0"
+    parser: str = "pypdf"
+    source_provenance: dict[str, str] = Field(default_factory=dict)
+    ai_capabilities: dict[str, bool | str] = Field(default_factory=dict)
+    parse_warnings: list[str] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -503,6 +508,11 @@ class AIResponse(BaseModel):
     stale: bool = False
     available: bool = True
     error: str | None = None
+    quality_tier: Literal["tier0", "tier1", "tier2"] = "tier0"
+    parser: str = "pypdf"
+    source_provenance: dict[str, str] = Field(default_factory=dict)
+    ai_capabilities: dict[str, bool | str] = Field(default_factory=dict)
+    parse_warnings: list[str] = Field(default_factory=list)
 
 
 class AISaveRequest(BaseModel):

@@ -2,8 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from backend.app.parsers import ParsedPaper
 from backend.app.storage import PaperStore
+from backend.app.stores.arxiv import ArxivMetadata
 
 
 class TestSettings:
@@ -30,17 +33,159 @@ class StorageWorkflowTests(unittest.TestCase):
         (settings.references_dir / "paper_index.jsonl").write_text(json.dumps({"id": "paper", "title": "Example", "local_pdf_path": str(pdf)}) + "\n", encoding="utf-8")
         return temp, PaperStore(settings)
 
-    def test_search_reads_local_sources_and_documents(self):
+    def test_search_reads_the_persisted_fts_index(self):
         temp, store = self.make_store()
         try:
             paper_dir = store.paper_dir("paper")
             (paper_dir / "latex_plain.txt").write_text("DeepStack is a cross-layer fusion module.", encoding="utf-8")
             (paper_dir / "notes.md").write_text("# Notes\nDeepStack evidence", encoding="utf-8")
+            store.database.rebuild_fts()
             result = store.search_paper("paper", "DeepStack", limit=10)
             self.assertGreaterEqual(result["total"], 2)
             self.assertEqual({item["source"] for item in result["results"]}, {"latex", "document"})
         finally:
             temp.cleanup()
+
+    def test_outside_indexed_pdf_path_falls_back_to_standard_paper_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = TestSettings(root)
+            settings.ensure_dirs()
+            outside = root / "outside"
+            outside.mkdir()
+            pdf = outside / "paper.pdf"
+            pdf.write_bytes(b"must not be used")
+            (settings.references_dir / "paper_index.jsonl").write_text(
+                json.dumps({"id": "paper", "title": "Example", "local_pdf_path": str(pdf)}) + "\n",
+                encoding="utf-8",
+            )
+            store = PaperStore(settings)
+
+            self.assertEqual(store.paper_dir("paper"), settings.papers_dir / "paper")
+            self.assertNotEqual(store.paper_dir("paper"), outside)
+
+    def test_indexed_pdf_at_papers_root_does_not_select_papers_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = TestSettings(root)
+            settings.ensure_dirs()
+            pdf = settings.papers_dir / "paper.pdf"
+            pdf.write_bytes(b"must not select the root")
+            (settings.references_dir / "paper_index.jsonl").write_text(
+                json.dumps({"id": "paper", "title": "Example", "local_pdf_path": str(pdf)}) + "\n",
+                encoding="utf-8",
+            )
+            store = PaperStore(settings)
+
+            self.assertEqual(store.paper_dir("paper"), settings.papers_dir / "paper")
+
+    def test_contained_legacy_indexed_pdf_path_remains_usable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = TestSettings(root)
+            settings.ensure_dirs()
+            legacy_dir = settings.papers_dir / "Example"
+            legacy_dir.mkdir()
+            pdf = legacy_dir / "paper.pdf"
+            pdf.write_bytes(b"legacy")
+            (settings.references_dir / "paper_index.jsonl").write_text(
+                json.dumps({"id": "paper", "title": "Example", "local_pdf_path": str(pdf)}) + "\n",
+                encoding="utf-8",
+            )
+            store = PaperStore(settings)
+
+            self.assertEqual(store.paper_dir("paper"), legacy_dir.resolve())
+
+    def test_delete_removes_legacy_directory_before_index_entry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = TestSettings(root)
+            settings.ensure_dirs()
+            legacy_dir = settings.papers_dir / "Example"
+            legacy_dir.mkdir()
+            pdf = legacy_dir / "paper.pdf"
+            pdf.write_bytes(b"legacy")
+            (settings.references_dir / "paper_index.jsonl").write_text(
+                json.dumps({"id": "paper", "title": "Example", "local_pdf_path": str(pdf)}) + "\n",
+                encoding="utf-8",
+            )
+            store = PaperStore(settings)
+
+            store.delete_paper("paper")
+
+            self.assertFalse(legacy_dir.exists())
+            self.assertEqual(store.list_papers(), [])
+
+    def test_relative_indexed_pdf_path_uses_data_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = TestSettings(root)
+            settings.ensure_dirs()
+            legacy_dir = settings.papers_dir / "Example"
+            legacy_dir.mkdir()
+            pdf = legacy_dir / "paper.pdf"
+            pdf.write_bytes(b"legacy")
+            (settings.references_dir / "paper_index.jsonl").write_text(
+                json.dumps({"id": "paper", "title": "Example", "local_pdf_path": "papers/Example/paper.pdf"}) + "\n",
+                encoding="utf-8",
+            )
+            store = PaperStore(settings)
+
+            self.assertEqual(store.paper_dir("paper"), legacy_dir.resolve())
+
+    def test_arxiv_import_prefers_versioned_html_and_persists_quality(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = TestSettings(root)
+            settings.ensure_dirs()
+            store = PaperStore(settings)
+            metadata = ArxivMetadata(
+                arxiv_id="2401.12345",
+                versioned_id="2401.12345v1",
+                title="Imported Paper",
+                authors=["Author"],
+                abstract="A paper abstract.",
+                published="2024-01-01T00:00:00Z",
+                updated="2024-01-01T00:00:00Z",
+                primary_category="cs.AI",
+                categories=["cs.AI"],
+                pdf_url="https://arxiv.org/pdf/2401.12345",
+                abs_url="https://arxiv.org/abs/2401.12345",
+            )
+            parsed = ParsedPaper(
+                text="Structured HTML text.",
+                quality_tier="tier1",
+                source="https://arxiv.org/html/2401.12345v1",
+                parser="arxiv_html",
+                source_provenance={
+                    "arxiv_id": "2401.12345v1",
+                    "requested_source": "2401.12345v1",
+                    "html_url": "https://arxiv.org/html/2401.12345v1",
+                },
+            )
+
+            def download(_url: str, path: Path) -> None:
+                path.write_bytes(b"%PDF fixture")
+
+            with (
+                patch.object(store, "_fetch_arxiv_metadata", return_value=metadata),
+                patch.object(store, "_download_file", side_effect=download),
+                patch("backend.app.stores.arxiv.parse_preferred", return_value=parsed) as parse,
+            ):
+                paper = store.import_arxiv("2401.12345")
+
+            paper_dir = store.paper_dir(paper.id)
+            manifest = json.loads((paper_dir / "manifest.json").read_text(encoding="utf-8"))
+            parse.assert_called_once_with(paper_dir / "2401.12345.pdf", arxiv_id="2401.12345v1")
+            self.assertEqual(manifest["quality_tier"], "tier1")
+            self.assertEqual(manifest["parser"], "arxiv_html")
+            self.assertEqual(manifest["source_provenance"]["arxiv_id"], "2401.12345v1")
+            self.assertEqual((paper_dir / "derived" / "latex_plain.txt").read_text(encoding="utf-8").strip(), "Structured HTML text.")
+            self.assertEqual(manifest["ai_capabilities"]["diagram_confidence"], "standard")
+            audited = store.asset_manifest(paper.id)
+            self.assertEqual(audited["quality_tier"], "tier1")
+            self.assertEqual(audited["source_provenance"]["requested_source"], "2401.12345v1")
+            self.assertEqual(audited["ai_capabilities"]["fine_structure_analysis"], True)
 
     def test_ai_answer_is_saved_with_provenance_and_audited(self):
         temp, store = self.make_store()

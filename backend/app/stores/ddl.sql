@@ -95,8 +95,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS paper_fts USING fts5(
     tokenize='trigram'
 );
 
+-- Page text is persisted at import/migration time so reader search can return
+-- deterministic PDF page anchors without parsing the source PDF per request.
+CREATE TABLE IF NOT EXISTS paper_pages (
+    paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    page INTEGER NOT NULL CHECK (page >= 1),
+    text TEXT NOT NULL,
+    document_version TEXT,
+    PRIMARY KEY (paper_id, page)
+);
+
 CREATE INDEX IF NOT EXISTS idx_papers_folder_id ON papers(folder_id);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 CREATE INDEX IF NOT EXISTS idx_annotations_paper_id ON annotations(paper_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_anchor_id ON annotations(anchor_id);
 CREATE INDEX IF NOT EXISTS idx_reading_list_priority ON reading_list(priority, added_at);
+CREATE INDEX IF NOT EXISTS idx_paper_pages_version ON paper_pages(paper_id, document_version);

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "paper_id": "qwen3-vl-2511-21631",
-  "updated_at": "2026-09-13T08:12:59+00:00",
+  "updated_at": "2026-09-15T01:38:34+00:00",
   "generator_version": "paper.asset_audit.v1",
   "assets": [
     {
@@ -295,7 +295,7 @@
     {
       "path": "manifest.json",
       "role": "result",
-      "sha256": "4c7625f9251cd37c43389995782d7ec847ecd72160b7290721398f98ff39c004",
+      "sha256": "4e3e6d50f2fd6b8b85684cbaccbfde521b71bf410cf6b68e29fe8882444a39fe",
       "size": 13361,
       "generated_by": "paper.analysis",
       "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"

@@ -167,6 +167,7 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
   const pageLabel = useMemo(() => totalPages ? `${page} / ${totalPages}` : `${page} / —`, [page, totalPages]);
   const figures = manifest?.figures || [];
   const outline = manifest?.outline || [];
+  const capabilities = manifest?.ai_capabilities;
 
   return (
     <section className="pdfReader" aria-label="PDF 阅读器">
@@ -191,6 +192,7 @@ export default function PdfReader({ paper, onPaperChange, onSelection, jumpToPag
           {outlineOpen && (outline.length ? <div className="outlineList">{outline.map((item, index) => <button type="button" key={`${item.title}-${index}`} className="outlineItem" style={{ paddingLeft: `${10 + Math.min(item.level, 5) * 8}px` }} onClick={() => item.page && setPage(item.page)}>{item.title}<small>{item.page ? `p.${item.page}` : "不可定位"}</small></button>)}</div> : <p className="readerMuted">PDF 未提供可靠目录。</p>)}
           <button type="button" className="readerSideToggle" onClick={() => setIndexOpen((value) => !value)}>图表索引 {indexOpen ? "⌃" : "⌄"}</button>
           {indexOpen && (figures.length ? <div className="outlineList">{figures.map((item, index) => <button type="button" key={`${item.name}-${index}`} className="outlineItem" onClick={() => item.page && setPage(item.page)}>{item.name}<small>{item.page ? `p.${item.page}` : "不可定位"}</small></button>)}</div> : <p className="readerMuted">未能从文本层解析 Figure/Table，原始 PDF 仍可继续阅读。</p>)}
+          {capabilities && <div className="readerCapability" aria-live="polite"><strong>解析质量：{manifest?.quality_tier || "tier0"}</strong><span>{capabilities.fine_structure_analysis ? "可用于结构化分析与标准置信图解。" : "仅支持文本类 AI；图解为低置信，不能依据图表或精细结构作结论。"}</span>{manifest?.parse_warnings?.map((warning) => <small key={warning}>{warning}</small>)}</div>}
           {manifest?.error && <p className="readerWarning">索引不可用：{manifest.error}</p>}
         </aside>
         <div className="pdfStage">

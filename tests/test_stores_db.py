@@ -193,7 +193,7 @@ class StoreDatabaseTests(unittest.TestCase):
                 self.assertEqual((references / f"{name}.bak").read_bytes(), content)
 
             with Database(root) as database:
-                self.assertEqual(database.schema_version(), 1)
+                self.assertEqual(database.schema_version(), 2)
                 self.assertEqual(database.get_paper("p1")["read_status"], "reading")
                 self.assertEqual(len(database.list_annotations("p1")), 3)
                 chinese = database.search("注意力", limit=10)
@@ -249,10 +249,10 @@ class StoreDatabaseTests(unittest.TestCase):
     def test_schema_initialization_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp:
             with Database(temp) as first:
-                self.assertEqual(first.schema_version(), 1)
+                self.assertEqual(first.schema_version(), 2)
                 self.assertEqual(first.table_counts()["papers"], 0)
             with Database(temp) as second:
-                self.assertEqual(second.schema_version(), 1)
+                self.assertEqual(second.schema_version(), 2)
                 self.assertEqual(second.table_counts()["papers"], 0)
 
     def test_custom_database_path_keeps_data_root_for_fts(self):
