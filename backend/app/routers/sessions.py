@@ -21,6 +21,13 @@ from ..deps import get_projects
 router = APIRouter()
 
 
+def _session_project(projects: ProjectStore, session_id: str) -> dict[str, object]:
+    try:
+        return projects.session(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
 @router.get("/api/projects/{project_id}/sessions", response_model=list[Session])
 def list_sessions(project_id: str, projects: ProjectStore = Depends(get_projects)) -> list[Session]:
     try:

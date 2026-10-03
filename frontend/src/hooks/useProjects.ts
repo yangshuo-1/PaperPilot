@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Paper, type Project, type Session, type WorkspaceResponse } from "../api";
+import { api, type Paper, type Project, type Session, type SessionMessages, type WorkspaceResponse } from "../api";
 
 export function useProjects(searchParams: URLSearchParams) {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -7,6 +7,12 @@ export function useProjects(searchParams: URLSearchParams) {
   const [selected, setSelected] = useState<Project | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [sessionMessages, setSessionMessages] = useState<SessionMessages | null>(null);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [messageLoading, setMessageLoading] = useState(false);
+  const [messageSending, setMessageSending] = useState(false);
+  const [messageError, setMessageError] = useState("");
+  const [messageNotice, setMessageNotice] = useState("");
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [workspaceFile, setWorkspaceFile] = useState("");
   const [workspaceContent, setWorkspaceContent] = useState("");
@@ -21,6 +27,13 @@ export function useProjects(searchParams: URLSearchParams) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  async function loadSessionMessages(sessionId: string) {
+    setMessageLoading(true); setMessageError("");
+    try { setSessionMessages(await api.getSessionMessages(sessionId)); }
+    catch (reason) { setSessionMessages({ session_id: sessionId, messages: [] }); setMessageError(reason instanceof Error ? reason.message : "消息历史加载失败，可重试"); }
+    finally { setMessageLoading(false); }
+  }
+
   async function openProject(projectId: string, sessionId?: string | null) {
     try {
       const [project, projectSessions, projectWorkspace] = await Promise.all([api.getProject(projectId), api.listSessions(projectId), api.getWorkspace(projectId)]);
@@ -29,7 +42,14 @@ export function useProjects(searchParams: URLSearchParams) {
       setSelectedSessionId(nextSession?.id || null);
       window.sessionStorage.setItem("paper-vault-project", project.id);
       if (nextSession) window.sessionStorage.setItem("paper-vault-session", nextSession.id); else window.sessionStorage.removeItem("paper-vault-session");
+      setMessageDraft(""); setMessageNotice("");
+      if (nextSession) await loadSessionMessages(nextSession.id); else setSessionMessages(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  async function selectSession(sessionId: string) {
+    setSelectedSessionId(sessionId); window.sessionStorage.setItem("paper-vault-session", sessionId);
+    setMessageDraft(""); setMessageNotice(""); await loadSessionMessages(sessionId);
   }
 
   async function loadProjects(preferredId?: string | null) {
@@ -60,6 +80,16 @@ export function useProjects(searchParams: URLSearchParams) {
     try { const session = await api.createSession(selected.id, { title: sessionTitle.trim(), goal: sessionGoal.trim() }); setSessionTitle(""); setSessionGoal(""); await openProject(selected.id, session.id); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
+  }
+  async function sendSessionMessage() {
+    const content = messageDraft.trim();
+    if (!selectedSessionId || !content) return;
+    setMessageSending(true); setMessageError(""); setMessageNotice("");
+    try {
+      setSessionMessages(await api.appendSessionMessage(selectedSessionId, { role: "user", content }));
+      setMessageDraft(""); setMessageNotice("消息已保存到本地；AI 回复尚未生成，当前不会伪造回复。");
+    } catch (reason) { setMessageError(reason instanceof Error ? reason.message : "消息保存失败，可重试"); }
+    finally { setMessageSending(false); }
   }
   async function submitLink() {
     if (!selected || !linkRef.trim()) return;
@@ -94,5 +124,5 @@ export function useProjects(searchParams: URLSearchParams) {
 
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) || null;
   const workspaceFiles = workspace?.entries.filter((entry) => entry.kind === "file") || [];
-  return { projects, papers, selected, sessions, selectedSessionId, setSelectedSessionId, selectedSession, workspace, workspaceFiles, workspaceFile, setWorkspaceFile, workspaceContent, setWorkspaceContent, projectName, setProjectName, projectGoal, setProjectGoal, sessionTitle, setSessionTitle, sessionGoal, setSessionGoal, linkTarget, setLinkTarget, linkKind, setLinkKind, linkRef, setLinkRef, linkLabel, setLinkLabel, error, setError, busy, openProject, createProject, createSession, submitLink, saveWorkspaceFile, readWorkspaceFile, removeWorkspaceFile, updateSession, removeSession, removeProject, paperFromQuery: searchParams.get("paper") };
+  return { projects, papers, selected, sessions, selectedSessionId, setSelectedSessionId, selectSession, selectedSession, sessionMessages, messageDraft, setMessageDraft, messageLoading, messageSending, messageError, messageNotice, sendSessionMessage, workspace, workspaceFiles, workspaceFile, setWorkspaceFile, workspaceContent, setWorkspaceContent, projectName, setProjectName, projectGoal, setProjectGoal, sessionTitle, setSessionTitle, sessionGoal, setSessionGoal, linkTarget, setLinkTarget, linkKind, setLinkKind, linkRef, setLinkRef, linkLabel, setLinkLabel, error, setError, busy, openProject, createProject, createSession, submitLink, saveWorkspaceFile, readWorkspaceFile, removeWorkspaceFile, updateSession, removeSession, removeProject, paperFromQuery: searchParams.get("paper") };
 }

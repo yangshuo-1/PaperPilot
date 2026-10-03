@@ -9,7 +9,7 @@ from backend.app.config import get_settings
 from backend.app.main import app
 from backend.app.projects import ProjectStore
 from backend.app.routers.projects import get_projects
-from backend.app.routers.sessions import get_session_messages
+from backend.app.routers.session_messages import get_session_messages
 from backend.app.stores.session_messages import SessionMessageStore
 
 

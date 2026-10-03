@@ -2,6 +2,8 @@ import { request, requestText } from "./client";
 
 export type Project = { id: string; name: string; description: string; goal: string; created_at: string; updated_at: string; links: Array<Record<string, unknown>>; session_ids: string[]; workspace_root?: string };
 export type Session = { id: string; project_id: string; title: string; goal: string; status: "active" | "paused" | "completed" | "failed"; created_at: string; updated_at: string; last_activity_at: string; links: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; workspace_root?: string; governance?: Record<string, unknown>; closeout?: { summary: string; handoff: string; next_steps: string[]; model?: string; session_version?: string; document_version?: string | null; citations?: Array<Record<string, unknown>>; confirmed?: boolean } | null };
+export type SessionMessage = { id: string; role: "user" | "assistant" | "system" | "tool"; content: string; created_at: string };
+export type SessionMessages = { session_id: string; messages: SessionMessage[] };
 export type WorkspaceEntry = { path: string; kind: "file" | "directory"; size: number; updated_at?: string | null };
 export type WorkspaceResponse = { project_id: string; root: string; entries: WorkspaceEntry[] };
 export const listProjects = () => request<Project[]>("/api/projects");
@@ -15,6 +17,8 @@ export const writeWorkspaceFile = (id: string, path: string, content: string) =>
 export const deleteWorkspaceFile = (id: string, path: string) => request<void>(`/api/projects/${id}/workspace/file?path=${encodeURIComponent(path)}`, { method: "DELETE" });
 export const listSessions = (id: string) => request<Session[]>(`/api/projects/${id}/sessions`);
 export const createSession = (id: string, payload: { title: string; goal: string }) => request<Session>(`/api/projects/${id}/sessions`, { method: "POST", body: JSON.stringify(payload) });
+export const getSessionMessages = (id: string) => request<SessionMessages>(`/api/sessions/${id}/messages`);
+export const appendSessionMessage = (id: string, payload: { content: string; role?: SessionMessage["role"]; id?: string }) => request<SessionMessages>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify(payload) });
 export const updateSession = (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
 export const linkSession = (id: string, payload: Record<string, unknown>) => request<Session>(`/api/sessions/${id}/links`, { method: "POST", body: JSON.stringify(payload) });
 export const deleteSession = (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" });

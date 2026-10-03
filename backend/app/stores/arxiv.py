@@ -63,6 +63,8 @@ class ArxivMetadata:
             return None
 
 class ArxivStore:
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
     def import_arxiv(self, arxiv_id_or_url: str) -> Paper:
         arxiv_id = self._normalize_arxiv_id(arxiv_id_or_url)
         metadata = self._fetch_arxiv_metadata(arxiv_id)
