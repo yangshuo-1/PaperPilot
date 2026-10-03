@@ -265,6 +265,15 @@ class CodexAnalysisRequest(BaseModel):
     overwrite: bool = False
 
 
+class CodexAnalysisProgress(BaseModel):
+    """Chunk-level progress, so a 10-minute analysis is observable."""
+
+    chunk: str = ""
+    chunks_done: int = 0
+    chunks_total: int = 0
+    stage: str = ""
+
+
 class CodexAnalysisJob(BaseModel):
     job_id: str
     paper_id: str
@@ -284,6 +293,7 @@ class CodexAnalysisJob(BaseModel):
     attempts: int = 0
     timeout_seconds: int = 1800
     cancel_requested: bool = False
+    progress: "CodexAnalysisProgress | None" = None
 
 
 class HealthResponse(BaseModel):
@@ -653,6 +663,24 @@ class Session(BaseModel):
     governance: dict[str, Any] = Field(default_factory=dict)
     closeout: dict[str, Any] | None = None
     workspace_root: str = ""
+
+
+class SessionMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant", "system", "tool"]
+    content: str
+    created_at: str
+
+
+class SessionMessages(BaseModel):
+    session_id: str
+    messages: list[SessionMessage] = Field(default_factory=list)
+
+
+class SessionMessageCreateRequest(BaseModel):
+    id: str | None = Field(default=None, min_length=1, max_length=128)
+    role: Literal["user", "assistant", "system", "tool"] = "user"
+    content: str = Field(min_length=1)
 
 
 class GovernanceActionRequest(BaseModel):

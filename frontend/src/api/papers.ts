@@ -50,7 +50,8 @@ export type PaperAnalysis = {
 };
 export type DocumentSummary = { name: string; title: string; path: string };
 export type Document = { name: string; title: string; content: string };
-export type CodexAnalysisJob = { job_id: string; paper_id: string; status: "queued" | "running" | "succeeded" | "failed"; target_document: string; log_path: string; prompt_path: string; final_message_path: string; created_at: string; updated_at: string; started_at?: string | null; finished_at?: string | null; exit_code?: number | null; error?: string | null };
+export type CodexAnalysisProgress = { chunk: string; chunks_done: number; chunks_total: number; stage: string };
+export type CodexAnalysisJob = { progress?: CodexAnalysisProgress | null; job_id: string; paper_id: string; status: "queued" | "running" | "succeeded" | "failed"; target_document: string; log_path: string; prompt_path: string; final_message_path: string; created_at: string; updated_at: string; started_at?: string | null; finished_at?: string | null; exit_code?: number | null; error?: string | null };
 export type LatexSourceResponse = { title?: string | null; plain_text: string; preview: string; files: string[]; source_dir?: string | null; main_file?: string | null; downloaded: boolean; download_error?: string | null };
 export type PaperMetadataFields = Partial<Record<"starred" | "read_status" | "folder_id" | "reading_progress" | "current_page" | "total_pages" | "document_version" | "last_read_at", boolean | string | number | null>>;
 

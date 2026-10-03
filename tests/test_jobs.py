@@ -1,5 +1,4 @@
 import json
-import subprocess
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -7,74 +6,187 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.app.codex_jobs import CodexJobRunner
+from backend.app.codex_jobs import ANALYSIS_TIMEOUT_SECONDS, DOC_SUFFIX, CodexJobRunner
 from backend.app import llm
+from backend.app.jobs.base import Job, JobStatus, make_job_key
 from backend.app.jobs.diagram import DiagramJobRunner
 from backend.app.llm.loader import PromptNotConfigured
-from backend.app.models import CodexAnalysisJob, Paper
+from backend.app.models import Paper
+
+
+class _Page:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def extract_text(self) -> str:
+        return self._text
+
+
+class _Reader:
+    def __init__(self, _path: str) -> None:
+        self.pages = [_Page("Figure 1: architecture"), _Page("Table 2: results")]
+
+
+ANALYSIS_JSON = json.dumps({
+    "blocks": [
+        {"section": "abstract", "claims": [{"text": "论文提出新方法", "page": 1, "quote": "Figure 1: architecture"}]},
+        {"section": "method", "topic": "关键设计", "claims": [{"text": "关键设计是分层注入", "page": 1, "quote": "Figure 1: architecture"}]},
+        {"section": "experiment", "topic": "主结果", "claims": [{"text": "表格给出主结果", "page": 2, "quote": "Table 2: results"}]},
+        {"section": "conclusion", "claims": [{"text": "结论成立", "page": 2, "quote": "Table 2: results"}]},
+        {"section": "limitation", "claims": [{"text": "局限是未覆盖", "page": 2, "quote": "Table 2: results"}]},
+    ],
+    "figures_tables": [],
+    "gaps": [],
+}, ensure_ascii=False)
+
+
+def _runner(root: Path, store, llm_callable=None) -> CodexJobRunner:
+    settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
+    pdf = root / "paper.pdf"
+    if not pdf.is_file():
+        pdf.write_bytes(b"%PDF-test")
+    return CodexJobRunner(settings, store, llm=llm_callable or (lambda *_a, **_k: ANALYSIS_JSON))
 
 
 class JobReliabilityTests(unittest.TestCase):
-    def test_missing_full_analysis_prompt_fails_job_explicitly(self):
+    def test_missing_full_analysis_prompt_is_reported_before_starting(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             pdf = root / "paper.pdf"
             pdf.write_bytes(b"%PDF-test")
-            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
             paper = Paper(id="paper-1", title="Paper", local_pdf_path=str(pdf))
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
-            runner = CodexJobRunner(settings, store)
-            with patch("backend.app.codex_jobs.document_version", return_value="sha256:paper-v1"), patch(
-                "backend.app.codex_jobs.shutil.which", return_value="codex"
-            ), patch(
-                "backend.app.codex_jobs.load_prompt",
+            runner = CodexJobRunner(SimpleNamespace(references_dir=root / "references", repo_root=root), store)
+            with patch(
+                "backend.app.codex_jobs.prompt_version",
                 side_effect=PromptNotConfigured("prompt 未配置: full_analysis"),
             ):
-                result = runner.start_analysis("paper-1")
-            self.assertEqual(result.status, "failed")
-            self.assertIn("prompt 未配置: full_analysis", result.error or "")
-            self.assertFalse(Path(result.prompt_path).exists())
+                with self.assertRaisesRegex(ValueError, "prompt 未配置: full_analysis"):
+                    runner.start_analysis("paper-1")
+            self.assertEqual(list(runner.jobs_dir.glob("*.json")), [])
 
     def test_repeated_default_submission_reuses_succeeded_job(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             pdf = root / "paper.pdf"
             pdf.write_bytes(b"%PDF-test")
-            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
             paper = Paper(id="paper-1", title="Paper", local_pdf_path=str(pdf))
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
-            runner = CodexJobRunner(settings, store)
-            old = CodexAnalysisJob(
-                job_id="a" * 32, paper_id="paper-1", status="succeeded", target_document=str(root / "out.md"),
-                log_path="log", prompt_path="prompt", final_message_path="final", created_at="2026-01-01T00:00:00+00:00",
-                updated_at="2026-01-01T00:00:00+00:00", job_key="", 
-            )
+            runner = _runner(root, store)
             with patch("backend.app.codex_jobs.document_version", return_value="sha256:paper-v1"):
-                old.job_key = runner._job_key("paper-1", pdf, "")
-                (runner.jobs_dir / f"{old.job_id}.json").write_text(old.model_dump_json(), encoding="utf-8")
-                with patch("backend.app.codex_jobs.shutil.which", return_value="codex"):
-                    result = runner.start_analysis("paper-1")
-            self.assertEqual(result.job_id, old.job_id)
+                params = {"extra_instructions": "", "prompt_version": "v1"}
+                runner._write_job(Job(
+                    job_id="a" * 32, paper_id="paper-1", document_version="sha256:paper-v1",
+                    task_params=params, job_key=make_job_key("paper-1", "sha256:paper-v1", params),
+                    status=JobStatus.SUCCEEDED, created_at="2026-01-01T00:00:00+00:00",
+                    updated_at="2026-01-01T00:00:00+00:00",
+                ))
+                result = runner.start_analysis("paper-1")
+            self.assertEqual(result.job_id, "a" * 32)
             self.assertEqual(len(list(runner.jobs_dir.glob("*.json"))), 1)
 
-    def test_runner_recovers_job_with_running_checkpoint(self):
+    def test_existing_target_document_requires_overwrite(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
-            (settings.references_dir / "codex_jobs").mkdir(parents=True)
-            job = CodexAnalysisJob(
-                job_id="b" * 32, paper_id="paper-1", status="running", target_document=str(root / "out.md"),
-                log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"),
-                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
-                checkpoint_path=str(root / "references" / ("b" * 32 + ".checkpoint.json")),
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            paper = Paper(id="paper-1", title="Paper", short_title="Paper", local_pdf_path=str(pdf))
+            store = SimpleNamespace(get_paper=lambda paper_id: paper)
+            runner = _runner(root, store)
+            (root / f"Paper{DOC_SUFFIX}").write_text("old", encoding="utf-8")
+            with patch("backend.app.codex_jobs.document_version", return_value="sha256:paper-v1"):
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    runner.start_analysis("paper-1")
+
+    def test_analysis_job_writes_document_and_records_assets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            paper = Paper(id="paper-1", title="Paper One", short_title="Paper", local_pdf_path=str(pdf))
+            recorded: list[dict] = []
+            store = SimpleNamespace(
+                get_paper=lambda paper_id: paper,
+                _record_assets=lambda *args, **kwargs: recorded.append({"args": args, "kwargs": kwargs}),
             )
-            (root / "references" / "codex_jobs" / ("b" * 32 + ".json")).write_text(job.model_dump_json(), encoding="utf-8")
-            Path(job.checkpoint_path).write_text('{"status":"running"}\n', encoding="utf-8")
-            Path(job.prompt_path).write_text("resume", encoding="utf-8")
-            with patch("backend.app.codex_jobs.shutil.which", return_value="codex"), patch.object(CodexJobRunner, "_spawn") as spawn:
-                runner = CodexJobRunner(settings, SimpleNamespace())
-            spawn.assert_called_once()
-            self.assertEqual(runner.get_job(job.job_id).status, "running")
+            runner = _runner(root, store)
+            with patch("backend.app.codex_jobs.document_version", return_value="sha256:v1"), patch(
+                "backend.app.parsers.pypdf_parser.PdfReader", _Reader
+            ):
+                job = runner.start_analysis("paper-1")
+                final = runner.run(job.job_id)
+            self.assertEqual(final.status.value, "succeeded")
+            target = root / f"Paper{DOC_SUFFIX}"
+            self.assertTrue(target.is_file())
+            self.assertIn("## 方法", target.read_text(encoding="utf-8"))
+            self.assertEqual(recorded[0]["kwargs"]["generator_version"], "ai.full_analysis.v1")
+            self.assertEqual(recorded[0]["kwargs"]["run"]["prompt_version"], "v1")
+            self.assertEqual(final.result["claims"], 5)
+
+    def test_llm_failure_surfaces_the_failed_chunk_range(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            paper = Paper(id="paper-1", title="Paper One", short_title="Paper", local_pdf_path=str(pdf))
+            store = SimpleNamespace(get_paper=lambda paper_id: paper)
+            runner = _runner(root, store, llm_callable=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
+            with patch("backend.app.codex_jobs.document_version", return_value="sha256:v1"), patch(
+                "backend.app.parsers.pypdf_parser.PdfReader", _Reader
+            ):
+                job = runner.start_analysis("paper-1")
+                final = runner.run(job.job_id)
+            self.assertEqual(final.status.value, "failed")
+            self.assertIn("解析失败", final.error or "")
+            self.assertIn("boom", final.error or "")
+            self.assertFalse((root / f"Paper{DOC_SUFFIX}").exists())
+
+    def test_failed_analysis_keeps_the_previous_document(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            paper = Paper(id="paper-1", title="Paper One", short_title="Paper", local_pdf_path=str(pdf))
+            store = SimpleNamespace(get_paper=lambda paper_id: paper)
+            runner = _runner(root, store, llm_callable=lambda *_a, **_k: "not json at all")
+            target = root / f"Paper{DOC_SUFFIX}"
+            target.write_text("旧文档", encoding="utf-8")
+            with patch("backend.app.codex_jobs.document_version", return_value="sha256:v1"), patch(
+                "backend.app.parsers.pypdf_parser.PdfReader", _Reader
+            ):
+                job = runner.start_analysis("paper-1", overwrite=True)
+                final = runner.run(job.job_id)
+            self.assertEqual(final.status.value, "failed")
+            self.assertEqual(target.read_text(encoding="utf-8"), "旧文档")
+
+    def test_recover_relaunches_active_job(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SimpleNamespace(get_paper=lambda paper_id: Paper(id="paper-1", title="P"))
+            runner = _runner(root, store)
+            runner._write_job(Job(
+                job_id="b" * 32, paper_id="paper-1", document_version="v1", task_params={},
+                job_key="k", status=JobStatus.RUNNING, created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ))
+            with patch.object(CodexJobRunner, "_launch") as launch:
+                recovered = runner.recover()
+            self.assertEqual([job.job_id for job in recovered], ["b" * 32])
+            launch.assert_called_once()
+
+    def test_cancel_before_run_is_cooperative(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SimpleNamespace(get_paper=lambda paper_id: Paper(id="paper-1", title="P"))
+            runner = _runner(root, store)
+            runner._write_job(Job(
+                job_id="d" * 32, paper_id="paper-1", document_version="v1", task_params={},
+                job_key="k", status=JobStatus.QUEUED, created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ))
+            runner.cancel("d" * 32)
+            final = runner.run("d" * 32)
+            self.assertEqual(final.status.value, "cancelled")
 
     def test_quality_gate_is_explicitly_only_a_proxy(self):
         runner = CodexJobRunner.__new__(CodexJobRunner)
@@ -85,65 +197,8 @@ class JobReliabilityTests(unittest.TestCase):
             path.write_text("摘要\n方法\n实验\n结论\n局限", encoding="utf-8")
             self.assertIn("代理门禁", runner._document_quality_error(path) or "")
 
-    def test_invalid_output_restores_previous_document(self):
-        class Process:
-            returncode = 0
-            def communicate(self, *_args, **_kwargs):
-                target.write_text("摘要", encoding="utf-8")
-            def poll(self): return None
-            def kill(self): pass
-            def wait(self, **_kwargs): pass
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
-            settings.references_dir.mkdir()
-            (settings.references_dir / "codex_jobs").mkdir()
-            target = root / "analysis.md"
-            target.write_text("旧文档", encoding="utf-8")
-            job = CodexAnalysisJob(job_id="c" * 32, paper_id="paper-1", status="queued", target_document=str(target), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"))
-            runner = CodexJobRunner(settings, SimpleNamespace())
-            (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
-            with patch("backend.app.codex_jobs.subprocess.Popen", return_value=Process()):
-                runner._run_codex(job, "codex", "prompt")
-            self.assertEqual(target.read_text(encoding="utf-8"), "旧文档")
-            self.assertEqual(runner.get_job(job.job_id).status, "failed")
-
-    def test_cancel_before_start_is_cooperative(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
-            settings.references_dir.mkdir()
-            (settings.references_dir / "codex_jobs").mkdir()
-            job = CodexAnalysisJob(job_id="d" * 32, paper_id="paper-1", status="queued", target_document=str(root / "out.md"), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"))
-            runner = CodexJobRunner(settings, SimpleNamespace())
-            (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
-            runner.cancel(job.job_id)
-            with patch("backend.app.codex_jobs.subprocess.Popen") as popen:
-                runner._run_codex(job, "codex", "prompt")
-            popen.assert_not_called()
-            self.assertEqual(runner.get_job(job.job_id).status, "failed")
-
-    def test_timeout_retries_three_times_and_finishes_failed(self):
-        class Process:
-            returncode = -9
-            def communicate(self, *_args, **_kwargs): raise subprocess.TimeoutExpired("codex", 1)
-            def poll(self): return None
-            def kill(self): pass
-            def wait(self, **_kwargs): pass
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            settings = SimpleNamespace(references_dir=root / "references", repo_root=root)
-            settings.references_dir.mkdir()
-            (settings.references_dir / "codex_jobs").mkdir()
-            job = CodexAnalysisJob(job_id="e" * 32, paper_id="paper-1", status="queued", target_document=str(root / "out.md"), log_path=str(root / "log"), prompt_path=str(root / "prompt"), final_message_path=str(root / "final"), created_at="now", updated_at="now", checkpoint_path=str(root / "cp"), timeout_seconds=1)
-            runner = CodexJobRunner(settings, SimpleNamespace())
-            (runner.jobs_dir / f"{job.job_id}.json").write_text(job.model_dump_json(), encoding="utf-8")
-            with patch("backend.app.codex_jobs.subprocess.Popen", return_value=Process()):
-                runner._run_codex(job, "codex", "prompt")
-            final = runner.get_job(job.job_id)
-            self.assertEqual(final.status, "failed")
-            self.assertEqual(final.attempts, 3)
-            self.assertIn("timed out", final.error or "")
+    def test_timeout_budget_is_declared_for_the_api_call(self):
+        self.assertEqual(ANALYSIS_TIMEOUT_SECONDS, 600)
 
     def test_translation_failure_does_not_publish_partial_cache(self):
         with tempfile.TemporaryDirectory() as temp:

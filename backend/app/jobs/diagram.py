@@ -3,14 +3,36 @@
 from __future__ import annotations
 
 import json
-import html
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 from ..asset_audit import append_run, asset_record, update_manifest
+from ..domain.diagram_render import render_html
 from .base import JobCancelled, Job, JobRunner, make_job_key
 from ..llm.loader import PromptNotConfigured, load_prompt, prompt_version
+
+
+#: Token budget and timeout for one diagram IR request. The model is a reasoning
+#: model, so ``max_tokens`` must cover reasoning *plus* the IR JSON: with an
+#: 8000-token budget it burned all 8000 on reasoning and returned empty content.
+#: Each repair attempt escalates the budget up to the cap.
+DIAGRAM_MAX_TOKENS = 16000
+DIAGRAM_MAX_TOKENS_CAP = 24000
+DIAGRAM_TIMEOUT_SECONDS = 600
+
+
+def _escalate(budget: int, error: Exception) -> int:
+    """Give the next attempt more room only when the *output* did not fit.
+
+    A starved reasoning budget or truncated JSON both mean "not enough tokens";
+    a timeout or gateway error would only get slower with a bigger budget.
+    """
+    from ..llm import LLMContentBudgetExceeded
+
+    if isinstance(error, (LLMContentBudgetExceeded, json.JSONDecodeError)):
+        return min(DIAGRAM_MAX_TOKENS_CAP, max(budget + 8000, int(budget * 1.5)))
+    return budget
 
 
 class DiagramJobRunner(JobRunner[dict[str, Any]]):
@@ -29,6 +51,19 @@ class DiagramJobRunner(JobRunner[dict[str, Any]]):
         else:
             self.validator = validator
         super().__init__(jobs_dir, auto_recover=auto_recover)
+
+    def _call_llm(self, request: str, max_tokens: int) -> str:
+        """Call the configured LLM, letting this runner pick the token budget.
+
+        The DI-provided client is a plain callable that already accepts
+        ``max_tokens``; older/legacy clients take only the prompt.
+        """
+        if not callable(self.llm):
+            return self.llm.generate(request)
+        try:
+            return self.llm(request, max_tokens=max_tokens)
+        except TypeError:
+            return self.llm(request)
 
     def _compute_job_key(self, paper_id: str, document_version: str, task_params: Any) -> str:
         key_params = {
@@ -81,17 +116,35 @@ class DiagramJobRunner(JobRunner[dict[str, Any]]):
         attempts = 0
         for diagram_type in params.get("diagram_types") or [params["diagram_type"]]:
             receipt: list[dict[str, str]] = []
+            budget = DIAGRAM_MAX_TOKENS
             for attempt in range(3):
                 attempts += 1
                 if should_cancel():
                     raise JobCancelled("Cancellation requested")
-                request = prompt + "\n\nDiagram type: " + diagram_type + "\n\nRepair receipt:\n" + json.dumps(receipt, ensure_ascii=False)
-                raw = self.llm(request) if callable(self.llm) else self.llm.generate(request)
+                # The prompt tells the model to quote "the supplied paper text":
+                # that excerpt must actually be in the request, or every evidence
+                # quote is invented and fails validation with QUOTE_NOT_FOUND.
+                request = (
+                    prompt
+                    + "\n\nDiagram type: " + diagram_type
+                    + "\n\nSource excerpt:\n" + source_text
+                    + "\n\nRepair receipt:\n" + json.dumps(receipt, ensure_ascii=False)
+                )
+                try:
+                    raw = self._call_llm(request, budget)
+                except Exception as exc:  # noqa: BLE001 - retried below, reported as a repair receipt
+                    receipt = [{"code": "LLM_ERROR", "subject": "$", "message": f"{type(exc).__name__}: {str(exc)[:200]}"}]
+                    budget = _escalate(budget, exc)
+                    save_checkpoint({"diagram_type": diagram_type, "attempt": attempt + 1, "budget": budget, "receipt": receipt}, status="repairing")
+                    if attempt == 2:
+                        raise
+                    continue
                 try:
                     ir = json.loads(raw) if isinstance(raw, str) else raw
                 except json.JSONDecodeError as exc:
                     receipt = [{"code": "INVALID_JSON", "subject": "$", "message": str(exc)}]
-                    save_checkpoint({"diagram_type": diagram_type, "attempt": attempt + 1, "receipt": receipt}, status="repairing")
+                    budget = _escalate(budget, exc)
+                    save_checkpoint({"diagram_type": diagram_type, "attempt": attempt + 1, "budget": budget, "receipt": receipt}, status="repairing")
                     continue
                 type_issue = None
                 if isinstance(ir, dict) and ir.get("type") is not None and ir.get("type") != diagram_type:
@@ -136,7 +189,7 @@ class DiagramJobRunner(JobRunner[dict[str, Any]]):
             ir_path = output_dir / f"{diagram_type}.ir.json"
             html_path = output_dir / f"{diagram_type}.html"
             self._atomic_text(ir_path, json.dumps(item["ir"], ensure_ascii=False, indent=2) + "\n")
-            self._atomic_text(html_path, self._render_html(item["ir"]))
+            self._atomic_text(html_path, render_html(item["ir"]))
             artifacts.append({"diagram_type": diagram_type, "ir_path": str(ir_path), "html_path": str(html_path)})
         input_version = job.document_version
         files = [asset_record(Path(path), paper_dir, role="result", generated_by="diagram.v1",
@@ -156,18 +209,3 @@ class DiagramJobRunner(JobRunner[dict[str, Any]]):
         tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
-
-    @staticmethod
-    def _render_html(ir: dict[str, Any]) -> str:
-        nodes = ir.get("nodes", [])
-        edges = ir.get("edges", [])
-        node_html = "".join(
-            '<button class="node" data-evidence-page="%s" data-evidence-section="%s" data-evidence-quote="%s"><b>%s</b><small>%s</small></button>'
-            % (html.escape(str(n.get("evidence", {}).get("page", "")), quote=True),
-               html.escape(str(n.get("evidence", {}).get("section", "")), quote=True),
-               html.escape(str(n.get("evidence", {}).get("quote", "")), quote=True),
-               html.escape(str(n.get("label", ""))), html.escape(str(n.get("detail", ""))))
-            for n in nodes
-        )
-        edge_html = "".join("<li>%s -&gt; %s: %s</li>" % (html.escape(str(e.get("from", ""))), html.escape(str(e.get("to", ""))), html.escape(str(e.get("label", "")))) for e in edges)
-        return "<!doctype html><meta charset=\"utf-8\"><title>%s</title><style>body{font:14px system-ui;margin:20px;color:#17202a} .nodes{display:grid;gap:10px}.node{padding:12px;text-align:left;border:1px solid #ccd5df;border-radius:6px;background:#fff;cursor:pointer}.node:hover{border-color:#1677ff}small{display:block;color:#667}</style><h1>%s</h1><div class=\"nodes\">%s</div><ul>%s</ul><script>document.querySelectorAll('[data-evidence-page]').forEach(n=>n.onclick=()=>parent.postMessage({type:'paper-vault-diagram-node',page:Number(n.dataset.evidencePage),evidence:{section:n.dataset.evidenceSection,page:Number(n.dataset.evidencePage),quote:n.dataset.evidenceQuote}},'*'))</script>" % (html.escape(str(ir.get("title", "Diagram"))), html.escape(str(ir.get("title", "Diagram"))), node_html, edge_html)

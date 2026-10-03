@@ -77,7 +77,7 @@ export function usePaperWorkspace(paperId?: string) {
   async function startCodexAnalysis() {
     if (!paperId) return;
     setError(null);
-    try { setCodexJob(await api.startCodexAnalysis(paperId, "请按全文解析规范执行：先逐页抽取整篇 PDF，记录覆盖率，再写摘要、背景、相关论文、方法、实验、结论，并把方法写成工程可实现的 pipeline。")); }
+    try { setCodexJob(await api.startCodexAnalysis(paperId, "方法与实验章节按工程实现的 pipeline 组织；表格数值如无法从文本可靠抽取，请标注需人工核对 PDF。")); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }
   async function loadLatex() { if (!paperId) return; try { setLatex(await api.getLatex(paperId)); setTab("latex"); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }

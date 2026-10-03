@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "type": "data_flow",
+  "title": "Qwen3-VL Data and Training Flow",
+  "nodes": [
+    {
+      "id": "raw-multimodal-data",
+      "label": "Raw multimodal data",
+      "role": "data",
+      "detail": "Web image-text pairs and other multimodal sources used for pretraining.",
+      "evidence": {
+        "section": "Pre-Training Data",
+        "page": 0,
+        "quote": "We curate a large-scale corpus of contemporary, predominantly Chinese–English multilingual image–text pairs from web sources"
+      }
+    },
+    {
+      "id": "refinement-pipeline",
+      "label": "Data refinement/filtering",
+      "role": "module",
+      "detail": "Multi-stage refinement and filtering pipeline for retained samples.",
+      "evidence": {
+        "section": "Pre-Training Data",
+        "page": 0,
+        "quote": "All retained samples undergo a multi-stage refinement pipeline."
+      }
+    },
+    {
+      "id": "pretraining-data-mixture",
+      "label": "Pretraining data mixture",
+      "role": "data",
+      "detail": "Mixture of vision-language and text-only data for training.",
+      "evidence": {
+        "section": "Training Recipe",
+        "page": 0,
+        "quote": "the data mixture is composed of vision-language (VL) data and text-only data."
+      }
+    },
+    {
+      "id": "vision-encoder",
+      "label": "Vision encoder",
+      "role": "module",
+      "detail": "SigLIP-2 architecture trained with dynamic input resolutions.",
+      "evidence": {
+        "section": "Model Architecture",
+        "page": 0,
+        "quote": "We utilize the SigLIP-2 architecture as our vision encoder and continue training it with dynamic input resolutions"
+      }
+    },
+    {
+      "id": "merger",
+      "label": "Vision-language merger",
+      "role": "module",
+      "detail": "Two-layer MLP compresses visual features into visual tokens.",
+      "evidence": {
+        "section": "Model Architecture",
+        "page": 0,
+        "quote": "we use a two-layer MLP to compress visual features from the vision encoder into a single visual token"
+      }
+    },
+    {
+      "id": "llm-backbone",
+      "label": "Qwen3 LLM backbone",
+      "role": "model",
+      "detail": "Large language model component of the three-module architecture.",
+      "evidence": {
+        "section": "Training Recipe",
+        "page": 0,
+        "quote": "a Qwen3 large language model (LLM) backbone"
+      }
+    },
+    {
+      "id": "pretraining-stages",
+      "label": "Four-stage pretraining",
+      "role": "module",
+      "detail": "Pretraining structured into four progressive stages.",
+      "evidence": {
+        "section": "Training Recipe",
+        "page": 0,
+        "quote": "our pre-training methodology is systematically structured into four distinct stages"
+      }
+    },
+    {
+      "id": "post-training",
+      "label": "Three-stage post-training",
+      "role": "module",
+      "detail": "Supervised fine-tuning, knowledge distillation, and reinforcement learning.",
+      "evidence": {
+        "section": "Introduction",
+        "page": 0,
+        "quote": "Post-training comprises three phases: (i) supervised fine-tuning on long chain-of-thought data, (ii) knowledge distillation from stronger teacher models, and (iii) reinforcement learning."
+      }
+    },
+    {
+      "id": "qwen3-vl-model",
+      "label": "Qwen3-VL model",
+      "role": "output",
+      "detail": "Dense and MoE variants trained with up to 256K context.",
+      "evidence": {
+        "section": "Introduction",
+        "page": 0,
+        "quote": "we instantiate four dense models (2B/4B/8B/32B) and two mixture-of-experts (MoE) models (30B-A3B / 235B-A22B), each trained with a context window of up to 256K tokens"
+      }
+    },
+    {
+      "id": "evaluation",
+      "label": "Benchmark evaluation",
+      "role": "eval",
+      "detail": "Evaluation across public benchmarks and capability areas.",
+      "evidence": {
+        "section": "Benchmarks",
+        "page": 0,
+        "quote": "We evaluate on a wide range of public benchmarks across distinct capabilities"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "raw-multimodal-data",
+      "to": "refinement-pipeline",
+      "label": "refined by pipeline",
+      "evidence": {
+        "section": "Pre-Training Data",
+        "page": 0,
+        "quote": "apply a multi-stage refinement pipeline centered on a specialized Qwen2.5-VL-32B model fine-tuned for recaptioning."
+      }
+    },
+    {
+      "from": "refinement-pipeline",
+      "to": "pretraining-data-mixture",
+      "label": "filtered data forms mixture",
+      "evidence": {
+        "section": "Training Recipe",
+        "page": 0,
+        "quote": "the data mixture is composed of vision-language (VL) data and text-only data."
+      }
+    },
+    {
+      "from": "pretraining-data-mixture",
+      "to": "pretraining-stages",
+      "label": "used for pretraining",
+      "evidence": {
+        "section": "Training Recipe",
+        "page": 0,
+        "quote": "The model is trained on a massive and diverse dataset of approximately 1 trillion (1T) tokens."
+      }
+    },
+    {
+      "from": "vision-encoder",
+      "to": "merger",
+      "label": "visual features compressed",
+      "evidence": {
+        "section": "Model Architecture",
+        "page": 0,
+        "quote": "we use a two-layer MLP to compress visual features from the vision encoder into a single visual token"
+      }
+    },
+    {
+      "from": "merger",
+      "to": "llm-backbone",
+      "label": "visual tokens aligned to LLM",
+      "evidence": {
+        "section": "Model Architecture",
+        "page": 0,
+        "quote": "compress visual features from the vision encoder into a single visual token, aligned with the LLM’s hidden dimension."
+      }
+    },
+    {
+      "from": "llm-backbone",
+      "to": "pretraining-stages",
+      "label": "joint end-to-end training",
+      "evidence": {
+        "section": "Training Recipe",
+        "page": 0,
+        "quote": "we unfreeze all model components—the vision encoder, the merger, and the LLM—for joint end-to-end training."
+      }
+    },
+    {
+      "from": "pretraining-stages",
+      "to": "post-training",
+      "label": "followed by post-training",
+      "evidence": {
+        "section": "Introduction",
+        "page": 0,
+        "quote": "Our training pipeline consists of two stages: pretraining and post-training."
+      }
+    },
+    {
+      "from": "post-training",
+      "to": "qwen3-vl-model",
+      "label": "refines model",
+      "evidence": {
+        "section": "Post-Training",
+        "page": 0,
+        "quote": "Our post-training pipeline is a three-stage process designed to refine the model's instruction-following capabilities"
+      }
+    },
+    {
+      "from": "qwen3-vl-model",
+      "to": "evaluation",
+      "label": "evaluated on benchmarks",
+      "evidence": {
+        "section": "Multimodal Reasoning",
+        "page": 0,
+        "quote": "We evaluate the Qwen3-VL series on a wide range of multimodal reasoning benchmarks"
+      }
+    }
+  ],
+  "groups": []
+}

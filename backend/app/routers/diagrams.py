@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Literal
 
@@ -11,9 +12,9 @@ from pydantic import BaseModel, Field
 
 from .. import llm as llm_mod
 from ..config import Settings, get_settings
-from ..jobs.diagram import DiagramJobRunner
+from ..jobs.diagram import DIAGRAM_MAX_TOKENS, DIAGRAM_TIMEOUT_SECONDS, DiagramJobRunner
 from ..storage import PaperStore
-from .diagram_context import paper_context, paper_source_text
+from .diagram_context import diagram_excerpt, paper_context, paper_source_text
 
 DiagramType = Literal["workflow", "data_flow"]
 DiagramJobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
@@ -63,7 +64,10 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 def create_diagram_runner(settings: Settings) -> DiagramJobRunner:
-    return DiagramJobRunner(settings.references_dir / "diagram_jobs", paper_root=settings.data_root, llm=llm_mod.chat_once)
+    llm = functools.partial(
+        llm_mod.chat_once, max_tokens=DIAGRAM_MAX_TOKENS, timeout=DIAGRAM_TIMEOUT_SECONDS, stream=True,
+    )
+    return DiagramJobRunner(settings.references_dir / "diagram_jobs", paper_root=settings.data_root, llm=llm)
 
 def initialize_diagram_runner(settings: Settings) -> DiagramJobRunner:
     runner = create_diagram_runner(settings)
@@ -104,7 +108,7 @@ def generate_diagram(
     paper_dir, version = paper_context(paper_id, store, require_source=True)
     options = request or DiagramGenerateRequest()
     types = [options.diagram_type] if options.diagram_type else options.diagram_types
-    text = paper_source_text(paper_dir)
+    text = diagram_excerpt(paper_source_text(paper_dir))
     return _public_job(runner.generate_many(paper_id, version, list(types), text,
                                             ir_version=options.ir_version, overwrite=options.overwrite,
                                             paper_dir=paper_dir,

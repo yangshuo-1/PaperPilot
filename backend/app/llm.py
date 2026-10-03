@@ -5,31 +5,32 @@ import json
 import os
 import re
 import threading
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable
+
+from .llm.loader import PromptNotConfigured, load_prompt
+from .llm.transport import TransportError, transport_for
 
 # ---------------------------------------------------------------------------
 # Minimal OpenAI-compatible chat client for the paper vault.
 #
 # Config resolution (highest first):
 #   PAPER_LLM_*  environment variables (optional override)
-#   backend/llm_config.json  (repo-local, self-contained; base_url/api_key/model)
-#   otherwise -> available:false (translation hidden in the UI, non-fatal)
+#   backend/llm_config.json  (repo-local, gitignored; base_url/api_key/model)
+#   ~/.pi/agent/models.json provider "humanfia-lab" (host-level fallback)
+#   otherwise -> available:false (AI features degrade, frontend shows it)
 #
-# The vault is intentionally self-contained: it reads ONLY its own config file
-# (see llm_config.example.json), not any agent-runtime or editor config.
 # The api_key lives in the gitignored llm_config.json and is never exposed.
 #
-# Only the standard library is used (no new dependency). Requests send a
-# browser-like User-Agent so Cloudflare-fronted endpoints do not reject them
-# with HTTP 403 (error code 1010).
+# HTTP goes through backend/app/llm/transport.py: the configured endpoint
+# stalls any *new* TLS handshake while a previous connection is alive, so a
+# fresh connection per call (urllib.urlopen) hung every request after the
+# first. The transport reuses one keep-alive connection per endpoint,
+# serializes requests, and retries transient failures with backoff.
+# Only the standard library is used (no new dependency).
 # ---------------------------------------------------------------------------
 
-# Pi owns the provider configuration. A repo-local file is retained only as a
-# backwards-compatible fallback for explicit local development.
+# Repo-local config; takes precedence over the host-level Pi configuration.
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "llm_config.json"
 _PI_MODELS_PATH = Path(os.getenv("PI_MODELS_PATH", "~/.pi/agent/models.json")).expanduser()
 _PI_AUTH_PATH = Path(os.getenv("PI_AUTH_PATH", "~/.pi/agent/auth.json")).expanduser()
@@ -40,12 +41,20 @@ _PREFERRED_MODELS = (
     "gpt-5.2", "gpt-5.1-codex", "gpt-5-codex", "gpt-4o",
 )
 
-_TRANSIENT_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
-
+#: Kept for callers that still branch on status codes; the transport owns retrying.
+_TRANSIENT_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
 
 class LLMUnavailable(RuntimeError):
-    pass
+    """The LLM could not be reached, or returned an unusable response."""
+
+
+class LLMContentBudgetExceeded(LLMUnavailable):
+    """The model spent the whole token budget on reasoning and returned no content.
+
+    Retrying *with a larger budget* is the fix; retrying with the same budget
+    tends to burn it again.
+    """
 
 
 # --- config ----------------------------------------------------------------
@@ -101,8 +110,27 @@ def _pi_config() -> dict[str, Any] | None:
     return None
 
 
+#: Config priority: environment override, repo-local file, host-level Pi config.
+_CONFIG_SOURCES: tuple[tuple[str, Callable[[], dict[str, Any] | None]], ...] = (
+    ("env", _env_config),
+    ("local", _read_local_config),
+    ("pi", _pi_config),
+)
+
+
+def _resolve_config(
+    sources: tuple[tuple[str, Callable[[], dict[str, Any] | None]], ...] | None = None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Return ``(source_name, config)`` for the first configured source."""
+    for name, provider in sources or _CONFIG_SOURCES:
+        config = provider()
+        if config:
+            return name, config
+    return None, None
+
+
 def _effective_config() -> dict[str, Any] | None:
-    return _env_config() or _pi_config()
+    return _resolve_config()[1]
 
 
 def llm_available() -> bool:
@@ -111,16 +139,13 @@ def llm_available() -> bool:
 
 def llm_status() -> dict[str, Any]:
     """Return a human-reportable availability status without exposing secrets."""
-    env = _env_config()
-    pi_cfg = _pi_config()
-    effective = _effective_config()
-    if env:
-        source = "env"
-    elif pi_cfg:
-        source = "pi"
-    else:
-        source = None
-    return {"available": source is not None, "provider": effective.get("provider", "") if source else None, "model": effective["model"] if source else None}
+    source, effective = _resolve_config()
+    return {
+        "available": source is not None,
+        "source": source,
+        "provider": effective.get("provider", "") if effective else None,
+        "model": effective["model"] if effective else None,
+    }
 
 
 def _chat_completion(  # noqa: PLR0913
@@ -130,66 +155,80 @@ def _chat_completion(  # noqa: PLR0913
     api_key: str,
     model: str,
     max_tokens: int = 1600,
-    timeout: int = 180,
+    timeout: int = 240,
     retry_attempts: int = 2,
-    retry_delay: float = 0.5,
+    retry_delay: float = 3.0,
+    stream: bool = False,
 ) -> str:
-    """POST {base}/chat/completions and return assistant content."""
+    """POST {base}/chat/completions over the reused connection and return content.
+
+    ``stream=True`` is required for generations that may exceed the edge's ~100s
+    request limit (long reasoning + long output); short calls stay non-streaming.
+    """
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
         "max_tokens": max_tokens,
     }
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            # Cloudflare-fronted endpoints reject bare urllib requests with HTTP
-            # 403 (error code 1010); a browser-like User-Agent + referer passes.
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json",
-            "Origin": base_url,
-            "Referer": base_url + "/",
-        },
-        method="POST",
+    backoff = tuple(retry_delay * (2 ** attempt) for attempt in range(max(retry_attempts, 1)))
+    transport = transport_for(
+        base_url,
+        connect_timeout=min(30.0, float(timeout)),
+        read_timeout=float(timeout),
+        attempts=retry_attempts + 1,
     )
-    for attempt in range(retry_attempts + 1):
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-            break
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:400]
-            if exc.code not in _TRANSIENT_HTTP_STATUSES or attempt >= retry_attempts:
-                raise LLMUnavailable(f"LLM HTTP {exc.code}: {body}") from exc
-        except urllib.error.URLError as exc:
-            if attempt >= retry_attempts:
-                raise LLMUnavailable(f"LLM network error: {exc.reason}") from exc
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise LLMUnavailable(f"LLM invalid response: {exc}") from exc
-        time.sleep(retry_delay * (2 ** attempt))
+    transport.backoff = backoff or (0.0,)
+    try:
+        if stream:
+            data = transport.post_stream("/chat/completions", payload, api_key=api_key)
+        else:
+            data = transport.post_json("/chat/completions", payload, api_key=api_key)
+    except TransportError as exc:
+        raise LLMUnavailable(str(exc)) from exc
+
+    # Reasoning models bill their thinking against max_tokens. When the whole
+    # budget goes to reasoning the provider returns finish_reason=stop with an
+    # assistant message that has *no* content field at all (or an empty one),
+    # so "budget exhausted" has to be detected from usage, not from the text.
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+    reasoning = details.get("reasoning_tokens")
+    reasoning_chars = int(data.get("_reasoning_chars") or 0)
+
+    def _budget_error() -> LLMContentBudgetExceeded:
+        if reasoning:
+            return LLMContentBudgetExceeded(
+                f"LLM produced no content: {reasoning} reasoning tokens consumed the {max_tokens}-token budget"
+            )
+        return LLMContentBudgetExceeded(
+            f"LLM produced no content: {reasoning_chars} streamed reasoning characters "
+            f"consumed the {max_tokens}-token budget"
+        )
 
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
+        if reasoning or reasoning_chars:
+            raise _budget_error() from exc
         # Providers surface cost/billing errors in the top-level error field.
         error = data.get("error", {})
         message = error.get("message", "") if isinstance(error, dict) else str(error)
         raise LLMUnavailable(f"LLM returned no content: {message or str(data)[:200]}") from exc
-    return str(content).strip()
+    text = str(content or "").strip()
+    if not text:
+        if reasoning or reasoning_chars:
+            raise _budget_error()
+        raise LLMUnavailable(f"LLM returned empty content: {str(data)[:200]}")
+    return text
 
 
-def chat_once(prompt: str, *, max_tokens: int = 1600, timeout: int = 180) -> str:
+def chat_once(prompt: str, *, max_tokens: int = 1600, timeout: int = 240, stream: bool = False) -> str:
     """Run a one-shot prompt through the configured provider.
 
     Raises ``LLMUnavailable`` when no provider is configured, the request
     fails, or the account returns an error (e.g. INSUFFICIENT_BALANCE).
+    ``stream=True`` keeps long generations alive past the edge's request limit.
     """
     config = _effective_config()
     if not config:
@@ -201,6 +240,7 @@ def chat_once(prompt: str, *, max_tokens: int = 1600, timeout: int = 180) -> str
         model=config["model"],
         max_tokens=max_tokens,
         timeout=timeout,
+        stream=stream,
     )
 
 
@@ -279,7 +319,7 @@ def translate_paragraphs(
     paragraphs: list[str],
     *,
     only_untranslated: bool = True,
-    max_tokens: int = 1600,
+    max_tokens: int = 3000,
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Translate each paragraph to Chinese (source + translation kept).
@@ -306,12 +346,11 @@ def translate_paragraphs(
             raise RuntimeError("translation cancelled")
         paragraph = paragraphs[idx]
         key = paragraph_hash(paragraph)
-        prompt = (
-            "You are a technical translation assistant. Translate the following academic text "
-            "into natural, accurate Simplified Chinese. Return ONLY the Chinese translation, "
-            "no preamble, no quotes, no English,\n\n"
-            f"{paragraph}"
-        )
+        try:
+            instructions = load_prompt("translation")
+        except PromptNotConfigured as exc:
+            raise LLMUnavailable(f"prompt 未配置: translation（{exc}）") from exc
+        prompt = f"{instructions}\n\n{paragraph}"
         try:
             translated = _chat_completion(
                 prompt,

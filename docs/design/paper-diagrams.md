@@ -17,16 +17,48 @@ Archify（`tt-a1i/archify`，MIT）的核心思想值得借鉴：**Typed JSON IR
 
 ```text
 Method 章节（derived/latex_plain.txt，tier1 时用结构化章节）
+  → 摘录（routers/diagram_context.py::diagram_excerpt）
+      - 关键词打分挑出架构相关段落，上限 40k 字符：整篇正文会把模型拖进长推理，
+        实测一次就烧光 8000 token 预算并返回空内容
+      - 段内空白归一化：LaTeX 硬换行会让跨行引文不再"逐字命中"，归一化后
+        模型看到的文本与校验器比对的文本是同一份
   → LLM 生成 IR（prompt: llm/prompts/diagram_ir.v1.md，输出受 schema 约束）
+      - 请求必须携带摘录正文（"Source excerpt:" 段），否则模型只能编造引文，
+        校验器必然报 QUOTE_NOT_FOUND
+      - 流式请求（SSE）：非流式长请求会被边缘以 HTTP 524 掐断
+      - 预算 16000 起，失败（预算烧光 / JSON 截断）逐轮升到 24000
   → 校验器（domain/diagrams.py + jobs/diagram.py）
       - schema 校验：节点/边/角色类型
       - 布局 / 连通 / 标签避让（Archify 五层的简化实现）
       - evidence 校验（特有）：每个 node/edge 必须带 evidence，
         且 quote 能在解析文本中逐字命中
   → 失败：repair receipt（规则码 + 出错主体 + 测量证据）回炉，最多 3 轮
-  → 渲染：确定性模板 → 自包含 HTML
+  → 渲染：`domain/diagram_render.py` 确定性模板 → 自包含 HTML
+      - 分层布局（Kahn 最长路径定层，同层按 IR 顺序排布、短行居中对齐），节点绝对定位
+      - 边渲染为 SVG 贝塞尔曲线 + 箭头 + 带底衬的边标签，不再输出 "a -> b: label" 原始 ID 文本
+      - 标签避让：节点按钮绘制在 SVG 之上，标签被卡片盖住会被切成碎片（曾残留孤立的 "ing"）。
+        节点坐标在渲染时已知，故按「11 个曲线采样点 × 5 个法向偏移」选第一个不与节点/其他标签
+        相交的位置，全被占满时取重叠面积最小的位置
+      - 缩放适配：画布按宽度与高度双向等比缩放到容器内（下限 0.5，保证可读），
+        画布卡片在面板内水平居中
+      - 节点（button）与边（g）都带 data-evidence-*，都经 postMessage 回传证据
+      - 零外部依赖、零外部资源，iframe 内可滚动
+      - 已知取舍：不做真正的边绕行布线，密集图的边可能从卡片背后穿过（可追踪、不丢信息），
+        留待后续 polish
   → 产物：results/diagrams/{method,pipeline}.ir.json + .html
 ```
+
+> **历史缺陷与验收教训（2026-10）**
+>
+> 1. 渲染器把边输出成 `<li>vision-encoder -&gt; merger</li>` 这类原始 ID 文本列，视觉上等于没有图；
+>    由于前端 mock（`frontend/src/mocks/diagram.ts`）画的是正常图形，该缺陷长期未被暴露。
+> 2. 修渲染器时又引入一个变量遮蔽 bug：边循环里的局部 `width`（标签宽度）覆盖了 `layout()`
+>    算出的画布宽度，画布塌成 83px 细条，边与标签全部不可见——**而 `data-evidence-page` 数量、
+>    单测、DOM 断言当时全绿**。
+>
+> 结论（已写入 AGENTS.md）：图解类 HTML 产物的验收**必须包含真实截图 + 视觉复核**。
+> 只数 DOM 语义标记的验收方式，无法发现"图根本没画出来"。定稿前做过 5 轮视觉复核，
+> 每轮都发现上一轮引入的新问题（裁切 → 纵向裁切 → 标签压字 → 画布塌陷 → 通过）。
 
 ## IR schema（v1）
 

@@ -12,7 +12,7 @@
 |---|---|---|
 | Stage 0 地基 + 契约 | ✅ 已完成（f07f11e） | 0.1–0.8 全部落地并 review 通过。深度 review 修复一处契约 bug（jobs 互导契约误伤 base，已加 ignore_imports 并探针验证）。 |
 | Stage 1 四轨并行 | ✅ 已完成 | J/D/V/U 四轨交付并通过 compileall、unittest、ruff、import-linter；SQLite 迁移器与 trigram DDL 已落地，运行态切换仍属于后续集成边界。 |
-| Stage 2 集成点 | 进行中（I1/I2/I3 完成，I4 blocked） | 路由已挂载，图解 schema/job/HTML 与真实 Chrome/CDP 基线验收通过；`diagram_ir.v1.md` 已补齐，但当前 provider 配置的 `deepseek-v4-flash` 对真实 chat 请求返回 HTTP 503，无法完成 Qwen3-VL 图解人工评估。 |
+| Stage 2 集成点 | ✅ 完成（I1–I4） | 路由已挂载；图解 schema/job/HTML 与真实 Chrome/CDP 基线验收通过；`diagram_ir.v1.md` 已补齐。I4 阻塞原因最终定位为三处实现缺陷（非 provider 故障）：① 源文摘录从未放进请求，模型只能编造引文（`QUOTE_NOT_FOUND`）；② `max_tokens=8000` 被推理 token 吃光，返回空内容；③ LaTeX 正文硬换行导致跨行引文不是源文子串。修复后 Qwen3-VL 生成 `results/diagrams/{workflow,data_flow}.{ir.json,html}` 成功（workflow 9 节点 / 10 边，均有逐字引文），节点→PDF 跳转链路可用。 |
 | Stage 3 拆分与解析升级 | ✅ 完成（迁移期） | storage 按域拆分；全部 HTTP 适配层已迁出 `main.py`；tier0/tier1 parser、manifest quality/AI capability、SQLite runtime 初始化与 FTS 已接入。更深层 domain 拆分仍按需推进。 |
 
 ## 协作模型
@@ -93,7 +93,7 @@
 | I1 | 路由挂载：diagrams 等 routers 注册进 `main.py`（仅此处动 main.py） | — |
 | I2 | J3 + V1 + U2 端到端联调，产物落 `results/diagrams/` | 全链路跑通 |
 | I3 | AGENT-QA 回归：unittest 全套 + frontend build + `chrome_acceptance.mjs` | 全绿 |
-| **I4** | **Qwen3-VL 图解端到端人工评估（go / no-go；prompt 就位后执行）** | 节点点击能对上论文原文 |
+| **I4** | **Qwen3-VL 图解端到端人工评估（go / no-go；prompt 就位后执行）** | ✅ go：`results/diagrams/workflow.ir.json` 每个节点/边都有可在源文命中逐字引文；LaTeX 源无页码标记时节点的 `page=0`，前端不再提供无效的「跳转第 0 页」 |
 
 ## Stage 3 · 拆分与解析升级（并行度低，按需，"够用即停"）
 
@@ -103,6 +103,23 @@
 | S2 | DATA | ✅ `main.py` 已拆为 health/papers/folders/discovery/annotations/reader/AI/jobs/projects/sessions routers |
 | S3 | DATA | ✅ `parsers/base.py` + pypdf tier0 封装 + arXiv HTML tier1 |
 | S4 | DATA | ✅ arXiv 导入写入 manifest quality tier；AI capability boundary 随解析结果声明 |
+
+## AI 链路基线（2026-10，供后续任务引用）
+
+一次真实的端到端跑批（Qwen3-VL，42 页）确立了以下基线事实，后续改动必须保持：
+
+| 能力 | 结果 | 关键约束 |
+|---|---|---|
+| 全文解析 | ✅ 84 KB 文档 / 339 条带页码与逐字引文的结论 / 11 个页片段 / 462 s | 必须流式（边缘 ~100 s 会以 HTTP 524 掐断非流式长请求）；checkpoint 记录已完成片段，重启后台可断点续跑 |
+| Takeaways | ✅ 5 条，全部通过引文校验 | `max_tokens` 需覆盖推理预算 |
+| 段落翻译 | ✅ 逐段缓存 `translation_zh.json` | 同上 |
+| 论文图解 | ✅ workflow + data_flow 两份 IR/HTML（各 10 节点 / 9 边，逐字引文齐备） | 请求必须包含源文摘录；摘录需按空白归一化；HTML 需分层布局 + 标签避让 + 双向缩放适配 |
+
+**图解渲染的验收方式（血泪教训）**：产物是否"真的画出图"不能用 DOM 断言证明。
+曾经出现「`data-evidence-page` 数量正确、185 项单测全绿，但截图里只有标题和一堆互不相连的卡片」
+以及「画布因变量遮蔽塌成 83px、边全部消失」两种情况。结论：图解/可视化类产物必须
+截图 + 视觉复核（本仓库用 `Page.captureScreenshot` + 多模态模型复核），并在同一轮里复查
+上一轮指出的每一项。
 
 ## 增强项（P3，独立小任务，可随时插入任何空档）
 

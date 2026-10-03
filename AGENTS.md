@@ -1,6 +1,6 @@
 # AGENTS.md — paper_valt
 
-本地优先的论文管理与理解平台：FastAPI 管理论文索引/标签/文件夹/PDF/LaTeX/分析文档，React+Vite 提供论文库与阅读工作台，Codex CLI 与 OpenAI 兼容接口提供 AI 能力。
+本地优先的论文管理与理解平台：FastAPI 管理论文索引/标签/文件夹/PDF/LaTeX/分析文档，React+Vite 提供论文库与阅读工作台，AI 能力（全文解析/翻译/Takeaway/图解/AI 问答）走已配置的 OpenAI 兼容接口，prompt 全部来自 `backend/app/llm/prompts/`。
 
 > **开发约束（必读）**：任何代码改动前先读 `.agents/skills/paper-valt-dev-constraints/SKILL.md`。
 > 设计依据：`docs/design/`（code-organization / data-organization / paper-diagrams / roadmap）。
@@ -10,8 +10,9 @@
 ## 环境
 
 - Python 3.10+（仓库内 `.venv`）、Node 18+（**WSL 默认 node v12 过老，须用 nvm 切 v22**）、可选 `uv`。
-- Codex 全文分析需本机 `codex` CLI 已登录并在 PATH。
 - LLM 配置：环境变量 `PAPER_LLM_BASE_URL` / `PAPER_LLM_API_KEY` / `PAPER_LLM_MODEL`，或 `backend/llm_config.json`（gitignored）。**API key 永不入 git、不入聊天。**
+- AI 链路只通过 `backend/app/llm/transport.py` 发请求（**单连接 keep-alive + 短连接超时重试**）：该 endpoint 会让每条新建 TLS 连接的首个请求挂住数分钟，`urllib.urlopen` 这种"每次新建连接"的写法必然超时；read 超时不要为省时间调小，推理模型确实要跑几十秒到几分钟。
+- 模型是推理模型，`reasoning_tokens` 计入 `max_tokens`：预算给小了会拿到 `finish_reason=stop` 但 `content` 为空的响应（这不是网络故障，是预算不足）。为此全链路都按"大预算 + 失败重试升级预算"处理，`_chat_completion` 对这种空响应会明确报错而不再伪装成 JSON 解析失败。
 
 ## 常用命令
 
@@ -31,11 +32,17 @@ cd frontend && npm run build
 node scripts/chrome_acceptance.mjs            # 服务已启动时的真实浏览器验收
 ```
 
+## 验收纪律：可视化产物必须看
+
+图解 HTML、iframe 内容这类**可视化产物**的改动，除了跑单测，还必须做视觉验收：截图 + 多模态复核，并逐条复查上一轮指出的问题。
+
+本仓库有过两次「单测与 DOM 断言全绿，但图根本没画出来」的实例：边被渲染成 `vision-encoder -> merger` 原始 ID 文本列；局部变量遮蔽画布宽度导致画布塌成 83px、边与标签全部消失。只数语义标记（`data-evidence-page` 有几个）证明不了产物的可读性。
+
 ## 仓库地图
 
 ```text
-backend/app/        FastAPI 后端（注意：storage.py / main.py 是待拆分旧单体，见下）
-frontend/src/       React 前端（main.tsx 是待拆分旧单体）
+backend/app/        FastAPI 后端（storage.py / main.py 已完成按域搬迁，只剩 app 工厂与兼容再导出）
+frontend/src/       React 前端（main.tsx 只剩挂载入口，页面/组件/hooks/api 已按域拆分）
 papers/             每篇论文一个目录（数据，分层契约见 design/data-organization.md）
 references/         全局状态与索引（paper_index.jsonl、tags、jobs 运行态）
 projects/           Project workspace（gitignored）

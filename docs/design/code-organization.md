@@ -1,11 +1,13 @@
 # 代码组织目标结构（v2）
 
-## 现状问题
+## 迁移起点问题（历史，记录用）
 
-- 三大单体：`storage.py` 1870 行（一个 PaperStore 管 60+ 方法）、`main.py` 1013 行约 70 个路由、`models.py` 670 行、前端 `main.tsx` 2123 行。旧设计文档中的 `routers/` 分层在实际代码中退化成了单体。
-- Prompt 硬编码在 `codex_jobs.py::_build_prompt`，与 `docs/full-paper-analysis-spec.md` 是两份手工同步的拷贝。
-- 演示数据硬编码在 `storage.py::_ensure_seed_data`（Qwen3-VL seed）。
-- LLM 配置三级回退（env > `llm_config.json` > `opencode.json`），最后一级与外部工具耦合，静默难排查。
+以下问题定义了本次 v2 重构的动机，当前状态见每条末尾：
+
+- 三大单体：`storage.py` 1870 行（一个 PaperStore 管 60+ 方法）、`main.py` 1013 行约 70 个路由、`models.py` 670 行、前端 `main.tsx` 2123 行。旧设计文档中的 `routers/` 分层在实际代码中退化成了单体。**已解决**：`storage.py` 22 行、`main.py` 58 行、`frontend/src/main.tsx` 13 行，只保留 app 工厂/挂载入口与兼容再导出。
+- Prompt 硬编码在 `codex_jobs.py::_build_prompt`，与 `docs/full-paper-analysis-spec.md` 是两份手工同步的拷贝。**已解决**：prompt 全部在 `llm/prompts/*.md`，`.py` 不再内嵌 prompt（`scripts/check_no_inline_prompt.py` 扫描 56 个文件通过）。
+- 演示数据硬编码在 `storage.py::_ensure_seed_data`（Qwen3-VL seed）。**已解决**：seed 只在 `scripts/seed_demo.py`。
+- LLM 配置三级回退（env > `llm_config.json` > `opencode.json`），最后一级与外部工具耦合，静默难排查。**已解决**：回退顺序为 env > `backend/llm_config.json` > `~/.pi/agent/models.json`，`llm_status()` 返回生效来源（`source` 字段）。
 
 ## 后端目标结构
 
@@ -28,10 +30,14 @@ backend/app/
   jobs/                # 异步任务：统一 JobRunner 基类
     base.py            # 状态机 / checkpoint / 取消 / 幂等 job_key
     codex.py  translation.py  takeaway.py  diagram.py
+    full_analysis.py   # 全文解析引擎：分页切片 → LLM → 证据校验 → Markdown 组装（与 job 状态机解耦）
   llm/
     client.py          # OpenAI 兼容客户端（现 llm.py 核心）
+    transport.py       # 单连接 keep-alive HTTP 传输（超时/重试/串行化），见下方约束 8
+    loader.py          # 按 `{name}.v{N}.md` 加载 prompt，缺失时抛 PromptNotConfigured
     router.py          # 按任务选模型（translate / analyze / diagram）
-    prompts/           # prompt 模板文件（文件名示意，由维护者设计；代码只经 loader 加载）
+    prompts/           # prompt 模板文件，现行：full_analysis.v1 / diagram_ir.v1 / translation.v1 /
+                       # paper_qa.v1 / explain_selection.v1 / translate_selection.v1 / takeaways.v1
   routers/             # FastAPI 薄层
     papers.py  folders.py  discovery.py  annotations.py
     ai.py  jobs.py  projects.py  assets.py  reader.py
@@ -47,6 +53,8 @@ backend/app/
 5. `llm/prompts/` 是唯一 prompt 来源；任何 `.py` 文件禁止内嵌 prompt 字符串。prompt 变更不改代码。
 6. `parsers/` 只通过 `base.Parser` 接口被调用；新增解析器不改调用方。
 7. 业务代码禁止写入演示/seed 数据；demo 数据只存在于 `scripts/seed_demo.py`，测试用 fixture。
+8. `llm/` 之外禁止直接发 HTTP 到 LLM endpoint：所有聊天请求经 `llm/transport.py`，以复用单条 keep-alive 连接（该 endpoint 会挂住每条新连接的首个请求）。read 超时不得低于模型真实生成时间；连接超时保持短超时 + 立即重试。
+9. `max_tokens` 必须按"推理预算 + 输出预算"给足：推理模型的 `reasoning_tokens` 计入 `max_tokens`，预算不足会返回 `finish_reason=stop` 且 `content` 为空。批处理型任务（全文解析等）按失败重试逐级提升预算。
 
 ## 前端目标结构
 

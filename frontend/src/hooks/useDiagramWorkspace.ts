@@ -12,7 +12,10 @@ export function useDiagramWorkspace(paperId?: string) {
   const [unsupported, setUnsupported] = useState(false);
   const [mockMode, setMockMode] = useState(false);
   const mockTimers = useRef<number[]>([]);
-  const diagramUnavailable = (reason: unknown) => isApiError(reason, 501) || isApiError(reason, 404);
+  // Only a genuinely missing endpoint counts as "backend not wired": a 404 on
+  // these routes means the paper itself is unknown, which must surface as an
+  // error instead of silently switching the tab to mock data.
+  const diagramUnavailable = (reason: unknown) => isApiError(reason, 501) || isApiError(reason, 405);
 
   useEffect(() => () => { mockTimers.current.forEach((timer) => window.clearTimeout(timer)); }, []);
 

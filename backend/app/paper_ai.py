@@ -12,8 +12,17 @@ from typing import Any
 from pypdf import PdfReader
 
 from . import llm
+from .llm.loader import PromptNotConfigured, load_prompt
 from .parsers import parser_capabilities
 from .reader import document_version
+
+
+def _prompt_text(name: str) -> str:
+    """Prompts live in ``llm/prompts/``; a missing one degrades explicitly."""
+    try:
+        return load_prompt(name)
+    except PromptNotConfigured as exc:
+        raise llm.LLMUnavailable(f"prompt 未配置: {name}（{exc}）") from exc
 
 
 def _now() -> str:
@@ -214,25 +223,15 @@ def ask(pdf_path: Path, paper_id: str, *, mode: str, question: str, selection: d
                 "document_version": version, "model": status().get("model"), "generated_at": _now(),
                 "stale": True, "available": True, "error": "选中文本来自旧文档版本，请重新选择。",
             }
-        prompt = (
-            "You are assisting with this paper only. Do not use outside facts.\n"
-            f"Task: {'Explain the selected text in clear Chinese.' if mode == 'explain' else 'Translate the selected text into natural Chinese.'}\n"
-            f"Selected source, page {selected_page}:\n{source}\n"
-            "If the source is insufficient, say so explicitly."
-        )
+        instructions = _prompt_text("explain_selection" if mode == "explain" else "translate_selection")
+        prompt = f"{instructions}\n\nSelected source, page {selected_page}:\n{source}" 
         citations = [{"page": selected_page, "quote": source[:500]}]
     else:
         if not question.strip():
             raise ValueError("请输入关于当前论文的问题")
-        prompt = (
-            "You answer questions using only the supplied paper context. If the answer is not reliably supported, "
-            "say that the paper does not provide enough evidence. Answer in Chinese. Return strict JSON with keys "
-            'answer and citations, exactly like {"answer":"...","citations":[{"page":1,"quote":"exact text"}]}. '
-            "Use only field names page and quote; no Markdown fences, comments, or extra fields. Quotes must be copied from the paper.\n"
-            f"Question: {question.strip()}\n\nPaper context:\n{context}"
-        )
+        prompt = f"{_prompt_text('paper_qa')}\n\nQuestion: {question.strip()}\n\nPaper context:\n{context}" 
         citations = []
-    answer_raw = llm.chat_once(prompt, max_tokens=1800, timeout=120)
+    answer_raw = llm.chat_once(prompt, max_tokens=4000, timeout=300)
     answer, model_citations = _parse_answer(answer_raw, page_texts) if mode == "ask" else (answer_raw, [])
     if mode == "ask":
         citations = model_citations
@@ -263,15 +262,8 @@ def generate_takeaway(pdf_path: Path, paper_id: str, path: Path) -> dict[str, An
     version = document_version(pdf_path)
     context, pages = _pdf_context(pdf_path)
     page_texts = _page_texts(pdf_path)
-    prompt = (
-        "Using only this paper, produce 3-5 concise Chinese takeaways. Each takeaway must be exactly one atomic claim: "
-        "one subject, one predicate, and no joined claims, benchmark comparisons, causal explanations, or speculation. "
-        "The content must be directly and completely supported by its citation quote; if a quote supports only part, "
-        "rewrite content to that part. Do not add facts implied only by surrounding pages. "
-        'Return strict JSON like {"takeaways":[{"content":"一个原子结论","citation":{"page":1,"quote":"exact text directly supporting the whole content"}}]}. '
-        "Use citation (singular) or citations (plural), with only page and quote; no Markdown fences or comments.\n\n" + context
-    )
-    answer = llm.chat_once(prompt, max_tokens=1200, timeout=120)
+    prompt = f"{_prompt_text('takeaways')}\n\nPaper context:\n{context}"
+    answer = llm.chat_once(prompt, max_tokens=4000, timeout=300)
     try:
         raw_items = _parse_json_payload(answer).get("takeaways", [])
     except json.JSONDecodeError:

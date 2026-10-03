@@ -23,6 +23,59 @@ def paper_local_candidate(paper_dir: Path, relative_path: str) -> Path | None:
     return candidate
 
 
+#: Architecture-bearing headings/keywords used to pick the diagram excerpt.
+#: Deterministic and auditable: whole paragraphs only, so every evidence quote
+#: stays a verbatim substring of the text the model (and the validator) sees.
+_DIAGRAM_KEYWORDS = (
+    "architecture", "framework", "pipeline", "encoder", "decoder", "module",
+    "backbone", "fusion", "merger", "training", "objective", "loss", "stage",
+    "input", "output", "tokenizer", "vision", "attention", "dataset", "benchmark",
+)
+
+
+def _collapse(text: str) -> str:
+    """Normalize whitespace inside paragraphs, keeping paragraph breaks."""
+    return "\n\n".join(" ".join(block.split()) for block in text.split("\n\n") if block.strip())
+
+
+def diagram_excerpt(source_text: str, *, max_chars: int = 40000) -> str:
+    """Return the architecture-relevant part of ``source_text``.
+
+    A whole-paper excerpt drives the model into very long reasoning (measured:
+    it burned an entire 8000-token budget and returned nothing), so diagram
+    generation gets a bounded, keyword-selected excerpt instead. Selection is
+    deterministic and keeps paragraphs intact.
+    """
+    if len(source_text) <= max_chars:
+        return _collapse(source_text)
+    paragraphs = [block for block in source_text.split("\n\n")]
+    scored: list[tuple[int, int, str]] = []
+    for index, paragraph in enumerate(paragraphs):
+        # Collapse the LaTeX hard wrapping: a quote that spans a line break must
+        # stay a verbatim substring of what the model was shown, or every
+        # multi-line evidence quote fails validation for the wrong reason.
+        stripped = " ".join(paragraph.split())
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        score = sum(lowered.count(keyword) for keyword in _DIAGRAM_KEYWORDS)
+        # The opening paragraphs carry the abstract/contribution summary.
+        if index < 3:
+            score += 5
+        scored.append((score, index, stripped))
+    chosen: list[tuple[int, str]] = []
+    used = 0
+    for score, index, paragraph in sorted(scored, key=lambda item: (-item[0], item[1])):
+        if score <= 0 and chosen:
+            continue
+        if used + len(paragraph) + 2 > max_chars:
+            continue
+        chosen.append((index, paragraph))
+        used += len(paragraph) + 2
+    chosen.sort()
+    return "\n\n".join(paragraph for _index, paragraph in chosen) or source_text[:max_chars]
+
+
 def paper_source_text(paper_dir: Path) -> str:
     """Read the first valid parsed-text artifact that remains inside paper_dir."""
     text_candidates = (

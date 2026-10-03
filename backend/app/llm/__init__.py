@@ -41,9 +41,9 @@ def llm_status():
     return _legacy.llm_status()
 
 
-def chat_once(prompt: str, *, max_tokens: int = 1600, timeout: int = 180) -> str:
+def chat_once(prompt: str, *, max_tokens: int = 1600, timeout: int = 180, stream: bool = False) -> str:
     _sync_legacy_hooks()
-    return _legacy.chat_once(prompt, max_tokens=max_tokens, timeout=timeout)
+    return _legacy.chat_once(prompt, max_tokens=max_tokens, timeout=timeout, stream=stream)
 
 
 def translate_paragraphs(*args, **kwargs):
@@ -54,6 +54,7 @@ __all__ = [
     "PromptNotConfigured",
     "load_prompt",
     "prompt_version",
+    "LLMContentBudgetExceeded",
     "LLMUnavailable",
     "chat_once",
     "llm_available",

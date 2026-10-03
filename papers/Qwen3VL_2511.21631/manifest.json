@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "paper_id": "qwen3-vl-2511-21631",
-  "updated_at": "2026-09-15T01:38:34+00:00",
+  "updated_at": "2026-10-03T11:35:14+00:00",
   "generator_version": "paper.asset_audit.v1",
   "assets": [
     {
@@ -10,6 +10,14 @@
       "sha256": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380",
       "size": 4385558,
       "generated_by": "paper.import",
+      "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+    },
+    {
+      "path": "Qwen3-VL_AI全文详细解析.md",
+      "role": "result",
+      "sha256": "04e67d9cc1a2794d2b32a9a000c5cd33530841c7ec3575919c75e6a31a2c0a1e",
+      "size": 84300,
+      "generated_by": "paper.document",
       "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
     },
     {
@@ -34,6 +42,14 @@
       "sha256": "518fc9db0fc5bfd6ef58cde80794e7e3e51f37d3ebdd3321854de93b9b8cf093",
       "size": 3603,
       "generated_by": "paper.document",
+      "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+    },
+    {
+      "path": "ai_takeaways.json",
+      "role": "result",
+      "sha256": "730f577c4b353f10bca356cf160f4b6d779a34afecd0501bf1ba441454012bb5",
+      "size": 2700,
+      "generated_by": "ai.takeaways",
       "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
     },
     {
@@ -295,8 +311,8 @@
     {
       "path": "manifest.json",
       "role": "result",
-      "sha256": "4e3e6d50f2fd6b8b85684cbaccbfde521b71bf410cf6b68e29fe8882444a39fe",
-      "size": 13361,
+      "sha256": "51bd27dbde6438a5cb3b3f321b6ed4fbd7acb21a0c4f0eca7cdd671d7d96743d",
+      "size": 15329,
       "generated_by": "paper.analysis",
       "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
     },
@@ -315,6 +331,38 @@
       "size": 3634,
       "generated_by": "reader.build_manifest",
       "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+    },
+    {
+      "path": "results/diagrams/data_flow.html",
+      "role": "result",
+      "sha256": "47e63d62f2d598dbe0bdf9d4dbb7d656d0627ee1bf989c882e7dbeeae85a6939",
+      "size": 10840,
+      "generated_by": "diagram.v1",
+      "input_document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+    },
+    {
+      "path": "results/diagrams/data_flow.ir.json",
+      "role": "result",
+      "sha256": "989f9f072e1f0a8b58102dea6256ccf9db9db436eac597aa5182e53a1d95e6f7",
+      "size": 7030,
+      "generated_by": "diagram.v1",
+      "input_document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+    },
+    {
+      "path": "results/diagrams/workflow.html",
+      "role": "result",
+      "sha256": "695539d33aaa5c3119908d48910df96022a7ea6738a4e4da11fbcfb020a54bd6",
+      "size": 11224,
+      "generated_by": "diagram.v1",
+      "input_document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+    },
+    {
+      "path": "results/diagrams/workflow.ir.json",
+      "role": "result",
+      "sha256": "a7e26b416e94abf8faf3d10d5ecbcd4d1bf14e84e896cd1a70cf2dfdb90af4cb",
+      "size": 7292,
+      "generated_by": "diagram.v1",
+      "input_document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
     },
     {
       "path": "translation_zh.json",

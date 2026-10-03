@@ -33,8 +33,8 @@ Build a paper-understanding workflow that can:
 
 ## Deliverables
 
-- A per-paper full-analysis markdown document named like `<PaperShortTitle>_Codex全文详细解析.md`.
-- A backend job endpoint that starts and tracks Codex analysis runs.
+- A per-paper full-analysis markdown document named like `<PaperShortTitle>_AI全文详细解析.md`.
+- A backend job endpoint that starts and tracks full-analysis runs (API path `/analysis/codex` retained; the engine is the configured LLM API, not the Codex CLI).
 - A frontend action that launches the job from the paper page.
 - A paper page section that shows the latest analysis document and job state.
 - A set of validation checks that prove the document covers the full paper, not just abstract metadata.

@@ -7,12 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .deps import (
-    get_annotations,
-    get_codex_runner,
-    get_projects,
+    create_codex_runner,
+    create_takeaway_runner,
+    create_translation_runner,
     get_store,
-    get_takeaway_runner,
-    get_translation_runner,
 )
 from .routers.ai import router as ai_router
 from .routers.annotations import router as annotations_router
@@ -29,7 +27,18 @@ from .routers.sessions import router as sessions_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.diagram_runner = initialize_diagram_runner(get_settings())
+    """Create the job runners once and resume whatever a restart interrupted."""
+    settings = get_settings()
+    store = get_store(settings)
+    app.state.codex_runner = create_codex_runner(settings, store)
+    app.state.translation_runner = create_translation_runner(store)
+    app.state.takeaway_runner = create_takeaway_runner(store)
+    app.state.diagram_runner = initialize_diagram_runner(settings)
+    # A job left "running" by a restart would otherwise stay stuck forever and
+    # keep blocking its own idempotent re-submission.
+    app.state.codex_runner.recover()
+    app.state.translation_runner.recover()
+    app.state.takeaway_runner.recover()
     yield
 
 

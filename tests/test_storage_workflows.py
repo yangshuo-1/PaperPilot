@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.app.parsers import ParsedPaper
+from backend.app.routers.reader import get_quickview, router as reader_router
 from backend.app.storage import PaperStore
 from backend.app.stores.arxiv import ArxivMetadata
 
@@ -197,6 +198,25 @@ class StorageWorkflowTests(unittest.TestCase):
             self.assertIn(record["document"], {item["path"] for item in manifest["assets"]})
             self.assertIn("ai_answers.jsonl", {item["path"] for item in manifest["assets"]})
         finally:
+            temp.cleanup()
+
+    def test_quickview_and_artifact_list_include_latex_images(self):
+        temp, store = self.make_store()
+        try:
+            image = store.paper_dir("paper") / "latex" / "figures" / "overview.PNG"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"image fixture")
+
+            quickview = get_quickview("paper", store=store)
+            quickview_route = next(route for route in reader_router.routes if route.path == "/api/papers/{paper_id}/quickview")
+            self.assertEqual(quickview_route.status_code or 200, 200)
+            self.assertEqual(quickview.paper_id, "paper")
+            self.assertEqual([figure.name for figure in quickview.figures], ["figures/overview.PNG"])
+
+            artifacts = store.list_paper_artifacts("paper")
+            self.assertIn("latex/figures/overview.PNG", {item["path"] for item in artifacts})
+        finally:
+            store.database.close()
             temp.cleanup()
 
 

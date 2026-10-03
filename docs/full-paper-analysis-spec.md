@@ -2,6 +2,8 @@
 
 本文档定义 `paper_valt` 中“全文解析”的最低标准。它不同于导入时的 metadata 摘要，也不同于只抽取 PDF 前几页的 readpack 预览。
 
+实现（v1，2026-10）：`backend/app/jobs/full_analysis.py` 按页分片调用已配置的 OpenAI 兼容接口，prompt 来自 `backend/app/llm/prompts/full_analysis.v1.md`，产物由确定性代码拼装成 Markdown；job 层为 `backend/app/codex_jobs.py`（历史模块名，保留既有 API 路径 `/api/papers/{id}/analysis/codex`），generator 版本 `ai.full_analysis.v1`。
+
 ## 1. Full-paper means
 
 全文解析必须满足：
@@ -15,11 +17,13 @@
 
 ## 2. Required output document
 
-输出必须是 Markdown，文件名建议：
+输出必须是 Markdown，文件名：
 
 ```text
-<PaperShortTitle>_Codex全文详细解析.md
+<PaperShortTitle>_AI全文详细解析.md
 ```
+
+（历史文档 `<PaperShortTitle>_Codex全文详细解析.md` 为旧 Codex CLI 产物，只读保留，不再生成。）
 
 必须包含以下章节：
 
@@ -128,7 +132,18 @@
 - 最小可复现实验建议；
 - 如果仓库未核验，必须明确标注。
 
-## 11. Prohibited behavior
+## 11. Implementation constraints (engine)
+
+`jobs/full_analysis.py` 分页切片后逐片调用模型，产物由确定性代码拼装。以下约束来自一次真实跑批（Qwen3-VL，42 页，84 KB 文档 / 339 条结论 / 11 片 / 462 s），改动前请先读：
+
+1. **必须流式**（`stream=True`）：endpoint 边缘对非流式长请求约 100 s 即以 HTTP 524 掐断；流式 SSE 让生成时间只受 `read_timeout` 约束。
+2. **分片要小**：默认 4 页/片。曾经 6 页/片连续 524。
+3. **`max_tokens` 是"推理预算 + 输出预算"**：从 16000 起；预算被推理烧光时 provider 返回 `finish_reason=stop` 且**完全不含 `content` 字段**，`_chat_completion` 会据此抛 `LLMContentBudgetExceeded`。
+4. **重试按错误类型处理**：预算烧光 / JSON 截断 → 升预算重试（至 24000）；超时 / 网关错误 → 保持预算重试（升预算只会更慢）。
+5. **断点续跑**：checkpoint 的 `completed` 保存已完成分片的原始载荷，重启后按相同分片布局复用，不重复消耗 token；分片布局变化时旧载荷自动丢弃。
+6. **单片段失败即整体失败**：不产出半成品文档，失败信息包含出错页码区间与真实异常。
+
+## 12. Prohibited behavior
 
 禁止：
 

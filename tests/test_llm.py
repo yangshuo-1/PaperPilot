@@ -1,42 +1,108 @@
-import io
-import json
+"""Legacy LLM client tests.
+
+Transient-retry, connection-reuse and cold-start behaviour now live in
+``tests/test_llm_transport.py`` (which drives a real local HTTP server); this
+module keeps the checks that do not need HTTP.
+"""
+
 import unittest
-import urllib.error
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from backend.app import llm
 
 
-class ChatCompletionRetryTests(unittest.TestCase):
-    def response(self, payload):
-        response = MagicMock()
-        response.read.return_value = json.dumps(payload).encode("utf-8")
-        response.__enter__.return_value = response
-        return response
+class ChatCompletionWiringTests(unittest.TestCase):
+    def test_transport_receives_the_caller_timeouts(self):
+        captured = {}
 
-    def http_error(self, status):
-        return urllib.error.HTTPError(
-            "https://provider.test/chat/completions",
-            status,
-            "error",
-            {},
-            io.BytesIO(b'{"error":"temporary"}'),
-        )
+        class _Transport:
+            backoff = ()
 
-    def test_retries_transient_http_failure(self):
-        response = self.response({"choices": [{"message": {"content": "ok"}}]})
-        with patch("backend.app.llm.urllib.request.urlopen", side_effect=[self.http_error(503), response]) as request, patch("backend.app.llm.time.sleep") as sleep:
-            result = llm._chat_completion("prompt", base_url="https://provider.test", api_key="key", model="model", retry_delay=0)
+            def post_json(self, path, payload, *, api_key):
+                captured["path"] = path
+                captured["payload"] = payload
+                captured["api_key"] = api_key
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        def fake_transport_for(base_url, **kwargs):
+            captured["base_url"] = base_url
+            captured.update(kwargs)
+            return _Transport()
+
+        with patch.object(llm._legacy, "transport_for", fake_transport_for):
+            result = llm._chat_completion(
+                "prompt", base_url="https://provider.test/v1", api_key="key", model="model",
+                max_tokens=123, timeout=99, retry_attempts=2, retry_delay=1.0,
+            )
+
         self.assertEqual(result, "ok")
-        self.assertEqual(request.call_count, 2)
-        sleep.assert_called_once_with(0)
+        self.assertEqual(captured["path"], "/chat/completions")
+        self.assertEqual(captured["base_url"], "https://provider.test/v1")
+        self.assertEqual(captured["read_timeout"], 99.0)
+        self.assertEqual(captured["connect_timeout"], 30.0)
+        self.assertEqual(captured["attempts"], 3)
+        self.assertEqual(captured["payload"]["max_tokens"], 123)
+        self.assertEqual(captured["payload"]["model"], "model")
 
-    def test_does_not_retry_non_transient_http_failure(self):
-        with patch("backend.app.llm.urllib.request.urlopen", side_effect=self.http_error(401)) as request, patch("backend.app.llm.time.sleep") as sleep:
-            with self.assertRaisesRegex(llm.LLMUnavailable, "LLM HTTP 401"):
-                llm._chat_completion("prompt", base_url="https://provider.test", api_key="key", model="model", retry_delay=0)
-        self.assertEqual(request.call_count, 1)
-        sleep.assert_not_called()
+    def test_transport_failure_becomes_llm_unavailable(self):
+        from backend.app.llm.transport import TransportError
+
+        def fake_transport_for(*_args, **_kwargs):
+            class _Transport:
+                backoff = ()
+
+                def post_json(self, *_args, **_kwargs):
+                    raise TransportError("LLM HTTP 503: unavailable", status=503)
+
+            return _Transport()
+
+        with patch.object(llm._legacy, "transport_for", fake_transport_for):
+            with self.assertRaisesRegex(llm.LLMUnavailable, "LLM HTTP 503"):
+                llm._chat_completion("prompt", base_url="https://provider.test", api_key="key", model="model")
+
+    def test_chat_once_without_provider_degrades_explicitly(self):
+        with patch("backend.app.llm._effective_config", return_value=None):
+            with self.assertRaisesRegex(llm.LLMUnavailable, "No LLM provider configured"):
+                llm.chat_once("prompt")
+
+
+class ContentBudgetTests(unittest.TestCase):
+    """A reasoning model that burns its budget returns no content at all."""
+
+    def _run(self, response):
+        class _Transport:
+            backoff = ()
+
+            def post_json(self, path, payload, *, api_key):
+                return response
+
+        with patch.object(llm._legacy, "transport_for", lambda *a, **k: _Transport()):
+            return llm._chat_completion("prompt", base_url="https://provider.test", api_key="k", model="m", max_tokens=8000)
+
+    def test_missing_content_with_reasoning_usage_is_a_budget_error(self):
+        from backend.app.llm import LLMContentBudgetExceeded
+
+        response = {
+            "choices": [{"index": 0, "message": {"role": "assistant"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 8000, "completion_tokens_details": {"reasoning_tokens": 8000}},
+        }
+        with self.assertRaisesRegex(LLMContentBudgetExceeded, "8000 reasoning tokens consumed the 8000-token budget"):
+            self._run(response)
+
+    def test_missing_content_without_usage_stays_a_plain_failure(self):
+        response = {"choices": [{"index": 0, "message": {"role": "assistant"}, "finish_reason": "stop"}]}
+        with self.assertRaisesRegex(llm.LLMUnavailable, "LLM returned no content"):
+            self._run(response)
+
+    def test_empty_content_with_reasoning_usage_is_a_budget_error(self):
+        from backend.app.llm import LLMContentBudgetExceeded
+
+        response = {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens_details": {"reasoning_tokens": 7999}},
+        }
+        with self.assertRaises(LLMContentBudgetExceeded):
+            self._run(response)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@
 | `translation_zh.json` | 段落级中文翻译缓存（LLM 产物） | 需 LLM key 重生成 | ❌（成本产物） |
 | `ai_answers.jsonl` | 论文内 Ask AI、选区解释/翻译的保存历史 | 需重新调用 LLM | ❌（成本产物） |
 | `ai_takeaways.json` | 带论文页码/摘录锚点的 AI 重点 | 需重新调用 LLM | ❌（成本产物） |
-| `<short>_Codex全文详细解析.md` | 全文解析（Codex 产物） | 需 Codex CLI 重跑 | ✅ |
+| `<short>_AI全文详细解析.md` | 全文解析（LLM API 产物，逐条结论带页码） | 需 LLM API 重跑（`jobs/full_analysis.py`） | ✅ |
 | `<paper_id>_analysis.json` | 结构化分析 schema | 需 Codex CLI | ✅ |
 | `manifest.json` | 资产相对路径、角色、SHA-256、生成器版本、输入 document_version | 导入/解析审计 | ✅ |
 | `runs.jsonl` | run_id、paper_id、输入版本、阶段、产物、状态、错误 | 导入/解析/任务审计 | ✅ |

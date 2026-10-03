@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,9 +8,30 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from backend.app.deps import get_store
+from backend.app.config import get_settings
 from backend.app.main import app
 from backend.app.storage import PaperStore
 
+
+
+# The application lifespan now resumes job runners. Tests must therefore never
+# let the real app touch the repository data root, or they would relaunch real
+# background jobs (and real LLM calls). Point the app at an empty temp root.
+_APP_ROOT: tempfile.TemporaryDirectory | None = None
+
+
+def setUpModule():
+    global _APP_ROOT
+    _APP_ROOT = tempfile.TemporaryDirectory()
+    os.environ["PAPER_VALT_ROOT"] = _APP_ROOT.name
+    get_settings.cache_clear()
+
+
+def tearDownModule():
+    os.environ.pop("PAPER_VALT_ROOT", None)
+    get_settings.cache_clear()
+    if _APP_ROOT is not None:
+        _APP_ROOT.cleanup()
 
 class RuntimeSettings:
     def __init__(self, root: Path) -> None:
