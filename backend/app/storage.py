@@ -12,11 +12,12 @@ from .stores.artifacts import ArtifactsStore
 from .stores.documents import DocumentsStore
 from .stores.papers import PapersStore
 from .stores.reading_list import ReadingListStore
+from .stores.reading import ReadingStore
 from .stores.tags_search import TagsSearchStore
 
 
 class PaperStore(
     PapersStore, ReadingListStore, ArtifactsStore, TagsSearchStore,
-    AnalysisStore, DocumentsStore, AiAnswersStore, ArxivStore, StorageSupport,
+    AnalysisStore, DocumentsStore, ReadingStore, AiAnswersStore, ArxivStore, StorageSupport,
 ):
     pass

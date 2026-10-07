@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "paper_id": "qwen3-vl-2511-21631",
-  "updated_at": "2026-10-03T11:35:14+00:00",
+  "updated_at": "2026-10-07T14:17:47+00:00",
   "generator_version": "paper.asset_audit.v1",
   "assets": [
     {
@@ -51,6 +51,14 @@
       "size": 2700,
       "generated_by": "ai.takeaways",
       "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+    },
+    {
+      "path": "derived/structured_reading.json",
+      "role": "derived",
+      "sha256": "b0f47a041e292b74f18634ecb3593d1f9c0d75973d18edd8e1fb97b9d8bea0f5",
+      "size": 696344,
+      "generated_by": "reading.structured.v3",
+      "input_document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
     },
     {
       "path": "latex/00README.json",
@@ -311,8 +319,8 @@
     {
       "path": "manifest.json",
       "role": "result",
-      "sha256": "51bd27dbde6438a5cb3b3f321b6ed4fbd7acb21a0c4f0eca7cdd671d7d96743d",
-      "size": 15329,
+      "sha256": "a1e4365ae1dd50533e6a85a82d148441f47a35dbc16680527b17f3a4f689cb1c",
+      "size": 15558,
       "generated_by": "paper.analysis",
       "input_document_version": "ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
     },
@@ -335,10 +343,10 @@
     {
       "path": "results/diagrams/data_flow.html",
       "role": "result",
-      "sha256": "47e63d62f2d598dbe0bdf9d4dbb7d656d0627ee1bf989c882e7dbeeae85a6939",
-      "size": 10840,
-      "generated_by": "diagram.v1",
-      "input_document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+      "sha256": "17a528dfc22ff8418b28d45893a0e18f983d695e4aecd7cd3ccd25e58fbc72eb",
+      "size": 11056,
+      "generated_by": "diagram.render.v3",
+      "input_document_version": null
     },
     {
       "path": "results/diagrams/data_flow.ir.json",
@@ -351,10 +359,10 @@
     {
       "path": "results/diagrams/workflow.html",
       "role": "result",
-      "sha256": "695539d33aaa5c3119908d48910df96022a7ea6738a4e4da11fbcfb020a54bd6",
-      "size": 11224,
-      "generated_by": "diagram.v1",
-      "input_document_version": "sha256:ee075d08e67de1148d6437c6c1d481f7894183b8793905a2deb5f62664f49380"
+      "sha256": "394bc3a231632e0d5ccaa311b0c7e993a1752851f2e1b1c9cbf4f69afae1fa68",
+      "size": 11440,
+      "generated_by": "diagram.render.v3",
+      "input_document_version": null
     },
     {
       "path": "results/diagrams/workflow.ir.json",

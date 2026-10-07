@@ -452,11 +452,23 @@ class LatexSourceResponse(BaseModel):
 
 
 class TranslationResponse(BaseModel):
+    """Block-aligned translation payload (see design/reading-workspace.md §6).
+
+    ``chunks`` is retained as an alias of ``blocks`` so older clients keep
+    working; every entry carries its own version, status and asset boundary.
+    """
+
     paper_id: str
+    schema_version: str | None = None
+    document_version: str | None = None
+    prompt_version: str | None = None
+    generator_version: str | None = None
     chunks: list[dict[str, Any]] = Field(default_factory=list)
+    blocks: list[dict[str, Any]] = Field(default_factory=list)
     translated_count: int = 0
     total_count: int = 0
     available: bool = False
+    stale: bool = False
     source: str | None = None
     model: str | None = None
 

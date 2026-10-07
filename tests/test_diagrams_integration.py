@@ -133,6 +133,11 @@ class DiagramIntegrationTests(unittest.TestCase):
                     ).path,
                     str(paper_dir / "results/diagrams/workflow.html"),
                 )
+                fresh = get_diagram_artifact(
+                    "paper", path="results/diagrams/workflow.html", render=True, store=PaperStore(settings)
+                )
+                self.assertIn("paper-vault-diagram-node", fresh.body.decode("utf-8"))
+                self.assertIn("<svg class=\"edges\"", fresh.body.decode("utf-8"))
                 with self.assertRaises(Exception):
                     get_diagram_artifact(
                         "paper", path="../../references/paper_index.jsonl", store=PaperStore(settings)

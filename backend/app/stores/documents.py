@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import html
 import re
 from pathlib import Path
 from typing import Any
@@ -163,41 +165,98 @@ class DocumentsStore:
         return {"downloaded": True, "parsed": parsed}
     def translation(self, paper_id: str) -> dict[str, Any]:
         self.get_paper(paper_id)
+        paper = self.get_paper(paper_id)
         paper_dir = self._paper_dir(paper_id)
-        plain_txt = paper_dir / "latex_plain.txt"
-        paragraphs: list[str] = []
-        if plain_txt.exists():
-            paragraphs = [p.strip() for p in plain_txt.read_text(encoding="utf-8").split("\n\n") if p.strip()]
-        cache = _llm.load_translation_cache(paper_dir) if paragraphs else {"version": 1, "paragraphs": {}}
+        try:
+            structured = self.structured_reading(paper_id)
+        except (AttributeError, ValueError):
+            structured = None
+        if structured:
+            blocks = structured.get("blocks", [])
+            document_version = structured.get("document_version", "")
+        else:
+            plain_txt = paper_dir / "latex_plain.txt"
+            paragraphs = [p.strip() for p in plain_txt.read_text(encoding="utf-8").split("\n\n") if p.strip()] if plain_txt.exists() else []
+            blocks = [{"block_id": f"legacy-{idx + 1:06d}", "type": "paragraph", "source_text": value, "source_html": f"<p>{value}</p>"} for idx, value in enumerate(paragraphs)]
+            document_version = ""
+        cache = _llm.load_translation_cache(paper_dir) if blocks else {"version": 1, "paragraphs": {}}
         store = cache.get("paragraphs", {})
+        cached_version = cache.get("document_version")
+        stale = bool(document_version and cached_version not in (None, "", document_version))
         chunks = []
         translated_count = 0
-        for paragraph in paragraphs:
-            key = _llm.paragraph_hash(paragraph)
-            entry = store.get(key, {})
-            if entry.get("translated"):
+        translatable = {"paragraph", "caption", "heading"}
+        for block in blocks:
+            source = str(block.get("source_text") or "")
+            key = _llm.paragraph_hash(source) if source else ""
+            entry = store.get(key, {}) if key else {}
+            translated = str(entry.get("translated") or "")
+            preserved = block.get("type") in {"figure", "table", "equation"}
+            entry_error = entry.get("error")
+            status = "preserved" if preserved else ("failed" if entry_error and not translated else ("stale" if stale and translated else ("translated" if translated else "pending")))
+            if status == "translated":
                 translated_count += 1
-            chunks.append({"source": paragraph, "translated": entry.get("translated", ""), "hash": key})
+            chunks.append({
+                **block,
+                "source": source,
+                "translated": translated if not preserved else source,
+                "translated_text": translated if not preserved else source,
+                # Model output is plain text: escape it so a stray "<" or "&" in the
+                # translation cannot be swallowed as markup by the sanitiser on the page.
+                "translated_html": f"<p>{html.escape(translated)}</p>" if translated and not preserved else block.get("source_html", ""),
+                "hash": key,
+                "source_hash": f"sha256:{hashlib.sha256(source.encode('utf-8')).hexdigest()}" if source else None,
+                "status": status,
+                "error": entry_error,
+                "asset_url": (
+                    f"/api/papers/{paper_id}/reading/page/{str(block.get('asset_path')).rsplit('#page=', 1)[1]}"
+                    if "#page=" in str(block.get("asset_path") or "")
+                    else (f"/api/papers/{paper_id}/reading/asset/{block.get('asset_path')}" if block.get("asset_path") else None)
+                ),
+            })
         status = _llm.llm_status()
         return {
+            "schema_version": "translation-blocks.v1",
+            "document_version": document_version,
+            "prompt_version": "translation.v1",
+            "generator_version": "translation.blocks.v1",
             "chunks": chunks,
+            "blocks": chunks,
             "translated_count": translated_count,
-            "total_count": len(paragraphs),
-            "available": bool(paragraphs) and status["available"],
+            "total_count": len(chunks),
+            "available": bool(chunks) and status["available"],
             "source": status.get("source"),
             "model": status.get("model"),
+            "stale": stale,
         }
     def generate_translation(self, paper_id: str, *, max_units: int = 200, should_cancel: Any = None) -> dict[str, Any]:
         self.get_paper(paper_id)
         paper_dir = self._paper_dir(paper_id)
-        plain_txt = paper_dir / "latex_plain.txt"
-        if not plain_txt.exists():
-            # ensure source first
-            self.latex_source(paper_id)
-        if not plain_txt.exists():
-            raise ValueError("No latex plain text available to translate.")
-        paragraphs = _llm.split_paragraphs(plain_txt.read_text(encoding="utf-8"), max_units=max_units)
-        _llm.translate_paragraphs(paper_dir, paragraphs, only_untranslated=True, should_cancel=should_cancel)
+        structured = self.structured_reading(paper_id)
+        blocks = [block for block in structured.get("blocks", []) if block.get("type") in {"paragraph", "caption", "heading"} and str(block.get("source_text") or "").strip()]
+        if not blocks:
+            raise ValueError("No translatable structured text available.")
+        cache = _llm.load_translation_cache(paper_dir)
+        version = structured.get("document_version", "")
+        same_version = cache.get("document_version") in (None, "", version)
+        cache_entries = cache.get("paragraphs", {})
+        pending: list[str] = []
+        for block in blocks:
+            source = str(block["source_text"])
+            if not same_version or not cache_entries.get(_llm.paragraph_hash(source), {}).get("translated"):
+                pending.append(source)
+        # A job is an observable checkpointed batch.  Subsequent submissions
+        # select the next pending blocks from the merged cache.
+        paragraphs = pending[:max_units]
+        if not paragraphs:
+            return self.translation(paper_id)
+        _llm.translate_paragraphs(paper_dir, paragraphs, only_untranslated=same_version, should_cancel=should_cancel)
+        cache = _llm.load_translation_cache(paper_dir)
+        cache["document_version"] = version
+        cache["schema_version"] = "translation-cache.v1"
+        from ..asset_audit import atomic_json
+        target = paper_dir / "results" / "translation_zh.json" if (paper_dir / "results").is_dir() else paper_dir / "translation_zh.json"
+        atomic_json(target, cache)
         return self.translation(paper_id)
     def markdown_export(self, paper_id: str) -> str:
         paper = self.get_paper(paper_id)

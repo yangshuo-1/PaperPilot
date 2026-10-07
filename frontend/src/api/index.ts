@@ -6,6 +6,7 @@ import * as discovery from "./discovery";
 import * as folders from "./folders";
 import * as papers from "./papers";
 import * as projects from "./projects";
+import * as reading from "./reading";
 import * as reader from "./reader";
 import * as tags from "./tags";
 import * as translation from "./translation";
@@ -22,6 +23,7 @@ export * from "./projects";
 export * from "./reader";
 export * from "./tags";
 export * from "./translation";
+export * from "./reading";
 
-export const api = { ...ai, ...annotations, ...assets, ...diagrams, ...discovery, ...folders, ...papers, ...projects, ...reader, ...tags, ...translation };
+export const api = { ...ai, ...annotations, ...assets, ...diagrams, ...discovery, ...folders, ...papers, ...projects, ...reader, ...reading, ...tags, ...translation };
 export { getQuickview } from "./assets";

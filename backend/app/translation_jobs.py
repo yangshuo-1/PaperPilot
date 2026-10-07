@@ -43,7 +43,16 @@ class TranslationJobRunner(JobRunner[dict[str, Any]]):
         pdf = Path(paper.local_pdf_path) if paper.local_pdf_path and Path(paper.local_pdf_path).is_file() else None
         version = document_version(pdf) if pdf else ""
         self._migrate_legacy_records()
-        task_params = {"max_units": max_units}
+        structured = self.store.structured_reading(paper_id)
+        cache = _llm.load_translation_cache(self.store.paper_dir(paper_id))
+        entries = cache.get("paragraphs", {})
+        pending_ids = [
+            str(block.get("block_id"))
+            for block in structured.get("blocks", [])
+            if block.get("type") in {"paragraph", "caption", "heading"}
+            and not entries.get(_llm.paragraph_hash(str(block.get("source_text") or "")), {}).get("translated")
+        ]
+        task_params = {"max_units": max_units, "pending_ids": pending_ids[:max_units]}
         key = hashlib.sha256(f"{paper_id}|{version}|{max_units}".encode()).hexdigest()
         matching = [job for job in self.list_jobs() if job.paper_id == paper_id and job.job_key in {key, self._compute_job_key(paper_id, version, task_params)}]
         active = [job for job in matching if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}]
@@ -84,7 +93,8 @@ class TranslationJobRunner(JobRunner[dict[str, Any]]):
                     should_cancel=should_cancel,
                 )
                 paper = self.store.get_paper(job.paper_id)
-                output = self.store.paper_dir(job.paper_id) / "translation_zh.json"
+                paper_dir = self.store.paper_dir(job.paper_id)
+                output = paper_dir / "results" / "translation_zh.json" if (paper_dir / "results").is_dir() else paper_dir / "translation_zh.json"
                 if output.is_file():
                     pdf = Path(paper.local_pdf_path or "")
                     input_version = sha256_file(pdf) if pdf.is_file() else None

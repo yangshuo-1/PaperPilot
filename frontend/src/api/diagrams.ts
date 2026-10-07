@@ -16,5 +16,5 @@ export const listDiagrams = (paperId: string) => request<DiagramArtifactList>(`/
 export function diagramHtmlUrl(paperId: string, htmlPath: string): string {
   if (/^(https?:|blob:|data:)/i.test(htmlPath)) return htmlPath;
   if (htmlPath.startsWith("/")) return resolveApiUrl(htmlPath);
-  return resolveApiUrl(`/api/papers/${encodeURIComponent(paperId)}/diagrams/artifact?path=${encodeURIComponent(htmlPath)}`);
+  return resolveApiUrl(`/api/papers/${encodeURIComponent(paperId)}/diagrams/artifact?path=${encodeURIComponent(htmlPath)}&render=true`);
 }

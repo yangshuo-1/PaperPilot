@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from .. import llm as llm_mod
 from ..config import Settings, get_settings
 from ..jobs.diagram import DIAGRAM_MAX_TOKENS, DIAGRAM_TIMEOUT_SECONDS, DiagramJobRunner
 from ..storage import PaperStore
+from ..domain.diagram_render import render_html
 from .diagram_context import diagram_excerpt, paper_context, paper_source_text
 
 DiagramType = Literal["workflow", "data_flow"]
@@ -184,12 +186,13 @@ def list_diagrams(paper_id: str, store: PaperStore = Depends(get_diagram_store))
             )
     return DiagramArtifactList(paper_id=paper_id, artifacts=artifacts)
 
-@router.get("/api/papers/{paper_id}/diagrams/artifact")
+@router.get("/api/papers/{paper_id}/diagrams/artifact", response_model=None)
 def get_diagram_artifact(
     paper_id: str,
     path: str = Query(..., min_length=1),
+    render: bool = False,
     store: PaperStore = Depends(get_diagram_store),
-) -> FileResponse:
+) -> FileResponse | HTMLResponse:
     paper_dir, _ = paper_context(paper_id, store)
     candidate = (paper_dir / path.replace("\\", "/")).resolve()
     diagrams_dir = (paper_dir / "results" / "diagrams").resolve()
@@ -197,6 +200,17 @@ def get_diagram_artifact(
         candidate.relative_to(diagrams_dir)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Diagram artifact not found") from exc
-    if candidate.suffix.lower() != ".html" or not candidate.is_file():
+    if candidate.suffix.lower() != ".html":
+        raise HTTPException(status_code=404, detail="Diagram artifact not found")
+    if render:
+        ir_path = candidate.with_suffix(".ir.json")
+        try:
+            ir = json.loads(ir_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=404, detail="Diagram IR not found") from exc
+        if not isinstance(ir, dict):
+            raise HTTPException(status_code=422, detail="Diagram IR must be an object")
+        return HTMLResponse(render_html(ir), media_type="text/html")
+    if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Diagram artifact not found")
     return FileResponse(str(candidate), media_type="text/html")

@@ -23,6 +23,12 @@ V_GAP = 72
 PADDING = 28
 MAX_NODES_PER_ROW = 4
 
+# Bumped whenever the emitted document changes shape, so a stale artifact on
+# disk is identifiable without diffing it against a fresh render. The viewer
+# drives scaling through ``postMessage``; an artifact rendered before this
+# version does not listen for it (see design/reading-workspace.md §8).
+RENDERER_VERSION = "diagram.render.v3"
+
 _PALETTE = {
     "input": ("#eef4ff", "#bfd3f2"),
     "module": ("#ffffff", "#ccd5df"),
@@ -321,9 +327,12 @@ def render_html(ir: dict[str, Any]) -> str:
         "main{padding:20px}"
         "h1{font-size:19px;margin:0 0 4px}"
         "p.meta{margin:0 0 16px;color:#6b6255;font-size:12px}"
-        ".viewport{position:relative;width:100%%;overflow:auto;display:flex;justify-content:center}"
+        ".viewport{position:relative;width:100%%;overflow:auto}"
         ".canvas{position:relative;background:#fffdf8;border:1px solid #ded8cb;border-radius:12px;"
-        "width:%dpx;height:%dpx;transform-origin:top center;flex:none}"
+        "width:%dpx;height:%dpx;flex:none}"
+        # The sizer carries the scaled footprint so the canvas can be centred
+        # while it fits the frame and scroll normally once it overflows.
+        ".sizer{margin:0 auto}"
         "svg.edges{position:absolute;inset:0;width:%dpx;height:%dpx;pointer-events:none}"
         ".edge{pointer-events:auto;cursor:pointer}"
         ".edge path{fill:none;stroke:#8a7f6d;stroke-width:1.5}"
@@ -340,17 +349,12 @@ def render_html(ir: dict[str, Any]) -> str:
         % (width, height, width, height, NODE_WIDTH, NODE_HEIGHT)
     )
     script = (
-        "<script>(function fit(){"
-        "var vp=document.querySelector('.viewport'),cv=document.querySelector('.canvas');"
-        "function apply(){"
-        "var availW=vp.clientWidth-4;"
-        "var availH=(window.innerHeight||900)-cv.getBoundingClientRect().top-48;"
-        "if(availH<220){availH=220;}"
-        "var s=Math.min(1,availW/cv.offsetWidth,availH/cv.offsetHeight);"
-        "s=Math.max(s,0.5);"  # never shrink past legibility; overflow scrolls instead
-        "cv.style.transform='scale('+s+')';"
-        "vp.style.height=(cv.offsetHeight*s)+'px';}"
-        "apply();window.addEventListener('resize',apply);})();"
+        "<script>"
+        "(function(){var vp=document.querySelector('.viewport'),cv=document.querySelector('.canvas');"
+        "var sizer=document.createElement('div');sizer.className='sizer';cv.parentNode.insertBefore(sizer,cv);sizer.appendChild(cv);"
+        "function applyScale(s){s=Math.max(.45,Math.min(2,Number(s)||1));cv.style.transformOrigin='top left';cv.style.transform='scale('+s+')';sizer.style.width=(cv.offsetWidth*s)+'px';sizer.style.height=(cv.offsetHeight*s)+'px';vp.style.minHeight='220px';}"
+        "window.addEventListener('message',function(event){if(!event.data||event.data.type!=='paper-vault-diagram-viewport')return;applyScale(event.data.scale);});"
+        "applyScale(1);})();"
         "document.querySelectorAll('[data-evidence-page]').forEach(function(node){"
         "node.addEventListener('click',function(){"
         "parent.postMessage({type:'paper-vault-diagram-node',page:Number(node.dataset.evidencePage),"
@@ -358,11 +362,12 @@ def render_html(ir: dict[str, Any]) -> str:
         "quote:node.dataset.evidenceQuote}},'*')})})</script>"
     )
     return (
-        '<!doctype html><meta charset="utf-8"><title>%s</title><style>%s</style>'
+        '<!doctype html><meta charset="utf-8"><meta name="generator" content="%s"><title>%s</title><style>%s</style>'
         '<main><h1>%s</h1><p class="meta">%d 个节点 · %d 条边 · 点击任意节点或连线查看证据</p>'
         '<div class="viewport"><div class="canvas"><svg class="edges" aria-hidden="true">%s%s</svg>%s</div></div>'
-        "<footer>paper_valt · IR v%s · 所有节点与边均带来源证据</footer></main>%s"
+        "<footer>paper_valt · IR v%s · %s · 所有节点与边均带来源证据</footer></main>%s"
         % (
+            RENDERER_VERSION,
             html.escape(title),
             style,
             html.escape(title),
@@ -372,6 +377,7 @@ def render_html(ir: dict[str, Any]) -> str:
             label_layer,
             "".join(node_markup),
             html.escape(str(ir.get("version", 1))),
+            RENDERER_VERSION,
             script,
         )
     )

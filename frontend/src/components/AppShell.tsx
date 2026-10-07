@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import "./paper-workspace.css";
 
 export function TopNav() {
   return (
@@ -17,5 +18,5 @@ export function TopNav() {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
-  return <div><TopNav /><div className="page">{children}</div></div>;
+  return <div className="appShell"><TopNav /><div className="page appPage">{children}</div></div>;
 }

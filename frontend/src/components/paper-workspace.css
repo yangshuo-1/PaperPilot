@@ -1,0 +1,30 @@
+.appPage{padding-top:12px}
+.paperWorkspace{min-width:0;display:flex;flex-direction:column;min-height:calc(100vh - var(--topnav-h) - 24px)}
+.workspaceTopline{display:flex;align-items:center;justify-content:space-between;min-height:20px}
+.workspaceHint{font-size:11px;color:var(--ink-muted)}
+.paperWorkspace .backLink{display:inline-block;margin-bottom:4px;font-size:12px}
+.paperWorkspace .paperHeader{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 7px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+.paperWorkspace .paperHeader h1{font-size:22px;line-height:1.2;margin-bottom:4px;max-width:70ch}
+.paperWorkspace .paperHeader .chips{margin-top:3px}
+.paperWorkspace .headerActions{gap:5px}
+.workspaceControls{display:flex;align-items:center;gap:6px;min-height:34px;margin:0 0 6px;padding:3px 0}
+.workspaceDisclosure{border:1px solid var(--border);background:var(--surface);font-size:12px;padding:5px 9px}
+.workspaceControlHint{margin-left:auto;color:var(--ink-muted);font-size:11px}
+.workspacePanel{margin:0 0 7px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface)}
+.workspacePanel .metaCards{margin:0}
+.workspacePanel .paperSearchForm{margin:0}
+.workspaceAi .aiQuestion{margin:0}
+.workspaceUtility{margin:0 0 7px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface)}
+.workspaceUtility>summary{cursor:pointer;padding:6px 9px;font-size:12px;color:var(--ink-soft)}
+.workspaceUtility[open]>summary{border-bottom:1px solid var(--border)}
+.workspaceUtility .annotationActionBar{margin:0;border:0;border-radius:0}
+.workspaceAnalysis{flex:0 0 auto}
+.paperWorkspace .tabs{margin:0 0 6px;position:sticky;top:var(--topnav-h);z-index:5;background:rgba(245,243,236,.92);backdrop-filter:blur(7px)}
+.paperModeViewport{height:max(620px,calc(100vh - 265px));min-height:75vh;min-width:0;flex:0 0 auto;overflow:auto;overscroll-behavior:contain;border-radius:var(--radius)}
+.paperModeViewport.mode-pdf{overflow:hidden}
+.paperModeViewport.mode-pdf>.pdfReader{height:100%;min-height:0}
+.paperModeViewport.mode-pdf .readerBody{height:calc(100% - 45px);min-height:0}
+.paperModeViewport>.reader,.paperModeViewport>.notesPane{min-height:100%;border-radius:var(--radius)}
+.paperModeViewport.mode-diagrams{overflow:auto}
+@media(min-width:1100px){.paperWorkspace{max-width:1540px;margin:0 auto}}
+@media(max-width:700px){.appPage{padding:10px 10px 32px}.paperWorkspace .paperHeader{align-items:flex-start;flex-direction:column;gap:8px}.paperWorkspace .paperHeader h1{font-size:20px}.paperWorkspace .headerActions{width:100%;flex-wrap:wrap}.paperWorkspace .tabs{top:0;overflow-x:auto;white-space:nowrap}.paperWorkspace .tabs button{padding:8px 10px}.paperWorkspace .paperSearchForm{flex-wrap:wrap}.paperWorkspace .paperSearchForm input{flex:1 1 180px}}

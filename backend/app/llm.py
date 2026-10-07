@@ -292,21 +292,36 @@ def paragraph_hash(text: str) -> str:
 
 
 def _translation_cache_path(paper_dir: Path) -> Path:
-    return paper_dir / "translation_zh.json"
+    # New writes always use results.  Legacy root caches remain readable.
+    return paper_dir / "results" / "translation_zh.json" if (paper_dir / "results").is_dir() else paper_dir / "translation_zh.json"
 
 
 def load_translation_cache(paper_dir: Path) -> dict[str, Any]:
-    path = _translation_cache_path(paper_dir)
-    if not path.exists():
-        return {"version": 1, "paragraphs": {}}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"version": 1, "paragraphs": {}}
+    paths = [_translation_cache_path(paper_dir)]
+    legacy = paper_dir / "translation_zh.json"
+    if legacy not in paths:
+        paths.append(legacy)
+    merged: dict[str, Any] = {"version": 1, "paragraphs": {}}
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if isinstance(payload.get("paragraphs"), dict):
+            merged["paragraphs"].update(payload["paragraphs"])
+        for key in ("version", "schema_version", "document_version"):
+            if key in payload:
+                merged[key] = payload[key]
+    return merged
 
 
 def _save_translation_cache(paper_dir: Path, cache: dict[str, Any]) -> None:
     path = _translation_cache_path(paper_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
     # thread.get_ident() can exceed 32 bits; hash it so to_bytes never overflows.
     suffix = hashlib.sha256(str(threading.get_ident()).encode("utf-8")).hexdigest()[:8]
     tmp = path.with_name(f".{path.name}.{suffix}.tmp")

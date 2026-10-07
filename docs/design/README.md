@@ -8,6 +8,7 @@
 - `code-organization.md` — 代码组织目标结构与模块依赖约束
 - `data-organization.md` — 数据组织 v2（四层目录、SQLite、git 策略修正）
 - `paper-diagrams.md` — 论文图解能力：Archify 思想的领域化实现（含不 fork 的决策记录）
+- `reading-workspace.md` — 阅读工作台诊断与设计：HTML 笔记、连续 PDF、双栏翻译与图解可读性；实施任务见 roadmap
 - `roadmap.md` — 开发任务拆解（多 Agent 协作版：角色分工、契约先行、四轨并行、集成点与 go/no-go）
 
 ## 命名约定

@@ -129,23 +129,35 @@ class RenderTests(unittest.TestCase):
         self.assertGreaterEqual(width, max(n.x + NODE_WIDTH for n in nodes))
         self.assertGreaterEqual(height, max(n.y + NODE_HEIGHT for n in nodes))
 
-    def test_canvas_card_is_centred_in_the_viewport(self):
-        self.assertIn("justify-content:center", self.html)
-        self.assertIn("transform-origin:top center", self.html)
+    def test_canvas_keeps_one_to_one_size_in_scrollable_viewport(self):
+        """The embedded document must not shrink itself to fit its own frame.
 
-    def test_canvas_fits_both_dimensions_with_a_legibility_floor(self):
-        """Width-only fitting clipped tall graphs; the embedded panel cut the
-        last node mid-card."""
-        self.assertIn("availH/cv.offsetHeight", self.html)
-        self.assertIn("Math.max(s,0.5)", self.html)
+        Zoom belongs to the outer viewer (``postMessage``); the embedded page
+        renders at 1:1 and stays horizontally centred while it fits.
+        """
+        self.assertNotIn("transform-origin:top center", self.html)
+        self.assertIn("applyScale(1)", self.html)
+        self.assertIn(".sizer{margin:0 auto}", self.html)
+
+    def test_scaled_canvas_reports_its_footprint_through_a_sizer(self):
+        """Centring and scrolling only agree if the scaled footprint is laid out.
+
+        Translating the canvas alone leaves its layout box at the unscaled size,
+        so a zoomed graph drifts off-centre and the frame cannot scroll to it.
+        """
+        self.assertIn("sizer.style.width=(cv.offsetWidth*s)+'px'", self.html)
+        self.assertIn("sizer.style.height=(cv.offsetHeight*s)+'px'", self.html)
+
+    def test_canvas_does_not_apply_hidden_height_based_micro_scaling(self):
+        """The outer viewer owns zoom; embedded HTML stays readable at 1:1."""
+        self.assertNotIn("availH/cv.offsetHeight", self.html)
+        self.assertNotIn("Math.max(s,0.5)", self.html)
         self.assertIn("overflow:auto", self.html)
 
-    def test_canvas_is_wrapped_in_a_fit_to_width_viewport(self):
-        """The canvas is wider than the reader iframe; without fitting, the
-        embedded view shows only a heading and the graph sits below the fold."""
+    def test_canvas_is_wrapped_in_a_scrollable_viewport(self):
         self.assertIn('<div class="viewport"><div class="canvas">', self.html)
-        self.assertIn("vp.clientWidth", self.html)
-        self.assertIn("cv.style.transform", self.html)
+        self.assertNotIn("vp.clientWidth", self.html)
+        self.assertIn("paper-vault-diagram-viewport", self.html)
 
     def test_every_labelled_edge_gets_exactly_one_label(self):
         """A label must never be dropped: a missing label reads as a broken edge."""

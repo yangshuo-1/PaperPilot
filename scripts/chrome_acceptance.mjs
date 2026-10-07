@@ -46,7 +46,8 @@ async function waitFor(expression, timeout = 15000) {
 }
 
 async function navigate(url) {
-  await evaluate(`location.href = ${JSON.stringify(url)}`);
+  const separator = url.includes("?") ? "&" : "?";
+  await send("Page.navigate", { url: `${url}${separator}acceptance=${Date.now()}` });
   await new Promise((resolve) => setTimeout(resolve, 900));
 }
 
@@ -97,11 +98,19 @@ await send("Page.enable");
 const originalPaper = await (await fetch(`${apiBaseUrl}/api/papers/${paperId}`)).json();
 await navigate(`${baseUrl}/papers/${paperId}`);
 await waitFor(`document.querySelectorAll(".pdfTextLayer span").length > 0`);
+if (!(await evaluate(`Boolean(document.querySelector("#paper-search"))`))) {
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll("button")).find((item) => item.textContent.trim().startsWith("搜索"));
+    button?.click();
+    return Boolean(button);
+  })()`);
+  await waitFor(`Boolean(document.querySelector("#paper-search"))`);
+}
 const paperState = await evaluate(`({
   pageCount: document.querySelector(".pageCount")?.textContent?.trim(),
   hasSearch: Boolean(document.querySelector("#paper-search")),
   hasAi: document.body.innerText.includes("论文内 AI"),
-  hasNotes: document.body.innerText.includes("Highlights & Notes")
+  hasNotes: document.body.textContent.includes("Highlights & Notes")
 })`);
 
 await setInput("#paper-search", "DeepStack");
@@ -114,44 +123,64 @@ const searchState = await evaluate(`({
 await evaluate("document.querySelectorAll('.paperSearchResult')[1].click()");
 await waitFor(`document.querySelector(".pageInput")?.value === "2"`);
 const jumpState = await evaluate(`({ page: document.querySelector(".pageInput")?.value, progress: document.querySelector(".readerProgress")?.textContent?.trim() })`);
-await evaluate(`(() => {
-  const spans = Array.from(document.querySelectorAll(".pdfTextLayer span")).filter((item) => item.textContent?.trim());
-  const page = document.querySelector(".pdfPage");
-  if (!spans.length || !page) return false;
-  const range = document.createRange();
-  range.selectNodeContents(spans[0]);
-  if (spans[1]) range.setEnd(spans[1], spans[1].childNodes.length);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-  page.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  return Boolean(selection?.toString().trim());
-})()`);
-await waitFor(`Boolean(document.querySelector(".annotationActionBar"))`);
-await clickText("创建高亮");
-await waitFor(`document.body.innerText.includes("高亮 · p.")`);
-await setInput(".noteDraft", "Chrome CDP 浏览器验收笔记");
-await clickText("保存笔记");
-await waitFor(`document.body.innerText.includes("Chrome CDP 浏览器验收笔记")`);
-const annotationState = await evaluate(`({
-  highlights: Array.from(document.querySelectorAll(".annotationItem")).filter((item) => item.innerText.includes("高亮 · p.")).length,
-  notes: Array.from(document.querySelectorAll(".annotationItem")).filter((item) => item.innerText.includes("Chrome CDP 浏览器验收笔记")).length
-})`);
+
+// Selection -> highlight -> note is the flow the continuous reader could most
+// easily break: page state moved from one global canvas into per-page
+// components with their own text layers. Snapshot the annotation ids first and
+// remove only the ids this run creates, so a pre-existing user highlight is
+// never deleted by a text-match cleanup.
+const annotationsUrl = `${apiBaseUrl}/api/papers/${paperId}/annotations`;
+const readAnnotationIds = async () => {
+  const payload = await (await fetch(annotationsUrl)).json();
+  return new Set([
+    ...(payload.highlights || []).map((item) => `highlight/${item.id}`),
+    ...(payload.notes || []).map((item) => `note/${item.id}`)
+  ]);
+};
+const idsBefore = await readAnnotationIds();
+const noteMarker = `CDP 验收笔记 ${Date.now()}`;
+let annotationState = { created: false, reason: "not attempted" };
+try {
+  annotationState = await evaluate(`(() => {
+    const pages = Array.from(document.querySelectorAll(".pdfPage"));
+    const page = pages.find((node) => node.querySelectorAll(".pdfTextLayer span").length > 2);
+    if (!page) return { created: false, reason: "no page with a loaded text layer" };
+    const spans = Array.from(page.querySelectorAll(".pdfTextLayer span")).filter((item) => item.textContent?.trim());
+    if (spans.length < 2) return { created: false, reason: "fewer than two text spans" };
+    const range = document.createRange();
+    range.setStart(spans[0], 0);
+    range.setEnd(spans[1], spans[1].childNodes.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    page.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    return { created: Boolean(selection?.toString().trim()), quote: selection?.toString().trim().slice(0, 48), page: page.dataset.pageNumber };
+  })()`);
+  if (!annotationState.created) throw new Error(`selection failed: ${annotationState.reason || "empty selection"}`);
+  await waitFor(`Boolean(document.querySelector(".annotationActionBar"))`);
+  await clickText("创建高亮");
+  // The annotation list lives inside a collapsed <details>, so innerText cannot
+  // see it; assert on textContent instead of waiting for text that is never rendered.
+  await waitFor(`document.body.textContent.includes("高亮 · p.")`);
+  await setInput(".noteDraft", noteMarker);
+  await clickText("保存笔记");
+  await waitFor(`document.body.textContent.includes(${JSON.stringify(noteMarker)})`);
+  const idsAfter = await readAnnotationIds();
+  const added = [...idsAfter].filter((id) => !idsBefore.has(id));
+  annotationState = { ...annotationState, added: added.length, persisted: added.length === 2, visible: await evaluate(`document.querySelectorAll(".annotationItem").length`) };
+} finally {
+  for (const entry of await readAnnotationIds()) {
+    if (idsBefore.has(entry)) continue;
+    const [kind, id] = entry.split("/");
+    await fetch(`${annotationsUrl}/${kind}/${id}`, { method: "DELETE" });
+  }
+  await navigate(`${baseUrl}/papers/${paperId}`);
+  await waitFor(`document.querySelectorAll(".pdfTextLayer span").length > 0`);
+  annotationState = { ...annotationState, leftover: (await readAnnotationIds()).size - idsBefore.size };
+}
+
 const paperScreenshot = await send("Page.captureScreenshot", { format: "png" });
 fs.writeFileSync("/tmp/paper-valt-cdp-paper.png", Buffer.from(paperScreenshot.result.data, "base64"));
-
-await evaluate(`(() => {
-  const item = Array.from(document.querySelectorAll(".annotationItem")).find((node) => node.innerText.includes("Chrome CDP 浏览器验收笔记"));
-  item?.querySelector("button.annotationDelete")?.click();
-  return Boolean(item);
-})()`);
-await waitFor(`!document.body.innerText.includes("Chrome CDP 浏览器验收笔记")`);
-await evaluate(`(() => {
-  const item = Array.from(document.querySelectorAll(".annotationItem")).find((node) => node.innerText.includes("高亮 · p."));
-  item?.querySelector("button.annotationDelete")?.click();
-  return Boolean(item);
-})()`);
-await waitFor(`!document.body.innerText.includes("高亮 · p.")`);
 
 await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
 await navigate(`${baseUrl}/papers/${paperId}`);
@@ -208,3 +237,18 @@ const cleanupState = await evaluate(`({ url: location.href, hasProject: document
 await fetch(`${apiBaseUrl}/api/papers/${paperId}/metadata`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ read_status: originalPaper.read_status, starred: originalPaper.starred, folder_id: originalPaper.folder_id, reading_progress: originalPaper.reading_progress, current_page: originalPaper.current_page, total_pages: originalPaper.total_pages, document_version: originalPaper.document_version, last_read_at: originalPaper.last_read_at }) });
 console.log(JSON.stringify({ paperState, searchState, jumpState, annotationState, mobileState, projectState, cleanupState }, null, 2));
 socket.close();
+
+// Report a non-zero exit when a checked behaviour did not hold: a script that
+// only prints state lets a broken flow pass as "green".
+const failures = [];
+if (paperState.hasNotes !== true) failures.push("annotation sidebar is missing from the paper page");
+if (annotationState.created !== true) failures.push(`annotation selection failed: ${annotationState.reason || "unknown"}`);
+if (annotationState.persisted !== true) failures.push(`expected highlight + note to persist, got ${annotationState.added} new annotation(s)`);
+if (annotationState.leftover !== 0) failures.push(`acceptance left ${annotationState.leftover} annotation(s) behind`);
+if (mobileState.noHorizontalOverflow !== true) failures.push(`mobile horizontal overflow: ${mobileState.scrollWidth} > ${mobileState.width}`);
+if (cleanupState.hasProject) failures.push("Project was not deleted");
+if (failures.length) {
+  console.error(JSON.stringify({ ok: false, failures }, null, 2));
+  process.exit(1);
+}
+console.error(JSON.stringify({ ok: true }));

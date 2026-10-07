@@ -1,14 +1,31 @@
 import { useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { diagramHtmlUrl, type DiagramArtifact, type DiagramEvidence } from "../api";
 import { useDiagramWorkspace } from "../hooks/useDiagramWorkspace";
 import { mockHtmlFor } from "../mocks/diagram";
 import { cls } from "./utils";
 import "./diagram.css";
 
-type FrameProps = { paperId: string; artifact: DiagramArtifact; mockMode: boolean; onEvidence: (evidence: DiagramEvidence) => void };
+type FrameProps = { paperId: string; artifact: DiagramArtifact; mockMode: boolean; zoom: number; fitWidth: boolean; overview: boolean; onEvidence: (evidence: DiagramEvidence) => void };
 
-function DiagramFrame({ paperId, artifact, mockMode, onEvidence }: FrameProps) {
+function DiagramFrame({ paperId, artifact, mockMode, zoom, fitWidth, overview, onEvidence }: FrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  function applyScale() {
+    const frame = frameRef.current;
+    const viewport = viewportRef.current;
+    const canvas = frame?.contentDocument?.querySelector<HTMLElement>(".canvas");
+    if (!frame || !viewport || !canvas) return;
+    let scale = zoom;
+    if (fitWidth || overview) {
+      const widthScale = (viewport.clientWidth - 12) / canvas.offsetWidth;
+      scale = Math.min(1, widthScale);
+      if (overview) scale = Math.min(scale, (viewport.clientHeight - 12) / canvas.offsetHeight);
+      scale = Math.max(0.45, scale);
+    }
+    frame.contentWindow?.postMessage({ type: "paper-vault-diagram-viewport", scale }, "*");
+  }
   useEffect(() => {
     function receive(event: MessageEvent<unknown>) {
       if (frameRef.current?.contentWindow && event.source !== frameRef.current.contentWindow) return;
@@ -21,6 +38,7 @@ function DiagramFrame({ paperId, artifact, mockMode, onEvidence }: FrameProps) {
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
   }, [onEvidence]);
+  useEffect(() => { applyScale(); window.addEventListener("resize", applyScale); return () => window.removeEventListener("resize", applyScale); }, [zoom, fitWidth, overview]);
 
   function bindInlineNodes() {
     const documentRef = frameRef.current?.contentDocument;
@@ -30,12 +48,19 @@ function DiagramFrame({ paperId, artifact, mockMode, onEvidence }: FrameProps) {
     });
   }
 
-  return <iframe ref={frameRef} className="diagramFrame" title={`${artifact.diagram_type} diagram`} sandbox="allow-scripts allow-same-origin" src={mockMode ? undefined : diagramHtmlUrl(paperId, artifact.html_path)} srcDoc={mockMode ? mockHtmlFor(artifact.diagram_type) : undefined} onLoad={bindInlineNodes} />;
+  function beginDrag(event: ReactPointerEvent<HTMLDivElement>) { dragRef.current = { x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop }; event.currentTarget.setPointerCapture(event.pointerId); }
+  function drag(event: ReactPointerEvent<HTMLDivElement>) { const start = dragRef.current; if (!start) return; event.currentTarget.scrollLeft = start.left - (event.clientX - start.x); event.currentTarget.scrollTop = start.top - (event.clientY - start.y); }
+  return <div ref={viewportRef} className="diagramViewport" onPointerDown={beginDrag} onPointerMove={drag} onPointerUp={() => { dragRef.current = null; }} onPointerCancel={() => { dragRef.current = null; }}><iframe ref={frameRef} className="diagramFrame" title={`${artifact.diagram_type} diagram`} sandbox="allow-scripts allow-same-origin" src={mockMode ? undefined : diagramHtmlUrl(paperId, artifact.html_path)} srcDoc={mockMode ? mockHtmlFor(artifact.diagram_type) : undefined} onLoad={() => { bindInlineNodes(); window.setTimeout(applyScale, 0); }} /></div>;
 }
 
 export function DiagramTab({ paperId, onJump }: { paperId: string; onJump: (page: number) => void }) {
   const workspace = useDiagramWorkspace(paperId);
   const [evidence, setEvidence] = useState<DiagramEvidence | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [fitWidth, setFitWidth] = useState(false);
+  const [overview, setOverview] = useState(false);
+  const [compactList, setCompactList] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const { job, artifacts, activeArtifact, setActiveArtifact, loading, generating, error, unsupported, mockMode, activateMock, generate, cancel } = workspace;
   const activeStatus = job?.status === "queued" ? "排队中" : job?.status === "running" ? "生成中" : job?.status === "succeeded" ? "已完成" : job?.status === "cancelled" ? "已取消" : job?.status === "failed" ? "失败" : "未生成";
 
@@ -46,6 +71,6 @@ export function DiagramTab({ paperId, onJump }: { paperId: string; onJump: (page
     {mockMode && <div className="diagramMockNotice">当前展示的是前端 mock IR/HTML，节点证据页跳转与真实 iframe 事件使用同一条链路。</div>}
     {!loading && !unsupported && !error && !artifacts.length && !generating && <div className="diagramEmpty"><p>尚未生成图解。</p><small>点击“生成图解”后，任务会经历排队、运行和完成状态。</small></div>}
     {job && <div className="diagramJob"><span>任务 {activeStatus}</span><span className="muted">{job.job_id}</span>{job.error && <span className="errorText">{job.error}</span>}</div>}
-    {artifacts.length > 0 && <div className="diagramWorkspace"><aside className="diagramList" aria-label="图解产物">{artifacts.map((artifact) => <button type="button" key={artifact.html_path} className={cls("diagramListItem", activeArtifact?.html_path === artifact.html_path && "active")} onClick={() => { setActiveArtifact(artifact); setEvidence(null); }}><strong>{artifact.diagram_type === "workflow" ? "方法架构" : "数据管线"}</strong><small>{artifact.ir_path}</small></button>)}</aside><div className="diagramContent">{activeArtifact && <DiagramFrame paperId={paperId} artifact={activeArtifact} mockMode={mockMode} onEvidence={setEvidence} />}{evidence && <div className="diagramEvidence"><div><strong>Evidence · §{evidence.section} · {evidence.page > 0 ? `p.${evidence.page}` : "无页码标记"}</strong><p>{evidence.quote || "未提供逐字摘录"}</p></div>{evidence.page > 0 ? <button type="button" className="primaryBtn" onClick={() => onJump(evidence.page)}>跳转 PDF 第 {evidence.page} 页</button> : <span className="muted">该证据来自无页码标记的正文，请用摘录在 PDF 中检索原文。</span>}</div>}</div></div>}
+    {artifacts.length > 0 && <div className={cls("diagramWorkspace", fullscreen && "diagramFullscreen")}><aside className={cls("diagramList", compactList && "compact")} aria-label="图解产物">{artifacts.map((artifact) => <button type="button" key={artifact.html_path} className={cls("diagramListItem", activeArtifact?.html_path === artifact.html_path && "active")} onClick={() => { setActiveArtifact(artifact); setEvidence(null); }}><strong>{artifact.diagram_type === "workflow" ? "方法架构" : "数据管线"}</strong>{!compactList && <small>{artifact.ir_path}</small>}</button>)}</aside><div className="diagramContent"><div className="diagramViewerToolbar"><button type="button" className="quietBtn" onClick={() => { setFitWidth(false); setOverview(false); setZoom((value) => Math.max(.65, Math.round((value - .1) * 10) / 10)); }}>−</button><span aria-label="当前缩放">{fitWidth ? "适应宽度" : overview ? "概览" : `${Math.round(zoom * 100)}%`}</span><button type="button" className="quietBtn" onClick={() => { setFitWidth(false); setOverview(false); setZoom((value) => Math.min(2, Math.round((value + .1) * 10) / 10)); }}>＋</button><button type="button" className="quietBtn" onClick={() => { setFitWidth(false); setOverview(false); setZoom(1); }}>1:1</button><button type="button" className="quietBtn" onClick={() => { setFitWidth(true); setOverview(false); }}>适应宽度</button><button type="button" className="quietBtn" onClick={() => { setFitWidth(false); setOverview(true); }}>概览</button><button type="button" className="quietBtn" onClick={() => setCompactList((value) => !value)}>{compactList ? "展开产物" : "收起产物"}</button><button type="button" className="quietBtn" onClick={() => setFullscreen((value) => !value)}>{fullscreen ? "退出全屏" : "专注查看"}</button></div>{activeArtifact && <DiagramFrame paperId={paperId} artifact={activeArtifact} mockMode={mockMode} zoom={zoom} fitWidth={fitWidth} overview={overview} onEvidence={setEvidence} />}{evidence && <div className="diagramEvidence"><div><strong>Evidence · §{evidence.section} · {evidence.page > 0 ? `p.${evidence.page}` : "无页码标记"}</strong><p>{evidence.quote || "未提供逐字摘录"}</p></div>{evidence.page > 0 ? <button type="button" className="primaryBtn" onClick={() => onJump(evidence.page)}>跳转 PDF 第 {evidence.page} 页</button> : <span className="muted">该证据来自无页码标记的正文，请用摘录在 PDF 中检索原文。</span>}</div>}</div></div>}
   </section>;
 }

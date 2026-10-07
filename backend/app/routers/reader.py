@@ -13,6 +13,7 @@ from ..deps import get_store
 from ..models import CitationResponse, LatexSourceResponse, PaperSearchResponse, QuickviewResponse, ReaderManifest
 from ..storage import PaperStore
 
+
 router = APIRouter()
 
 

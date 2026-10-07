@@ -39,7 +39,8 @@
 | `latex/` | arXiv LaTeX 源码（tar.gz 解包） | `download_latex_sources` 可重拉 | ❌ |
 | `latex_source.md` | LaTeX → 可读原文 | `parse_latex` 确定性生成 | ❌（可复现，避免 diff 噪音） |
 | `latex_plain.txt` | 解析正文纯文本 | 同上 | ❌ |
-| `translation_zh.json` | 段落级中文翻译缓存（LLM 产物） | 需 LLM key 重生成 | ❌（成本产物） |
+| `derived/structured_reading.json` | 结构化阅读块（`reading-blocks.v1`）：block_id、类型、source_text/source_html、章节与来源锚点、页码可靠性、图表资产与 LaTeX；确定性生成，带 `document_version` 与 `generator_version` | `stores/reading.py` 按版本缓存重建 | ❌（可复现，避免 diff 噪音） |
+| `translation_zh.json` | 块级中文翻译缓存（LLM 产物，按 `document_version + block_id + source_hash` 关联） | 需 LLM key 重生成 | ❌（成本产物） |
 | `ai_answers.jsonl` | 论文内 Ask AI、选区解释/翻译的保存历史 | 需重新调用 LLM | ❌（成本产物） |
 | `ai_takeaways.json` | 带论文页码/摘录锚点的 AI 重点 | 需重新调用 LLM | ❌（成本产物） |
 | `<short>_AI全文详细解析.md` | 全文解析（LLM API 产物，逐条结论带页码） | 需 LLM API 重跑（`jobs/full_analysis.py`） | ✅ |

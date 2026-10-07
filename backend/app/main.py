@@ -22,6 +22,7 @@ from .routers.jobs import router as jobs_router
 from .routers.papers import router as papers_router
 from .routers.projects import router as projects_router
 from .routers.reader import router as reader_router
+from .routers.reading import router as reading_router
 from .routers.session_messages import router as session_messages_router
 from .routers.sessions import router as sessions_router
 
@@ -59,6 +60,7 @@ for router in (
     papers_router,
     annotations_router,
     reader_router,
+    reading_router,
     ai_router,
     jobs_router,
     projects_router,

@@ -71,7 +71,7 @@ frontend/src/
 
 1. 单文件 ≤ 400 行，超出即拆。
 2. 网络调用只允许出现在 `api/` 与 `hooks/`；组件不直接 fetch。
-3. Markdown 渲染保持自实现、单一入口（延续现有原则，不引入通用 md 库）。
+3. Markdown/HTML 阅读渲染保持单一入口，使用成熟 Markdown、数学排版与 HTML 白名单清洗库，覆盖表格、图片、公式和离线导出；禁止各组件重复实现不完整的正则解析器。具体行为见 `reading-workspace.md`。
 
 ## 迁移策略（strangler）
 
