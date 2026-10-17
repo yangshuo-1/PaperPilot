@@ -31,10 +31,16 @@
     exports/                     # 用户主动导出的交付物
     manifest.json  runs.jsonl    # 审计：SHA-256、版本三元组、生成器
   projects/<project_id>/         # Project workspace（简报、笔记、产物）
+  index/                         # 用户态索引导出（P0.7）：papers.jsonl tags.json folders.json
+                                 #   annotations.json reading_list.json —— db.sqlite 的权威镜像
+  references/                    # 过渡遗留：v1/v2 的 paper_index.jsonl、paper_tags.json、
+                                 #   *_jobs/、旧 paper_valt.db 等；**运行期只读，不再回写**
   logs/                          # 运行日志（不入 git，不进索引）
 ```
 
 命名规则：目录名就是 arXiv ID（`2509.20354`），不再带标题前缀。旧名 `<ShortTitle>_<arxiv_id>` 由迁移器一次性改写。
+
+**`index/` 与 `references/` 的分工（P0.7 决策）**：`references/` 是冻结的历史导入源，迁移期之后就只读（它的字节不再被任何运行时代码改写，迁移测试以此为准）；运行期把用户态索引（论文、标签、文件夹、标注、笔记归属、阅读列表）**同时**导出到 `index/`，每次事务提交与关闭时"内容变了才写"。`db.sqlite` 因此是可丢弃的缓存，`paperpilot reindex` 优先读 `index/`，没有时才退回读 `references/`。
 
 ### 写入约束
 
@@ -45,6 +51,7 @@
 5. API 一律拒绝越过本论文/本 Project 目录的路径。
 6. **旧布局只在迁移期可读**：`references/*.json(l)`、`references/*_jobs/`、仓库内 `papers/` 与新布局并存期间只读；一次性 `paperpilot migrate` 完成后，新写入只走新布局。这是"不批量移动历史文件"规则的**一次性例外**，由用户 2026-10-17 决策授权。
 7. **本机已执行迁移（2026-10-17，P0.3）**：仓库内 `papers/`、`references/` 已删除（22 个 tracked 文件随 commit 移除），数据在 `~/.local/share/paperpilot`；旧布局快照留在 `~/.local/share/paperpilot/.legacy-repo-snapshot-20261017.tar.gz`。数据根下的 `references/` 是**过渡性**的导入导出格式 + 旧 job 状态，P0.4 之后只保留导入导出语义。
+8. **运行态只写 `db.sqlite` 与 `index/`（P0.7）**：用户态索引在每次事务提交/关闭时导出到 `index/`（内容未变则不写盘）；`references/` 的字节属于冻结的迁移输入，运行期禁止改写——迁移相关测试会逐字节校验这一点。
 
 ## 运行态（db.sqlite）
 
@@ -53,12 +60,13 @@
 - `storage/db.py` 是唯一写入口；其他模块只经 domain/store 接口读写。
 - 任务进度：`job_events` 表按 job 追加事件，`GET /api/jobs/{id}/events` 以 SSE 推送；JSON 文件不再是运行态。
 - 旧的 `paper_index.jsonl` / `paper_tags.json` 降级为**导入导出格式**，只在迁移与显式导出时读写。
+- **可丢弃性（P0.7）**：`db.sqlite` 是缓存。运行期把上表里的用户态数据同步导出到 `<data_dir>/index/`（`papers.jsonl`、`tags.json`、`folders.json`、`annotations.json`、`reading_list.json`），删库后 `paperpilot reindex` 即可重建；`references/` 保持冻结只读。
 
 ### 迁移与重建
 
 - `paperpilot migrate`：探测旧数据根（仓库内 `papers/` + `references/`）→ 建新目录 → 拷贝/移动 + 改名 `<arxiv_id>` → 导入 JSON/JSONL 到 SQLite → 写标记。可重入、有 `--dry-run`、保留旧目录直到用户确认删除。
   `--apply` 时先拷贝旧 `references/paper_valt.db` 到 `<data_dir>/db.sqlite`（保住 JSON 里没有的标注/会话/任务状态），再对空库执行 JSON 导入；最后重写索引、`references/*.json` 与 DB 里的 `local_pdf_path`。落地记录与验证证据见 `docs/design/roadmap.md` 的 P0.3 节。
-- `paperpilot reindex`：删除 `db.sqlite` 后，从 `papers/**`（`manifest.json`、`runs.jsonl`、`source/`、`derived/`、`results/`）重建索引、标签、文件夹、笔记归属与 FTS5。**这是 M0 验收项**：重建结果必须与删库前一致（`manifest.json` SHA 校验 + 检索抽查）。
+- `paperpilot reindex`：删掉 `db.sqlite` 后，从 `index/*.json`（优先）或 `references/*.json`（回退）恢复论文、标签、文件夹、标注、笔记归属、阅读列表，再扫 `papers/<arxiv_id>/`（`manifest.json`、`*_analysis.json`、`source/`、`derived/`、`results/`）补齐只在磁盘上的论文、修复失效的 `local_pdf_path`、取回 `document_version`，最后重建 FTS5。`--dry-run` 只报告不写盘。**这是 M0 验收项**，验收脚本：`bash scripts/acceptance_reindex.sh [data_root]`（删库 → 重建 → 逐项比对 + 真实服务抽查）。
 
 ## git 策略
 
@@ -68,7 +76,7 @@
 |---|---|---|
 | `src/`、`frontend/src/`、`tests/`、`scripts/`、`docs/`、`pyproject.toml`、`Makefile` | ✅ | 代码与文档 |
 | `frontend/dist/`、`src/paperpilot/web/` | ❌ | 生成物，由 `make build` 产出并打进 wheel |
-| `papers/`、`references/`、`projects/`、`db.sqlite*`、`paper_valt.db*`（仓库内同名路径） | ❌ | 仅当开发时把数据根指到仓库内才会出现，禁止入库 |
+| `papers/`、`references/`、`projects/`、`index/`、`db.sqlite*`、`paper_valt.db*`（仓库内同名路径） | ❌ | 仅当开发时把数据根指到仓库内才会出现，禁止入库 |
 | `.data/`（开发数据根） | ❌ | 本地运行态 |
 | `<data_dir>/**`（仓库外） | — | 用户数据；需要版本化由用户自行对数据根建 git，或走 `exports/` |
 | `llm_config.json`（仓库根；旧位置 `backend/llm_config.json` 仅兼容） | ❌ | 含 key；M0 后 key 的主要载体是设置页写库，本文件仅作迁移来源 |

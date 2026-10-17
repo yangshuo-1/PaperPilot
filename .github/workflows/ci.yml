@@ -145,6 +145,55 @@ jobs:
           print("migrate OK:", marker["papers"])
           PY
 
+      # P0.7 acceptance: deleting db.sqlite must be recoverable with `paperpilot reindex`,
+      # which rebuilds from <data_dir>/index/*.json plus the paper directories on disk.
+      - name: Delete the runtime database and rebuild it with reindex
+        run: |
+          export PATH="/tmp/wheelsmoke/bin:$PATH"
+          data="$(mktemp -d)/data"
+          mkdir -p "$data/papers/2511.21631/source" "$data/papers/2511.21631/derived"
+          printf 'PDF fake body' > "$data/papers/2511.21631/source/2511.21631.pdf"
+          printf 'attention retrieval 注意力' > "$data/papers/2511.21631/derived/latex_plain.txt"
+          printf '{"schema_version": 1, "paper_id": "qwen3-vl-2511-21631", "assets": [{"path": "source/2511.21631.pdf", "role": "source", "sha256": "cafe", "size": 14}]}' > "$data/papers/2511.21631/manifest.json"
+          printf '{"paper_id": "qwen3-vl-2511-21631", "identity": {"title": "Qwen3-VL", "authors": ["A"], "year": 2025, "arxiv_id": "2511.21631"}}' > "$data/papers/2511.21631/qwen3-vl-2511-21631_analysis.json"
+
+          paperpilot reindex --data-dir "$data"                       # index the paper directory
+          python - "$data" <<'PY'                                     # user state via the public API
+          import sys
+          from pathlib import Path
+          from paperpilot.storage.db import Database
+          root = Path(sys.argv[1])
+          with Database(data_root=root) as database:
+              database.replace_tags("qwen3-vl-2511-21631", ["vlm", "qwen"])
+              database.upsert_folder({"id": "f1", "name": "VLM", "order": 0})
+              database.update_paper("qwen3-vl-2511-21631", {"folder_id": "f1", "read_status": "reading"})
+          assert (root / "index" / "paper_tags.json").is_file(), "runtime did not export index/"
+          assert (root / "index" / "paper_index.jsonl").is_file(), "runtime did not export index/"
+          print("export OK")
+          PY
+
+          rm -f "$data/db.sqlite" "$data/db.sqlite-wal" "$data/db.sqlite-shm"
+          test ! -f "$data/db.sqlite"
+          paperpilot reindex --data-dir "$data"                       # rebuild from disk alone
+          python - "$data" <<'PY'
+          import sys
+          from pathlib import Path
+          from paperpilot.storage.db import Database
+          root = Path(sys.argv[1])
+          with Database(data_root=root) as database:
+              counts = database.table_counts()
+              assert counts["papers"] == 1, counts
+              assert counts["tags"] == 2, counts
+              assert counts["folders"] == 1, counts
+              paper = database.get_paper("qwen3-vl-2511-21631")
+              assert paper["read_status"] == "reading", paper
+              assert paper["folder_id"] == "f1", paper
+              assert paper["document_version"] == "sha256:cafe", paper
+              assert paper["local_pdf_path"].endswith("papers/2511.21631/source/2511.21631.pdf"), paper
+              assert any(item["paper_id"] == "qwen3-vl-2511-21631" for item in database.search("注意力")), "FTS lost"
+              print("reindex OK:", counts)
+          PY
+
   # Optional populated-browser acceptance. Enable this only on a runner with Chrome/CDP,
   # running backend and frontend services, and a prepared test case.
   # chrome_acceptance:

@@ -34,6 +34,7 @@ src/paperpilot/web/
 papers/
 references/
 projects/
+index/
 
 # SQLite 运行态库（含 WAL/SHM 伴生文件），仅在数据根被指到仓库内时出现
 db.sqlite*

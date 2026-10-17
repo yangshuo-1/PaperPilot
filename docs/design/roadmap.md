@@ -14,7 +14,7 @@
 
 | 阶段 | 状态 | 备注 |
 |---|---|---|
-| M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.8 已完成**；剩余 P0.4/P0.5/P0.6/P0.7/P0.9。 |
+| M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.7 + P0.8 已完成**；剩余 P0.4/P0.5/P0.6/P0.9。 |
 | M1 入库与阅读 | ⏳ 功能在旧结构下已可用，待在新结构上做 20 篇成功率统计 | 当前库内仅 2 篇论文，LaTeX 解析稳健性缺数据（最大不确定项）；arXiv 限速/缓存/单连接按风险节 5 落地。 |
 | M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。 |
 | M3 Project | ⏳ 已有 Project/Session/治理/事件骨架；缺项目简报、选论文、工具循环、检索、MCP | 无工具调用、无 MCP；`Project` 只有 name/description/goal，无简报字段。**MCP server 要自己实现**（dsh/Pi 只有 client，见风险节 4）。 |
@@ -45,11 +45,11 @@
 | P0.4 | JOBS | 任务表：job 状态/checkpoint/事件从 `references/*_jobs/*.json` 迁入 `db.sqlite`（保留 `jobs/base.py` 状态机、`job_key` 幂等、`recover()` 语义） | `jobs/**`、`storage/db.py` DDL、测试 | 重启后 running 任务恢复；幂等重复提交不产生第二个 job；既有 job 契约测试全绿 |
 | P0.5 | JOBS/WEB | 进度推送：`GET /api/jobs/{id}/events` SSE；前端订阅，断线回退轮询 | `api/jobs.py`、`frontend/src/api`、`frontend/src/hooks` | 真实任务进度逐条到达；断线重连不重复计数；无 SSE 时轮询仍工作 |
 | P0.6 | CONTRACT/JOBS | 设置页：`GET/PUT /api/settings/llm`（base_url/model/api_key），key 只回 mask、永不写日志；连通性测试；env 覆盖优先 | `api/settings.py`、`models.py` 设置模型、`llm/` 配置解析、`frontend/src/pages/SettingsPage` | 页面填 key → 保存 → 测试连接成功；`GET` 不回显明文；env 存在时以 env 为准并在 UI 标注来源 |
-| P0.7 | DATA | `paperpilot reindex`：删库后从 `<data_dir>/papers/**` + `manifest.json` 重建索引、标签、文件夹、FTS5 | CLI、`storage/db.py`、测试 | 删除 `db.sqlite` 后 `reindex` 重建，检索/标签/笔记归属与删库前一致（`manifest.json` SHA 校验） |
+| **P0.7** ✅ | DATA | `paperpilot reindex`：删库后从 `<data_dir>/index/*.json`（回退 `references/`）+ `papers/<arxiv_id>/**`（`manifest.json`/`*_analysis.json`）重建索引、标签、文件夹、笔记归属、FTS5；运行期把用户态索引导出到 `<data_dir>/index/` | CLI、`reindex.py`、`storage/db.py`、`scripts/acceptance_reindex.sh`、测试 | 删除 `db.sqlite` 后 `reindex` 重建，检索/标签/笔记归属与删库前一致（真机验收已通过，见下） |
 | P0.8 | CONTRACT | 文档契约：本文件 + `AGENTS.md` + `code-organization.md` + `data-organization.md` + 开发约束 skill 同步 | `docs/**`、`AGENTS.md`、`.agents/**`、`README.md` | 文档与代码同 commit；旧 roadmap 已归档并登记 |
 | P0.9 | INFRA | CI：ruff + import-linter + `compileall` + unittest + frontend build + **wheel 构建与 `uv tool install` 冒烟** | `.github/workflows/ci.yml`、`pyproject.toml`、`Makefile` | CI 绿；冒烟 job 在纯净环境装 wheel 后能 `paperpilot --version` 并拉起 `/api/health` |
 
-**M0 关键路径**：P0.1 → P0.3 → P0.4 → P0.7 → P0.2/P0.5/P0.6 → P0.9。
+**M0 关键路径**：P0.1 → P0.3 → P0.7 → P0.4 → P0.2/P0.5/P0.6 → P0.9。
 P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 同 commit 才能保证文档与代码一致。
 
 ### P0.1 落地记录（2026-10-17）
@@ -89,6 +89,32 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 测试与静态检查：unittest **268 passed**（新增 `tests/test_migrate.py` 14 条、`tests/test_datadir.py` 4 条）；`ruff check src tests` 全绿；`lint-imports` 3 契约 KEPT。
 
 **遗留（记入后续）**：迁移保留论文目录内部现有文件名（`latex_plain.txt`、`*_analysis.json`、`ai_takeaways.json` 等仍在论文根），四层内部归位（`derived/`、`results/analysis/` 等）需要同时改所有读写路径，留给 P0.7 `reindex` 一起做；数据根下 `references/` 目前仍是导入导出格式 + 旧 job 状态的过渡位置（P0.4 把 job 状态搬进 `db.sqlite` 后即可只留导入导出）。
+
+### P0.7 落地记录（2026-10-17）
+
+**问题**：契约要求"删 `db.sqlite` 后 `paperpilot reindex` 能重建索引与检索，且标签/笔记归属与删库前一致"，但 v2 之后**用户态数据只存在于 `db.sqlite`**：`references/*.json` 是冻结的迁移输入（运行期不再回写，迁移测试逐字节校验），`papers/**` 只有论文本身。所以"删库可重建"必须先给用户态索引找一个**运行期权威的磁盘副本**。
+
+**决策**：新增 `<data_dir>/index/`（`papers.jsonl`、`tags.json`、`folders.json`、`annotations.json`、`reading_list.json`）。`Database` 在**每次最外层事务提交后与 `close()` 时**把当前状态导出到这里，内容未变则不落盘（避免每次读请求都写盘）；`references/` 继续冻结只读。`db.sqlite` 因此退回"可丢弃缓存"的定位。
+
+**实现**：
+- `storage/db.py`：`export_index_files()`（原子写 + 内容比对）、`_flush_exports()`（挂在 `transaction()` 提交后与 `close()`）、`index_paths()`、`Database(..., export_on_write=False)` 逃生开关；`load_legacy_snapshot(root, directory=...)` 支持读 `index/`。
+- `reindex.py`：先读 `index/`（无则回退 `references/`）导入用户态 → 扫 `papers/<arxiv_id>/` 补齐只在磁盘上的论文（身份取自 `*_analysis.json`，`document_version` 取自 `manifest.json` 的 source 资产 SHA-256，缺失时现算）、修复失效 `local_pdf_path`、标注 DB 里有行但磁盘目录已消失的论文 → `rebuild_fts()`。`--dry-run` 只报告。
+- `cli.py`：`paperpilot reindex [--data-dir] [--dry-run]` 从占位变真命令。
+- `scripts/acceptance_reindex.sh`：M0 验收脚本（见下）。
+
+**真机验收（`bash scripts/acceptance_reindex.sh`，数据根 `~/.local/share/paperpilot`）**：
+1. 捕获删库前状态（2 papers / 5 tags / 0 folders / 0 annotations / 0 reading_list + 4 组检索命中）；
+2. 先跑一次 `reindex` 刷新 `index/`，并**逐字节校验 `references/` 未被运行期改写**；
+3. `rm db.sqlite` → `paperpilot reindex` → 逐项比对：论文行（含 `folder_id`/`read_status`/`document_version`/`local_pdf_path`）、标签集合、文件夹、标注 id、阅读列表**完全一致**，检索命中**无丢失**（"注意力"多出一条命中：重建的 FTS 从 `results/analysis/*.md` 抽取的文本比旧导入器索引的更全，属召回提升，脚本按"不丢命中"判定并打印 note）；
+4. 重启真实服务：`/api/health` ok，`/api/papers`(2)，`/api/papers/{id}`、`/documents`、`/reader`、`/reading/structured`、`/assets/manifest`、`/analysis`、`/translation`、`/search` 全 200。
+
+**落地测试时抓到的两个真问题**（都是"导出文件里没有 `papers.jsonl` 时状态丢失"，CI 冒烟步先暴露、再补单测）：
+1. `reindex` 原本先导入导出文件、后扫磁盘 → 纸面上的论文行还不存在，`paper_tags.json` 里的标签被当成孤儿丢掉。现在分三步：**先补磁盘上独有的论文 → 再导入用户态 → 再修字段**。
+2. `load_legacy_snapshot` 会用 `paper_index.jsonl` 里的 id 过滤掉"目标不在索引里"的标签/标注/阅读列表行 —— 这些行在目标库里其实存在（或由磁盘扫描补上）。现在一律保留（真正孤儿由 `import_legacy` 报 issue 并跳过），旧的"references/ 导入"路径行为不变、只是不再丢数据。
+
+测试与静态检查：unittest **278 passed**（新增 `tests/test_reindex.py` 10 条）；`ruff check src tests` 全绿；`lint-imports` 3 契约 KEPT；`make smoke`（wheel + `uv tool install` + 起页 + 断言运行态库落在数据根）通过。CI 的 wheel job 增加同一场景的验收步：建论文目录 → `paperpilot reindex` → 用公开 API 打标签/建文件夹/改阅读状态 → 断言运行期写出了 `index/` → `rm db.sqlite` → `reindex` → 断言 papers/tags/folders/`read_status`/`folder_id`/`document_version`/FTS 全部回来。
+
+**遗留（记入后续）**：论文目录**内部**仍是旧文件名布局（`latex_plain.txt`、`*_analysis.json`、`ai_takeaways.json` 在论文根），`derived/`、`results/analysis/` 的归位要同时改所有读写路径，仍留给后续；`references/*_jobs/` 的旧 job 状态等 P0.4 搬进 `db.sqlite`。
 
 ### 关键技术决策（冻结，2026-10-17 用户确认）
 

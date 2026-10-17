@@ -23,6 +23,7 @@ paperpilot/                       # 仓库（远端已是 PaperPilot；本地目
     config.py                     # Settings：只解析 <data_dir>；代码根仅用于开发与测试
     datadir.py                    # 数据根解析：PAPERPOILOT_DATA_DIR > PAPER_VALT_ROOT(告警) > XDG
     migrate.py                    # 一次性迁移器：旧 papers/+references/ → <data_dir>（默认 dry-run）
+    reindex.py                    # 删库后从 index/*.json + papers/** 重建 db.sqlite（M0 P0.7）
     webapp.py                     # 托管预构建 SPA：SPA fallback、/api 优先、dev 模式判定
     deps.py  models.py
     domain/                       # 纯领域逻辑（dataclass，禁 fastapi/pydantic）—— 保留，import-linter 契约依赖它

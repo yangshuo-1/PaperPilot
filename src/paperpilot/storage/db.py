@@ -35,6 +35,7 @@ from .paths import (
     legacy_paper_path,
     PaperPathResolver,
     PaperPaths,
+    atomic_write_text,
     paper_layer_path,
     papers_directory,
     resolve_data_root,
@@ -188,6 +189,7 @@ class Database:
         db_path: str | os.PathLike[str] | None = None,
         timeout: float = 30.0,
         initialize: bool = True,
+        export_on_write: bool = True,
     ) -> None:
         if data_root is not None and root is not None:
             raise TypeError("Pass either data_root or root, not both")
@@ -234,6 +236,7 @@ class Database:
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self.export_on_write = bool(export_on_write)
         self.connection = sqlite3.connect(
             str(self.path),
             timeout=timeout,
@@ -256,6 +259,10 @@ class Database:
 
     def close(self) -> None:
         with self._lock:
+            try:
+                self._flush_exports()
+            except Exception:  # pragma: no cover - closing must not mask the original error
+                pass
             self.connection.close()
 
     def __enter__(self) -> "Database":
@@ -289,6 +296,7 @@ class Database:
                     self.connection.execute(f"RELEASE SAVEPOINT {savepoint}")
                 else:
                     self.connection.commit()
+                    self._flush_exports()
 
     def schema_version(self) -> int:
         with self._lock:
@@ -355,6 +363,105 @@ class Database:
                         updated += 1
                         break
         return updated
+
+    # ------------------------------------------------------------------ exports
+    # The export JSON files are the durable form of the user-authored index state
+    # (which papers exist, their tags/folders, highlights, notes, reading list).
+    # Written on every outermost commit (only when the content changed) and on
+    # close, so `paperpilot reindex` can rebuild db.sqlite from disk alone.  The
+    # frozen legacy files under references/ are never rewritten by the runtime.
+
+    def _export_index_text(self) -> str:
+        lines = []
+        for paper in self.list_papers():
+            record = {field: paper.get(field) for field in PAPER_FIELDS}
+            record["starred"] = bool(paper.get("starred"))
+            lines.append(json.dumps(record, ensure_ascii=False))
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    def _export_tags_document(self) -> dict[str, Any]:
+        tags_by_paper: dict[str, list[str]] = {}
+        for row in self.list_tags():
+            tags_by_paper.setdefault(str(row["paper_id"]), []).append(str(row["tag"]))
+        papers: dict[str, Any] = {}
+        for paper in self.list_papers():
+            paper_id = str(paper["id"])
+            papers[paper_id] = {
+                "title": paper.get("title"),
+                "path": paper.get("local_pdf_path"),
+                "tags": sorted(tags_by_paper.pop(paper_id, [])),
+                "read_status": paper.get("read_status"),
+                "starred": bool(paper.get("starred")),
+                "folder_id": paper.get("folder_id"),
+                "reading_progress": paper.get("reading_progress"),
+                "current_page": paper.get("current_page"),
+                "total_pages": paper.get("total_pages"),
+                "document_version": paper.get("document_version"),
+                "last_read_at": paper.get("last_read_at"),
+            }
+        # Tags whose paper row is gone must not silently disappear from the export.
+        for paper_id, remaining in tags_by_paper.items():
+            papers[paper_id] = {"tags": sorted(remaining)}
+        return {"version": 2, "papers": papers}
+
+    def _export_annotations_document(self) -> dict[str, Any]:
+        buckets: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for row in self.list_annotations():
+            kind = str(row.get("kind") or "note")
+            bucket = buckets.setdefault(str(row.get("paper_id")), {"anchors": [], "highlights": [], "notes": []})
+            bucket["anchors" if kind == "anchor" else "highlights" if kind == "highlight" else "notes"].append(row)
+        return {"version": 2, "papers": buckets}
+
+    def export_index_files(
+        self,
+        destination: str | os.PathLike[str] | None = None,
+        *,
+        only_if_changed: bool = True,
+    ) -> dict[str, Any]:
+        """Write the import/export JSON files that mirror the current database state."""
+
+        index_dir = (
+            Path(destination).expanduser().resolve()
+            if destination is not None
+            else (self.data_root / INDEX_DIRNAME).resolve()
+        )
+        index_dir.mkdir(parents=True, exist_ok=True)
+        documents: dict[str, str] = {
+            "papers": self._export_index_text(),
+            "tags": json.dumps(self._export_tags_document(), ensure_ascii=False, indent=2) + "\n",
+            "folders": json.dumps(
+                {"version": 2, "folders": self.list_folders()}, ensure_ascii=False, indent=2
+            )
+            + "\n",
+            "annotations": json.dumps(self._export_annotations_document(), ensure_ascii=False, indent=2) + "\n",
+            "reading_list": json.dumps(
+                {"version": 2, "entries": self.list_reading_list()}, ensure_ascii=False, indent=2
+            )
+            + "\n",
+        }
+        written: list[str] = []
+        unchanged: list[str] = []
+        for name, text in documents.items():
+            path = index_dir / LEGACY_FILENAMES[name]
+            if only_if_changed:
+                try:
+                    if path.read_text(encoding="utf-8") == text:
+                        unchanged.append(path.name)
+                        continue
+                except (OSError, UnicodeError):
+                    pass
+            atomic_write_text(path, text)
+            written.append(path.name)
+        return {
+            "directory": str(index_dir),
+            "written": written,
+            "unchanged": unchanged,
+        }
+
+    def _flush_exports(self) -> dict[str, Any] | None:
+        if not getattr(self, "export_on_write", False):
+            return None
+        return self.export_index_files(only_if_changed=True)
 
     def apply_migrations(self, *, target_version: int = SCHEMA_VERSION) -> int:
         """Apply each missing numbered migration exactly once.
@@ -1233,6 +1340,18 @@ def legacy_paths(data_root: str | os.PathLike[str] | None = None) -> dict[str, P
     return {name: references / filename for name, filename in LEGACY_FILENAMES.items()}
 
 
+#: Live export of the user-authored index state.  ``references/*.json`` keeps the
+#: frozen v1/v2 import files (never rewritten); this directory is what the runtime
+#: database mirrors on write so that `paperpilot reindex` can rebuild from disk.
+INDEX_DIRNAME = "index"
+
+
+def index_paths(data_root: str | os.PathLike[str] | None = None) -> dict[str, Path]:
+    root = resolve_data_root(data_root)
+    index = root / INDEX_DIRNAME
+    return {name: index / filename for name, filename in LEGACY_FILENAMES.items()}
+
+
 def _required_text(value: Any, label: str) -> str:
     text = str(value).strip() if value is not None else ""
     if not text:
@@ -1542,10 +1661,20 @@ def _normalise_reading_list(value: Any, issues: list[str]) -> list[dict[str, Any
 
 def load_legacy_snapshot(
     data_root: str | os.PathLike[str] | None = None,
+    *,
+    directory: str = "references",
 ) -> dict[str, Any]:
-    """Read and normalize all legacy files without creating or changing files."""
+    """Read and normalize an import/export directory without creating or changing files.
 
-    paths = legacy_paths(data_root)
+    ``directory="references"`` reads the frozen v1/v2 legacy files;
+    ``directory="index"`` reads the live export written by the runtime database.
+    """
+
+    if directory == "references":
+        paths = legacy_paths(data_root)
+    else:
+        root = resolve_data_root(data_root)
+        paths = {name: root / directory / filename for name, filename in LEGACY_FILENAMES.items()}
     issues: list[str] = []
     timestamp = now_iso()
     paper_records: list[dict[str, Any]] = []
@@ -1611,36 +1740,19 @@ def load_legacy_snapshot(
         else []
     )
 
-    paper_ids = {str(item["id"]) for item in papers}
     folder_ids = {str(item["id"]) for item in folders}
-    filtered_tags: list[dict[str, Any]] = []
-    for tag in tags:
-        if tag["paper_id"] not in paper_ids:
-            issues.append(f"paper_tags.json: record references missing paper {tag['paper_id']}")
-            continue
-        filtered_tags.append(tag)
+    # Rows are kept even when their paper is not in paper_index.jsonl: the paper may
+    # exist in the target database already (or be discovered on disk by `reindex`).
+    # `import_legacy` reports and skips genuinely orphaned rows.
+    filtered_tags: list[dict[str, Any]] = list(tags)
     for paper in papers:
         if paper.get("folder_id") and paper["folder_id"] not in folder_ids:
             issues.append(
                 f"paper {paper['id']} references missing folder {paper['folder_id']}"
             )
             paper["folder_id"] = None
-    filtered_annotations: list[dict[str, Any]] = []
-    for annotation in annotations:
-        if annotation["paper_id"] not in paper_ids:
-            issues.append(
-                f"paper_annotations.json: record references missing paper {annotation['paper_id']}"
-            )
-            continue
-        filtered_annotations.append(annotation)
-    filtered_reading: list[dict[str, Any]] = []
-    for entry in reading_list:
-        if entry["paper_id"] not in paper_ids:
-            issues.append(
-                f"reading_list.json: record references missing paper {entry['paper_id']}"
-            )
-            continue
-        filtered_reading.append(entry)
+    filtered_annotations: list[dict[str, Any]] = list(annotations)
+    filtered_reading: list[dict[str, Any]] = list(reading_list)
 
     source_counts = {
         "papers": len(papers),

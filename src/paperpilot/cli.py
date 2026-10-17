@@ -98,6 +98,29 @@ def _migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reindex(args: argparse.Namespace) -> int:
+    import json
+
+    from .datadir import default_data_dir
+    from .reindex import reindex
+
+    data_root = Path(args.data_dir).expanduser() if args.data_dir else default_data_dir()
+    report = reindex(data_root, dry_run=args.dry_run)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.dry_run:
+        print(f"\n[dry-run] 未改动任何文件。数据根：{report['data_root']}", file=sys.stderr)
+        return 0
+    counts = report.get("counts", {})
+    print(
+        f"\nreindex 完成：{report['data_root']}（papers={counts.get('papers', 0)}，"
+        f"tags={counts.get('tags', 0)}，fts={counts.get('paper_fts', 0)}，"
+        f"新增 {len(report.get('added', []))} 篇）"
+    )
+    for note in report.get("issues", []):
+        print(f"issue: {note}", file=sys.stderr)
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paperpilot",
@@ -122,7 +145,9 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.set_defaults(func=_migrate)
 
     reindex = subparsers.add_parser("reindex", help="从磁盘重建索引与检索（M0 P0.7）")
-    reindex.set_defaults(func=_pending("reindex", "P0.7"))
+    reindex.add_argument("--data-dir", default=None, help="目标数据根（默认 PAPERPOILOT_DATA_DIR / XDG）")
+    reindex.add_argument("--dry-run", action="store_true", help="只报告会重建什么，不写库")
+    reindex.set_defaults(func=_reindex)
 
     return parser
 
