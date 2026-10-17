@@ -30,6 +30,8 @@ cd frontend && npm run dev -- --port 5173     # /api 代理到 8020
 .venv/bin/python -m unittest discover -s tests -p 'test*.py'
 cd frontend && npm run build
 node scripts/chrome_acceptance.mjs            # 服务已启动时的真实浏览器验收
+node scripts/reading_acceptance.mjs           # 阅读工作台（PDF/对照/笔记/图解/移动端）
+node scripts/notes_acceptance.mjs             # 笔记图文并茂：图片/表格/公式/导出（截图落 /tmp）；PAPER_ID=… 指定论文
 ```
 
 ## 验收纪律：可视化产物必须看

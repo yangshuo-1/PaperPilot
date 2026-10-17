@@ -1082,6 +1082,17 @@ details.drawer > summary:hover {
 .markdown table { width: 100%; border-collapse: collapse; margin: 18px 0; display: block; overflow-x: auto; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; min-width: 90px; }
 .markdown th { background: var(--surface-2); font-weight: 650; }
+/* Tables lifted from the paper's LaTeX keep their column layout: the wrapper
+   scrolls instead of squeezing wide leaderboards into the notes column. */
+.markdown .noteTableScroll { margin: 18px 0; overflow-x: auto; border-radius: var(--radius-sm); }
+.markdown .noteTableScroll table.noteTable { width: auto; min-width: 100%; margin: 0; display: table; }
+.markdown .noteTableScroll th, .markdown .noteTableScroll td { vertical-align: top; min-width: 72px; font-variant-numeric: tabular-nums; }
+.markdown .noteTableScroll th { white-space: nowrap; }
+.markdown .noteMark { color: var(--accent); font-weight: 650; }
+/* Paper figures keep their aspect ratio but never push a whole screen of
+   caption out of view; full detail stays one link away in the PDF. */
+.markdown .noteFigure { margin: 10px 0 18px; text-align: center; }
+.markdown .noteFigure img { max-width: 100%; max-height: 62vh; width: auto; height: auto; border: 1px solid var(--border); }
 .markdown blockquote { border-left: 4px solid var(--accent); margin: 16px 0; padding: 8px 16px; color: var(--ink-soft); background: var(--surface-2); }
 .markdown img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
 .markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding: 5px 0; }

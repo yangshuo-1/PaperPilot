@@ -23,11 +23,17 @@ router = APIRouter()
 
 @router.post("/api/papers/{paper_id}/analysis/codex", response_model=CodexAnalysisJob)
 def start_codex_analysis(
-    paper_id: str, request: CodexAnalysisRequest, runner: CodexJobRunner = Depends(get_codex_runner)
+    paper_id: str,
+    request: CodexAnalysisRequest,
+    reuse_chunks: bool = False,
+    runner: CodexJobRunner = Depends(get_codex_runner),
 ) -> CodexAnalysisJob:
     try:
         return runner.start_analysis(
-            paper_id, extra_instructions=request.extra_instructions, overwrite=request.overwrite
+            paper_id,
+            extra_instructions=request.extra_instructions,
+            overwrite=request.overwrite,
+            reuse_chunks=reuse_chunks,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Paper not found") from exc

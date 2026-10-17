@@ -21,13 +21,41 @@ from . import llm as llm_mod
 from .asset_audit import asset_record
 from .config import Settings
 from .jobs.base import Job, JobCancelled, JobRunner, JobStatus, make_job_key
-from .jobs.full_analysis import DEFAULT_PAGES_PER_CHUNK, GENERATOR_VERSION, analyze_pdf
+from .jobs.full_analysis import (
+    DEFAULT_PAGES_PER_CHUNK,
+    GENERATOR_VERSION,
+    SECTION_MIN_CHARS,
+    SECTION_TITLES,
+    analyze_pdf,
+)
 from .llm.loader import PromptNotConfigured, load_prompt, prompt_version
 from .models import CodexAnalysisJob, CodexAnalysisProgress, Paper
 from .reader import document_version
 from .storage import PaperStore
 
 PROMPT_NAME = "full_analysis"
+#: Depth marker written by the renderer; the gate reads the renderer's own
+#: numbers instead of re-parsing Markdown prose.
+_DEPTH_MARKER = re.compile(r"<!--\s*paper_valt:depth\s+(\{.*?\})\s*-->", re.DOTALL)
+#: Documents from this prompt version onward promise readable per-section prose,
+#: so the depth floor is enforced instead of being informational only.
+DEPTH_ENFORCED_FROM = "v3"
+
+
+def _prompt_rank(version: str) -> int:
+    match = re.fullmatch(r"v(\d+)", str(version).strip())
+    return int(match.group(1)) if match else 0
+
+
+def _completed_payload(payload: Any) -> Mapping[str, Any] | None:
+    """Return a checkpoint payload only when it actually holds analysed chunks."""
+    if not isinstance(payload, Mapping):
+        return None
+    completed = payload.get("completed")
+    if not isinstance(completed, list) or not completed:
+        return None
+    return payload
+
 ANALYSIS_TIMEOUT_SECONDS = 600
 DOC_SUFFIX = "_AI全文详细解析.md"
 LEGACY_DOC_SUFFIX = "_Codex全文详细解析.md"
@@ -59,7 +87,17 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
         *,
         extra_instructions: str = "",
         overwrite: bool = False,
+        reuse_chunks: bool = False,
     ) -> CodexAnalysisJob:
+        """Start a full-paper analysis job.
+
+        ``reuse_chunks`` re-renders the document from a previous job's chunk
+        payloads instead of calling the model again. Renderer and layout
+        upgrades (figures/tables wiring, citation normalisation) are
+        deterministic, so paying for a fresh analysis just to restyle a document
+        is waste; the reused chunks keep their original prompt version in the
+        metadata so the document never claims a prompt it was not written with.
+        """
         paper = self.store.get_paper(paper_id)
         pdf_path = self._require_pdf(paper)
         try:
@@ -69,8 +107,17 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
                 f"{exc}；请在 backend/app/llm/prompts/ 下配置 {PROMPT_NAME}.v1.md 后重试"
             ) from exc
         self._migrate_legacy_records()
+        resume_job_id = ""
+        if reuse_chunks:
+            source = self._resumable_job(paper_id)
+            if source is None:
+                raise ValueError("没有可复用的分片结果：请先完整跑一次全文解析，再选择重渲染")
+            version = str(source.task_params.get("prompt_version") or version)
+            resume_job_id = source.job_id
         document = document_version(pdf_path)
         task_params = {"extra_instructions": extra_instructions.strip(), "prompt_version": version}
+        if resume_job_id:
+            task_params["resume_job_id"] = resume_job_id
         key = make_job_key(paper_id, document, task_params)
         legacy_key = hashlib.sha256(f"{paper_id}|{document}|{extra_instructions.strip()}".encode()).hexdigest()
         matching = [job for job in self.list_jobs() if job.paper_id == paper_id and job.job_key in {key, legacy_key}]
@@ -115,6 +162,12 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
         Path(public.prompt_path).write_text(prompt, encoding="utf-8")
         if should_cancel():
             raise JobCancelled("Cancellation requested")
+        resume_job_id = str(job.task_params.get("resume_job_id") or "")
+        resume_payload = _completed_payload(getattr(checkpoint, "payload", None))
+        if resume_payload is None and resume_job_id:
+            resume_payload = self._previous_payload(resume_job_id)
+        if resume_job_id and resume_payload is None:
+            raise RuntimeError("复用分片失败：来源任务没有可用的分片结果，未调用模型")
         result = analyze_pdf(
             pdf_path,
             paper_id=job.paper_id,
@@ -126,9 +179,12 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
             model=str(llm_mod.llm_status().get("model") or ""),
             extra_instructions=str(job.task_params.get("extra_instructions") or ""),
             pages_per_chunk=self._pages_per_chunk,
-            resume=getattr(checkpoint, "payload", None),
+            resume=resume_payload,
             should_cancel=should_cancel,
             save_checkpoint=save_checkpoint,
+            reading_blocks=self._reading_blocks(job.paper_id),
+            has_diagrams=self._has_diagrams(job.paper_id),
+            require_resume=bool(resume_job_id),
         )
         if should_cancel():
             raise JobCancelled("Cancellation requested")
@@ -149,6 +205,7 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
                 "outputs": [target.name],
                 "status": "completed",
                 "claims": result["claims"],
+                "narrative_paragraphs": result.get("narrative_paragraphs", 0),
                 "chunks": result["chunks"],
                 "coverage": {
                     "page_count": result["coverage"]["page_count"],
@@ -162,12 +219,55 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
             "prompt_path": public.prompt_path,
             "final_message_path": public.final_message_path,
             "claims": result["claims"],
+            "narrative_paragraphs": result.get("narrative_paragraphs", 0),
             "chunks": result["chunks"],
             "unverified_quotes": result["unverified_quotes"],
             "prompt_version": version,
         }
 
     # -- helpers ---------------------------------------------------------
+
+    def _resumable_job(self, paper_id: str) -> Job | None:
+        """Latest succeeded analysis job whose checkpoint still holds its chunks."""
+        candidates = [
+            job for job in self.list_jobs()
+            if job.paper_id == paper_id and job.status == JobStatus.SUCCEEDED
+        ]
+        for job in sorted(candidates, key=lambda item: item.created_at, reverse=True):
+            if _completed_payload(self._previous_payload(job.job_id)) is not None:
+                return job
+        return None
+
+    def _previous_payload(self, job_id: str) -> Any:
+        try:
+            checkpoint = self.load_checkpoint(job_id)
+        except Exception:  # noqa: BLE001 - a broken checkpoint just means "not reusable"
+            return None
+        return getattr(checkpoint, "payload", None)
+
+    def _reading_blocks(self, paper_id: str) -> list[Mapping[str, Any]]:
+        """Structured reading blocks feed the deterministic figures/tables section.
+
+        A missing or unreadable artifact degrades to a text-only note instead of
+        failing the run: the model's prose is still worth keeping.
+        """
+        try:
+            payload = self.store.structured_reading(paper_id)
+        except (AttributeError, KeyError, TypeError, ValueError, OSError):
+            return []
+        blocks = payload.get("blocks") if isinstance(payload, Mapping) else None
+        return [block for block in blocks or [] if isinstance(block, Mapping)]
+
+    def _has_diagrams(self, paper_id: str) -> bool:
+        """True when rendered diagram HTML exists, so the note can link to it."""
+        try:
+            diagrams_dir = Path(self.store.paper_dir(paper_id)) / "results" / "diagrams"
+        except (KeyError, AttributeError, TypeError):
+            return False
+        try:
+            return any(diagrams_dir.glob("*.html"))
+        except OSError:
+            return False
 
     def _require_pdf(self, paper: Paper) -> Path:
         if not paper.local_pdf_path:
@@ -280,6 +380,40 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
             return "解析质量代理门禁失败：缺少页码覆盖证据"
         if not re.search(r"figure|fig\.?|图|table|表|公式|equation", text, re.IGNORECASE):
             return "解析质量代理门禁失败：缺少 Figure/Table/公式检查记录"
+        return CodexJobRunner._depth_quality_error(text)
+
+    @staticmethod
+    def _depth_quality_error(text: str) -> str | None:
+        """Reject a document whose prose is too thin to read.
+
+        ``prompt v3`` asks for depth per section; a section that still comes out
+        as a near-empty placeholder means the run produced a claim list with
+        headings, which is exactly the report shape this gate exists to stop.
+        Older (v1/v2) documents carry the marker but are not held to the floor.
+        """
+        match = _DEPTH_MARKER.search(text)
+        if match is None:
+            return None
+        try:
+            payload = json.loads(match.group(1))
+        except ValueError:
+            return "解析质量代理门禁失败：正文深度记录无法解析"
+        if not isinstance(payload, dict):
+            return "解析质量代理门禁失败：正文深度记录格式错误"
+        if _prompt_rank(str(payload.get("prompt_version") or "")) < _prompt_rank(DEPTH_ENFORCED_FROM):
+            return None
+        chars = payload.get("chars") if isinstance(payload.get("chars"), dict) else {}
+        titles = dict(SECTION_TITLES)
+        short = []
+        for key, floor in SECTION_MIN_CHARS:
+            try:
+                actual = int(chars.get(key) or 0)
+            except (TypeError, ValueError):
+                actual = 0
+            if actual < floor:
+                short.append(f"{titles.get(key, key)} {actual} 字 < {floor} 字")
+        if short:
+            return "解析质量代理门禁失败：正文深度不足（" + "；".join(short) + "），该文档仍是证据清单形态"
         return None
 
     @staticmethod

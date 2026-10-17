@@ -15,13 +15,36 @@ from ..models import (
     Document, DocumentSummary,
 )
 
+#: Reading order for the workbench, most valuable document first. Alphabetical
+#: order is not good enough: the import-time draft is named after the paper
+#: title, so a title containing ":" (e.g. ``EmbeddingGemma: Powerful …_详细解析.md``)
+#: sorted ahead of the real analysis (``…_AI全文详细解析.md``) and the reader
+#: opened a placeholder draft instead of the produced document.
+_DOC_ORDER: tuple[tuple[str, int], ...] = (
+    ("_AI全文详细解析.md", 0),
+    ("_全文详细解析.md", 1),
+    ("_Codex全文详细解析.md", 2),
+    ("_详细解析.md", 3),
+    ("_PDF抽取预览.md", 4),
+)
+_PLAIN_DOC_RANK = 5
+
+
+def document_rank(path: Path) -> tuple[int, str]:
+    """Sort key for ``papers/<dir>/*.md`` in the reader's document list."""
+    for suffix, rank in _DOC_ORDER:
+        if path.name.endswith(suffix):
+            return (rank, path.name)
+    return (_PLAIN_DOC_RANK, path.name)
+
+
 class DocumentsStore:
     def list_documents(self, paper_id: str) -> list[DocumentSummary]:
         self.get_paper(paper_id)
         paper_dir = self._paper_dir(paper_id)
         docs: list[DocumentSummary] = []
         if paper_dir.exists():
-            for path in sorted(paper_dir.glob("*.md")):
+            for path in sorted(paper_dir.glob("*.md"), key=document_rank):
                 docs.append(DocumentSummary(name=path.name, title=self._document_title(path), path=str(path)))
         return docs
     def search_paper(self, paper_id: str, query: str, *, limit: int = 50) -> dict[str, Any]:

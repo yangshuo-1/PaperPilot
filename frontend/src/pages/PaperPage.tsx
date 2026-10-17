@@ -66,7 +66,7 @@ export default function PaperPage() {
     <details className="workspaceUtility workspaceAnalysis">
       <summary>AI 全文解析</summary>
       <div className="drawerBody">
-        <p className="muted">调用已配置的 LLM 接口，按页分片读取整篇 PDF，逐条结论标注页码，并按全文解析规范生成详细解析文档。</p>
+        <p className="muted">调用已配置的 LLM 接口，按页分片读取整篇 PDF，生成分章节的可读叙述，并为每条结论标注页码与逐字证据。</p>
         <button type="button" className="primaryBtn" onClick={() => void startCodexAnalysis()} disabled={!!codexJob && ["queued", "running"].includes(codexJob.status)}>{codexJob && ["queued", "running"].includes(codexJob.status) ? "解析中…" : "启动全文解析"}</button>
         {codexJob && <dl className="jobMeta">
           <dt>状态</dt>

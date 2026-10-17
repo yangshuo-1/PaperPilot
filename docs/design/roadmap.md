@@ -184,7 +184,21 @@ node scripts/chrome_acceptance.mjs
 - 图解重生成入口：新增 `scripts/render_diagrams.py`（默认 dry run，`--apply` 写入），用当前渲染器把既有 IR 重新产出 HTML 并写入 `manifest.json` / `runs.jsonl`，因此渲染器变更不需要重新调用模型。
 - 结构化阅读产物：`reading.structured.v3` 重建，424 个块（12/12 表格、4/4 图、7 个含内联公式的块），正文总量与 v2 相比净增 41 字符——段落边界改由源文件空行决定，未丢失内容；`manifest.json` 与 `runs.jsonl` 同步记录。
 - 视觉复核：PDF/对照/笔记/图解/移动端五张截图逐一核对，标题与工具栏已不再被裁切，对照栏公式显示为排版后的 `2 × 2`，图解节点与边标签可读且水平居中。
-- 尚存限制：对照阅读仍是全量渲染单棵 DOM（437 级块列表未做窗口化，靠 memo + 单树控制成本）；tier1 论文无 PDF 页码映射，对照视图以章节名定位（摘要区显示"无页码标记"）；该论文笔记本身不含表格/公式/图片，Markdown 渲染能力（marked + KaTeX + DOMPurify）仍缺少真实笔记数据的覆盖；图解布局未按窗口比例自适应，横向长链仍可能出现超宽画布；`papers/*/derived/` 与图解 HTML 已重新生成，历史译文缓存按文本 hash 复用。
+- 尚存限制：对照阅读仍是全量渲染单棵 DOM（437 级块列表未做窗口化，靠 memo + 单树控制成本）；tier1 论文无 PDF 页码映射，对照视图以章节名定位（摘要区显示"无页码标记"）；图解布局未按窗口比例自适应，横向长链仍可能出现超宽画布；`papers/*/derived/` 与图解 HTML 已重新生成，历史译文缓存按文本 hash 复用。（"该论文笔记本身不含表格/公式/图片"这一条已在 2026-10-17 记录中关闭。）
+
+### 2026-10-17 验收记录（全文解析 v4：图文并茂与排版）
+
+上一轮的遗留问题（2026-10-07 记录末条）是：Markdown 渲染能力始终缺少真实笔记数据的覆盖，笔记正文里 0 表格、0 display 公式、0 图片，读起来"排版不好、没有图解"。本轮把图/表/公式改成由确定性代码从论文 LaTeX 源码装配，并重渲染了目标论文的笔记。
+
+- 工程检查：`compileall backend/app` 通过；`unittest` 通过（244 tests，含新增 `tests/test_illustration.py`（19）、`tests/test_analysis_layout.py`（12）与 v4 渲染断言）；`tsc` 随 `npm run build` 通过（仅 bundle >500 kB 提示）；`scripts/check_no_inline_prompt.py` 通过（64 个文件）；`node scripts/chrome_acceptance.mjs` 返回 `{"ok":true}`。
+- 运行环境：真实 FastAPI `127.0.0.1:8020`、Vite `127.0.0.1:5173`、Chrome CDP `127.0.0.1:9222`；桌面视口 1440×900、移动视口 390×844；论文 `embeddinggemma-powerful-and-lightweight-text-representations-2509-20354`。
+- 装配结果（`ai.full_analysis.v4`）：1 张图、12 个表、5 个公式；2 个表（旋转表头）不做近似转换，改为 PDF 页码 + 原始 LaTeX 折叠块；编号按 LaTeX 源码顺序；图片走受限资产接口 `/api/papers/{id}/reading/asset/…`。笔记从 67 KB / 0 表格 / 0 图片变为 107 KB / 10 个 HTML 表格 / 1 张真实图片 / 5 个 KaTeX 行间公式 / 14 个折叠块。
+- 本轮发现并修复的真实缺陷（DOM 计数断言看不到，靠截图与逐表核对发现）：多行表头的 `\multirow` 在 HTML 里没有"占位格"概念，第二行表头被整体右移三列（初始化消融表的 "Class./Clus./Rerank." 错位到表的右端）。渲染器改为按 LaTeX 列网格生成：被上行 `\multirow` 覆盖的占位格直接丢弃。修复后该表两行表头与数据行逐列对齐（截图复核）。
+- 排版修复：页码只出现在段末并按页合并（`（第 3–4、6 页）`）；近重复段落只保留首次出现；prompt v3 遗留的"需人工核对 PDF 表格"从正文剥离（本篇正文残留 25 处 → 0 处，剩余 8 处都在「未确认信息」且属于真实抽取缺陷）；v3 的 10/8 个主题收敛为方法 4 组、实验 4 组；图表标题按词边界截断，图片限高 62vh 并居中。
+- 免模型重渲染：新增 `POST /api/papers/{id}/analysis/codex?reuse_chunks=true`，复用既有 job 的分片结果重新装配文档；元数据记录正文实际使用的 prompt 版本（本篇为 `prompt 版本：v3 ｜ generator：ai.full_analysis.v4`），分片不匹配时 job 明确失败而不是静默重新调用模型。
+- 验收脚本：新增 `scripts/notes_acceptance.mjs`（18 项断言：图片经资产接口真实加载、表格 ≥5、公式 KaTeX 排版、正文不残留字面 `$$`/未折叠 LaTeX、折叠块、1440px/390px 无横向溢出、宽表在容器内滚动、导出 HTML 内联图片），失败即非零退出；输出 `/tmp/note-figures.png`、`/tmp/note-tables.png`、`/tmp/note-formulas.png`、`/tmp/note-mobile.png` 供多模态复核。
+- 视觉复核：四张截图逐条核对——散点图真实渲染（1254×1037 原始分辨率）且限高居中；量化表与初始化消融表（两行表头 + rowspan）逐列对齐；式 1–3 以 KaTeX 排版并保留 `cases` 环境；移动端 390px 无横向溢出且宽表在容器内滚动。导出 HTML 468 KB，图片以 `data:image/png;base64` 内联，含 10 个表格与 KaTeX 样式，离线打开仍可见。
+- 尚存限制：本篇的 AI 图解本轮**没能生成**——`POST /api/papers/{id}/diagrams/generate` 失败于上游 `502 Bad Gateway`（同一时段 `chat_once` 亦 502，属外部服务不可用，非代码缺陷），因此笔记里的「图解」交叉链接未出现在本篇；该分支由渲染器与 `tests/test_illustration.py` 覆盖（`has_diagrams` 为真时才输出），图解上游恢复后重新生成图解并重渲染笔记即可生效。公式一律不按启发式猜页码（只保留源码行号），只有图与表用图注→页文本定位；`未确认信息` 仍会列出模型读不出的图内文字。
 
 ## 增强项（P3，独立小任务，可随时插入任何空档）
 

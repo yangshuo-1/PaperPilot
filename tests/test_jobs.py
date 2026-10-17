@@ -10,7 +10,8 @@ from backend.app.codex_jobs import ANALYSIS_TIMEOUT_SECONDS, DOC_SUFFIX, CodexJo
 from backend.app import llm
 from backend.app.jobs.base import Job, JobStatus, make_job_key
 from backend.app.jobs.diagram import DiagramJobRunner
-from backend.app.llm.loader import PromptNotConfigured
+from backend.app.jobs.full_analysis import GENERATOR_VERSION, SECTION_MIN_CHARS
+from backend.app.llm.loader import PromptNotConfigured, prompt_version
 from backend.app.models import Paper
 
 
@@ -27,7 +28,29 @@ class _Reader:
         self.pages = [_Page("Figure 1: architecture"), _Page("Table 2: results")]
 
 
+def _prose(tag: str, chars: int) -> str:
+    """Fixture prose long enough to clear the prompt-v3 depth floor.
+
+    ``tag`` keeps every section's text distinct: identical paragraphs are
+    deduplicated on purpose, so shared filler would silently vanish.
+    """
+    filler = f"本节（{tag}）说明了该设计的原因、做法与可回溯出处，并指出它与既有做法的差异。"
+    return (filler * ((chars // len(filler)) + 2))[:chars] + "（第 1 页）"
+
+
+NARRATIVE = [
+    {"section": "abstract", "topic": "", "text": _prose("摘要", 340)},
+    {"section": "background", "topic": "", "text": _prose("背景", 280)},
+    {"section": "related_work", "topic": "", "text": _prose("相关工作", 240)},
+    {"section": "method", "topic": "关键设计", "text": _prose("方法", 840)},
+    {"section": "experiment", "topic": "主结果", "text": _prose("实验", 840)},
+    {"section": "conclusion", "topic": "", "text": _prose("结论", 280)},
+    {"section": "limitation", "topic": "", "text": _prose("局限", 240)},
+    {"section": "reproduction", "topic": "", "text": _prose("复现", 240)},
+]
+
 ANALYSIS_JSON = json.dumps({
+    "narrative": NARRATIVE,
     "blocks": [
         {"section": "abstract", "claims": [{"text": "论文提出新方法", "page": 1, "quote": "Figure 1: architecture"}]},
         {"section": "method", "topic": "关键设计", "claims": [{"text": "关键设计是分层注入", "page": 1, "quote": "Figure 1: architecture"}]},
@@ -74,7 +97,7 @@ class JobReliabilityTests(unittest.TestCase):
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
             runner = _runner(root, store)
             with patch("backend.app.codex_jobs.document_version", return_value="sha256:paper-v1"):
-                params = {"extra_instructions": "", "prompt_version": "v1"}
+                params = {"extra_instructions": "", "prompt_version": prompt_version("full_analysis")}
                 runner._write_job(Job(
                     job_id="a" * 32, paper_id="paper-1", document_version="sha256:paper-v1",
                     task_params=params, job_key=make_job_key("paper-1", "sha256:paper-v1", params),
@@ -119,8 +142,8 @@ class JobReliabilityTests(unittest.TestCase):
             target = root / f"Paper{DOC_SUFFIX}"
             self.assertTrue(target.is_file())
             self.assertIn("## 方法", target.read_text(encoding="utf-8"))
-            self.assertEqual(recorded[0]["kwargs"]["generator_version"], "ai.full_analysis.v1")
-            self.assertEqual(recorded[0]["kwargs"]["run"]["prompt_version"], "v1")
+            self.assertEqual(recorded[0]["kwargs"]["generator_version"], GENERATOR_VERSION)
+            self.assertEqual(recorded[0]["kwargs"]["run"]["prompt_version"], prompt_version("full_analysis"))
             self.assertEqual(final.result["claims"], 5)
 
     def test_llm_failure_surfaces_the_failed_chunk_range(self):
@@ -196,6 +219,33 @@ class JobReliabilityTests(unittest.TestCase):
             self.assertIsNone(runner._document_quality_error(path))
             path.write_text("摘要\n方法\n实验\n结论\n局限", encoding="utf-8")
             self.assertIn("代理门禁", runner._document_quality_error(path) or "")
+
+    def _depth_document(self, prompt: str, chars: dict[str, int]) -> str:
+        marker = "<!-- paper_valt:depth " + json.dumps({"prompt_version": prompt, "chars": chars}) + " -->"
+        return "## 摘要\n## 方法\n## 实验\n## 结论\n## 局限\n第 1 页\nTable 1\n" + marker
+
+    def test_quality_gate_rejects_a_thin_v3_document(self):
+        runner = CodexJobRunner.__new__(CodexJobRunner)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "analysis.md"
+            path.write_text(self._depth_document("v3", {"abstract": 348, "method": 3463}), encoding="utf-8")
+            error = runner._document_quality_error(path) or ""
+        self.assertIn("正文深度不足", error)
+        self.assertIn("局限性", error, "the placeholder section is the one that made the report unreadable")
+
+    def test_quality_gate_accepts_a_deep_v3_document(self):
+        runner = CodexJobRunner.__new__(CodexJobRunner)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "analysis.md"
+            path.write_text(self._depth_document("v3", {key: 9999 for key, _ in SECTION_MIN_CHARS}), encoding="utf-8")
+            self.assertIsNone(runner._document_quality_error(path))
+
+    def test_depth_floor_does_not_retroactively_fail_v1_v2_documents(self):
+        runner = CodexJobRunner.__new__(CodexJobRunner)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "analysis.md"
+            path.write_text(self._depth_document("v2", {"abstract": 10}), encoding="utf-8")
+            self.assertIsNone(runner._document_quality_error(path))
 
     def test_timeout_budget_is_declared_for_the_api_call(self):
         self.assertEqual(ANALYSIS_TIMEOUT_SECONDS, 600)
