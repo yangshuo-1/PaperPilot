@@ -31,6 +31,7 @@
 
 - Python ≥3.12（`uv` 管理；仓库内 `.venv` 可作开发环境）、Node 18+（**WSL 默认 node v12 过老，须用 nvm 切 v22**）。
   本机没有现成 3.12，且 python-build-standalone 从 GitHub 下载会超时（2026-10-17 实测）→ 开发 venv 用本机已装的 3.14.3：`uv venv --python /home/yang/.local/share/uv/python/cpython-3.14-linux-x86_64-gnu/bin/python3.14 --clear .venv && uv pip install -e '.[dev]'`；CI 用 3.12。
+- 数据根优先级：`PAPERPOILOT_DATA_DIR` > `PAPER_VALT_ROOT`（旧变量，仍生效但 stderr 告警）> `$XDG_DATA_HOME/paperpilot`（通常 `~/.local/share/paperpilot`）。**默认永远是 XDG，不看源码 checkout**：仓库只放代码；开发时若要把数据根放进仓库，显式设 `PAPERPOILOT_DATA_DIR=<repo>/.data`（gitignored）。旧数据（仓库内 `papers/`+`references/`）已由 `paperpilot migrate` 搬到 `~/.local/share/paperpilot`（2026-10-17）。
 - LLM 配置优先级：`PAPER_LLM_BASE_URL` / `PAPER_LLM_API_KEY` / `PAPER_LLM_MODEL` 环境变量 > 设置页写入 `<data_dir>/db.sqlite`（P0.6 落地）> `llm_config.json`（仓库根，gitignored；旧位置 `backend/llm_config.json` 仍兼容）> `~/.pi/agent/models.json`。**API key 永不入 git、不入聊天、不写日志**（设置页只回 mask）。
 - AI 链路只通过 `llm/transport.py` 发请求（**单连接 keep-alive + 短连接超时重试**）：该 endpoint 会让每条新建 TLS 连接的首个请求挂住数分钟，`urllib.urlopen` 这种"每次新建连接"的写法必然超时；read 超时不要为省时间调小，推理模型确实要跑几十秒到几分钟。**不引入 `openai` SDK**（2026-10-17 冻结决策）。
 - 模型是推理模型，`reasoning_tokens` 计入 `max_tokens`：预算给小了会拿到 `finish_reason=stop` 但 `content` 为空的响应（不是网络故障）。全链路按"大预算 + 失败重试升级预算"处理，`_chat_completion` 对空响应明确报错。
@@ -43,6 +44,10 @@
 ```bash
 # 安装（发布形态）
 uv tool install paperpilot && paperpilot serve        # 默认 http://127.0.0.1:8020，静态前端由后端托管
+
+# 数据迁移（一次性：仓库内旧 papers/ + references/ → 数据根）
+paperpilot migrate                                   # 默认 dry-run，只打印计划
+paperpilot migrate --apply                           # 执行（--copy 保留旧目录，--force 忽略已有标记）
 
 # 开发（源码形态）
 uv pip install -e '.[dev]' && (cd frontend && npm install)
@@ -81,9 +86,11 @@ paperpilot/
   db.sqlite                      # 索引/标签/文件夹/笔记/Project/任务表/FTS5(WAL)
   papers/<arxiv_id>/{source,figures,derived,results,exports}  + manifest.json runs.jsonl
   projects/<project_id>/
+  references/                    # 过渡：旧 JSON 导入导出格式 + 旧 job 状态（P0.4 后只留导入导出）
 ```
 
-- 目标结构见上方树；M0/P0.1 已落地 `api/ storage/ jobs/ llm/ domain/`，`ingest/ analyze/ projects/ tools/ agent/` 是 M1–M3 的目标目录（当前对应代码仍在包根的 `parsers/ latex.py projects.py codex_jobs.py` 等）。
+- 本机数据根：`~/.local/share/paperpilot`（2 篇论文已迁移）；仓库内**没有** `papers/`、`references/`。开发时若要把数据放进仓库，显式 `PAPERPOILOT_DATA_DIR=$PWD/.data`。
+- 目标结构见上方树；M0 已落地 `api/ storage/ jobs/ llm/ domain/`，`ingest/ analyze/ projects/ tools/ agent/` 是 M1–M3 的目标目录（当前对应代码仍在包根的 `parsers/ latex.py projects.py codex_jobs.py` 等）。
 
 契约细节与"与最终方案的差异"见 `docs/design/data-organization.md`；目录映射表（含落地状态）见 `docs/design/code-organization.md`。
 
@@ -138,6 +145,8 @@ tests/               unittest，真实文件系统 + 临时目录
 
 M0 之前是 v1→v2 strangler 期，**已结束**（单体清零，旧 roadmap 已归档）。当前只剩包化搬迁：
 
-- P0.1（src 布局 + 打包 + CLI）与 P0.2（前端产物进 wheel + SPA 托管）**已完成**；剩余 P0.3–P0.7、P0.9 的清单与写盘范围见 `docs/design/roadmap.md` 的 M0 任务清单。
+- M0 进度：P0.1（src 布局 + 打包 + CLI）、P0.2（前端产物进 wheel + SPA 托管）、P0.3（数据根移出仓库 + `paperpilot migrate`）**已完成**；剩余 P0.4–P0.7、P0.9 的清单与写盘范围见 `docs/design/roadmap.md` 的 M0 任务清单。
+- 仓库已无 `papers/`、`references/`（2026-10-17 迁移完成，数据在 `~/.local/share/paperpilot`）：数据相关的改动只能指向 `<data_dir>`，禁止再往仓库根读写。旧布局快照在 `<data_dir>/.legacy-repo-snapshot-20261017.tar.gz`。
+- `paperpilot migrate` 是唯一被授权批量移动历史数据的入口；默认 dry-run，`--apply` 才动盘，且拒绝"旧根=目标根"。
 - `pyproject.toml`、`src/paperpilot/main.py`、`config.py`、`models.py`、DB DDL 是共享文件，只在 INFRA 轨或集成阶段改动。
 - 新功能只进新结构；搬运期间不得顺手重写行为，每步保持 `compileall` + unittest + 前端 build 通过。

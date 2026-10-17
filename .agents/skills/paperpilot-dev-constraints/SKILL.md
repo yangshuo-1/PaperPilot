@@ -9,7 +9,9 @@ description: This skill should be used whenever an agent writes, modifies, or re
 权威设计文档：`docs/design/`（code-organization / data-organization / paper-diagrams / reading-workspace / roadmap）。本文件是约束的速查与执行版，不替代设计文档的推理部分。
 计划与进度只维护在 `docs/design/roadmap.md`（M0–M5）。
 
-> **M0 现状（P0.1 已落地）**：代码已在 `src/paperpilot/...`，`routers/` → `api/`、`stores/` → `storage/`（原 `storage.py` 聚合根在 `storage/paper_store.py`）。仍待搬的是 `parsers/` → `ingest/parsers/`、`arxiv.py`/`latex.py` → `ingest/`、`projects.py` → `projects/`、`codex_jobs.py` 等 → `analyze/`（见 `docs/design/code-organization.md` 映射表）。搬运期间不得顺手改行为，每步保持验证命令通过。
+> **M0 现状（P0.1–P0.3 已落地）**：代码已在 `src/paperpilot/...`，`routers/` → `api/`、`stores/` → `storage/`（原 `storage.py` 聚合根在 `storage/paper_store.py`）。仍待搬的是 `parsers/` → `ingest/parsers/`、`arxiv.py`/`latex.py` → `ingest/`、`projects.py` → `projects/`、`codex_jobs.py` 等 → `analyze/`（见 `docs/design/code-organization.md` 映射表）。搬运期间不得顺手改行为，每步保持验证命令通过。
+>
+> **数据根已移出仓库（P0.3，2026-10-17）**：默认 `$XDG_DATA_HOME/paperpilot`，仓库内已无 `papers/`、`references/`；运行态库是 `<data_dir>/db.sqlite`（不再在 `references/` 下）。业务代码不得写演示/seed 数据（原 Qwen3-VL seed 已删除）。批量移动历史数据只允许通过 `paperpilot migrate`（默认 dry-run）。
 
 ## 1. 代码结构约束
 

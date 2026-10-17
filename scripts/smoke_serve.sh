@@ -67,3 +67,11 @@ if [[ "$DEEP_LINK" != "200" || "$UNKNOWN_API" != "404" ]]; then
 fi
 
 echo "smoke OK: / (SPA shell) + /projects (deep link 200) + /api/health + unknown API 404"
+
+# P0.3: runtime state must be <data_dir>/db.sqlite, never the repo or site-packages.
+if [[ ! -f "$DATA_DIR/db.sqlite" ]]; then
+	printf '%s\n' "smoke FAILED: $DATA_DIR/db.sqlite was not created (runtime state is not in the data root)" >&2
+	find "$DATA_DIR" -maxdepth 2 >&2 || true
+	exit 1
+fi
+echo "smoke OK: runtime database at $DATA_DIR/db.sqlite"

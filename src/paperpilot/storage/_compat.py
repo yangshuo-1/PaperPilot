@@ -20,10 +20,10 @@ class StorageSupport:
         self.paper_index_path = settings.references_dir / "paper_index.jsonl"
         self.tags_path = settings.references_dir / "paper_tags.json"
         self.analysis_index_path = settings.references_dir / "paper_analysis_index.jsonl"
-        # Preserve the existing first-run sample and legacy import boundary,
-        # then make SQLite the sole runtime state.  The marker prevents a
-        # later restart from importing stale JSON over current user changes.
-        self._ensure_seed_data()
+        # Legacy JSON (paper_index.jsonl / paper_tags.json / …) is imported once into
+        # SQLite; the marker prevents a later restart from importing stale JSON over
+        # current user changes.  No demo/seed papers are created: the library starts
+        # empty and content comes from the user's own imports.
         self.database = Database(data_root=settings.data_root)
         if self.database.get_meta("runtime_legacy_imported") is None:
             if self.database.table_counts()["papers"] == 0:
@@ -31,8 +31,6 @@ class StorageSupport:
             self.database.set_meta("runtime_legacy_imported", "1")
 
     def _paper_dir(self, paper_id: str) -> Path:
-        if paper_id == "qwen3-vl-2511-21631":
-            return self.settings.papers_dir / "Qwen3VL_2511.21631"
         papers_root = self.settings.papers_dir.resolve()
         record = None
         database = getattr(self, "database", None)

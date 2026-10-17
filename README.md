@@ -22,8 +22,9 @@
 ## 环境
 
 - Python ≥3.12，`uv` 管理依赖（**唯一依赖声明是 `pyproject.toml`**）。
+- 数据根：`PAPERPOILOT_DATA_DIR` > `PAPER_VALT_ROOT`（旧变量，告警）> `$XDG_DATA_HOME/paperpilot`。**默认永远是 XDG，仓库只放代码**；旧数据（仓库内 `papers/`+`references/`）用 `paperpilot migrate`（默认 dry-run，`--apply` 才动盘）搬到数据根。
 - Node 18+ 仅在开发/构建前端时需要（WSL 默认 node v12 过老，用 nvm 切 v22）；发布形态不需要 Node。
-- LLM 配置优先级：环境变量 `PAPER_LLM_BASE_URL` / `PAPER_LLM_API_KEY` / `PAPER_LLM_MODEL` > 网页设置页（写入数据根 `db.sqlite`）> `backend/llm_config.json`（gitignored）。**API key 永不入 git、不入聊天、不写日志。**
+- LLM 配置优先级：环境变量 `PAPER_LLM_BASE_URL` / `PAPER_LLM_API_KEY` / `PAPER_LLM_MODEL` > 网页设置页（写入数据根 `db.sqlite`）> `llm_config.json`（仓库根，gitignored；旧位置 `backend/llm_config.json` 仍兼容）。**API key 永不入 git、不入聊天、不写日志。**
 
 ## 安装与启动
 

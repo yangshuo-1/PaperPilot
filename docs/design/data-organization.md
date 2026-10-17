@@ -44,6 +44,7 @@
 4. 所有写盘走临时文件 + 原子替换；`manifest.json` 记录 SHA-256 与生成器版本。
 5. API 一律拒绝越过本论文/本 Project 目录的路径。
 6. **旧布局只在迁移期可读**：`references/*.json(l)`、`references/*_jobs/`、仓库内 `papers/` 与新布局并存期间只读；一次性 `paperpilot migrate` 完成后，新写入只走新布局。这是"不批量移动历史文件"规则的**一次性例外**，由用户 2026-10-17 决策授权。
+7. **本机已执行迁移（2026-10-17，P0.3）**：仓库内 `papers/`、`references/` 已删除（22 个 tracked 文件随 commit 移除），数据在 `~/.local/share/paperpilot`；旧布局快照留在 `~/.local/share/paperpilot/.legacy-repo-snapshot-20261017.tar.gz`。数据根下的 `references/` 是**过渡性**的导入导出格式 + 旧 job 状态，P0.4 之后只保留导入导出语义。
 
 ## 运行态（db.sqlite）
 
@@ -56,19 +57,21 @@
 ### 迁移与重建
 
 - `paperpilot migrate`：探测旧数据根（仓库内 `papers/` + `references/`）→ 建新目录 → 拷贝/移动 + 改名 `<arxiv_id>` → 导入 JSON/JSONL 到 SQLite → 写标记。可重入、有 `--dry-run`、保留旧目录直到用户确认删除。
+  `--apply` 时先拷贝旧 `references/paper_valt.db` 到 `<data_dir>/db.sqlite`（保住 JSON 里没有的标注/会话/任务状态），再对空库执行 JSON 导入；最后重写索引、`references/*.json` 与 DB 里的 `local_pdf_path`。落地记录与验证证据见 `docs/design/roadmap.md` 的 P0.3 节。
 - `paperpilot reindex`：删除 `db.sqlite` 后，从 `papers/**`（`manifest.json`、`runs.jsonl`、`source/`、`derived/`、`results/`）重建索引、标签、文件夹、笔记归属与 FTS5。**这是 M0 验收项**：重建结果必须与删库前一致（`manifest.json` SHA 校验 + 检索抽查）。
 
 ## git 策略
 
-数据根移出仓库后，仓库回到**纯代码**：`papers/`、`references/` 不再随仓库版本管理。
+数据根移出仓库后，仓库回到**纯代码**：`papers/`、`references/` 不再随仓库版本管理（2026-10-17 已删除，`.gitignore` 里保留同名规则作为"数据根被指到仓库内"时的保险）。
 
 | 路径 | 入 git | 理由 |
 |---|---|---|
 | `src/`、`frontend/src/`、`tests/`、`scripts/`、`docs/`、`pyproject.toml`、`Makefile` | ✅ | 代码与文档 |
 | `frontend/dist/`、`src/paperpilot/web/` | ❌ | 生成物，由 `make build` 产出并打进 wheel |
+| `papers/`、`references/`、`projects/`、`db.sqlite*`、`paper_valt.db*`（仓库内同名路径） | ❌ | 仅当开发时把数据根指到仓库内才会出现，禁止入库 |
 | `.data/`（开发数据根） | ❌ | 本地运行态 |
 | `<data_dir>/**`（仓库外） | — | 用户数据；需要版本化由用户自行对数据根建 git，或走 `exports/` |
-| `backend/llm_config.json` | ❌ | 含 key；M0 后 key 的主要载体是设置页写库，本文件仅作迁移来源 |
+| `llm_config.json`（仓库根；旧位置 `backend/llm_config.json` 仅兼容） | ❌ | 含 key；M0 后 key 的主要载体是设置页写库，本文件仅作迁移来源 |
 
 > v2 的"`papers/*/results/analysis/*` 入 git"一行随数据根外移失效；若日后需要把分析成果纳入版本管理，在 `exports/` 下显式导出后由用户决定。
 

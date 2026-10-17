@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from typing import Sequence
 
 
@@ -47,6 +48,56 @@ def _pending(command: str, task: str):
     return run
 
 
+def _migrate(args: argparse.Namespace) -> int:
+    import json
+
+    from .datadir import default_data_dir
+    from .migrate import read_marker, run
+
+    data_root = Path(args.data_dir).expanduser() if args.data_dir else default_data_dir()
+    legacy_root = Path(args.legacy_root).expanduser() if args.legacy_root else None
+
+    # A dry run must not create the data root just to inspect it.
+    if not args.apply:
+        report = run(legacy_root=legacy_root, data_root=data_root, apply=False)
+        for line in report.get("plan") or []:
+            print(line)
+        if report.get("already_migrated"):
+            print("\n数据根已有迁移标记；如需重跑用 --force。")
+        for note in report.get("notes") or []:
+            print(f"note: {note}")
+        if report.get("applied"):
+            print("\n迁移已执行。")
+        else:
+            print(f"\n[dry-run] 未改动任何文件。数据根：{report['data_root']}")
+            if report.get("papers"):
+                print("加 --apply 执行；加 --copy 保留旧目录，加 --force 忽略已有标记。")
+        return 0
+
+    report = run(
+        legacy_root=legacy_root,
+        data_root=data_root,
+        apply=True,
+        copy=args.copy,
+        force=args.force,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report.get("applied"):
+        if report.get("already_migrated"):
+            print("已迁移过（标记存在）；未改动任何文件。用 --force 可重跑。", file=sys.stderr)
+            return 0
+        print("没有可迁移的旧数据根；未改动任何文件。", file=sys.stderr)
+        return 1
+    marker = read_marker(Path(report["data_root"]))
+    print(
+        f"\n迁移完成：{len(report['moved'])} 篇论文 → {report['data_root']}"
+        f"（模式 {'copy' if report['copy'] else 'move'}，标记 {marker['migrated_at'] if marker else '?'}）"
+    )
+    for note in report.get("notes") or []:
+        print(f"note: {note}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paperpilot",
@@ -63,7 +114,12 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(func=_serve)
 
     migrate = subparsers.add_parser("migrate", help="把旧数据根迁移到 PAPERPOILOT_DATA_DIR（M0 P0.3）")
-    migrate.set_defaults(func=_pending("migrate", "P0.3"))
+    migrate.add_argument("--data-dir", default=None, help="目标数据根（默认 PAPERPOILOT_DATA_DIR / XDG）")
+    migrate.add_argument("--legacy-root", default=None, help="旧数据根（需含 papers/ 与 references/）")
+    migrate.add_argument("--apply", action="store_true", help="真正执行迁移（默认只做 dry-run）")
+    migrate.add_argument("--copy", action="store_true", help="拷贝而非移动，保留旧目录")
+    migrate.add_argument("--force", action="store_true", help="忽略已有迁移标记，重跑")
+    migrate.set_defaults(func=_migrate)
 
     reindex = subparsers.add_parser("reindex", help="从磁盘重建索引与检索（M0 P0.7）")
     reindex.set_defaults(func=_pending("reindex", "P0.7"))

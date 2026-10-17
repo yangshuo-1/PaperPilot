@@ -14,7 +14,7 @@
 
 | 阶段 | 状态 | 备注 |
 |---|---|---|
-| M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.8 已完成**；剩余 P0.3/P0.4/P0.5/P0.6/P0.7/P0.9。 |
+| M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.8 已完成**；剩余 P0.4/P0.5/P0.6/P0.7/P0.9。 |
 | M1 入库与阅读 | ⏳ 功能在旧结构下已可用，待在新结构上做 20 篇成功率统计 | 当前库内仅 2 篇论文，LaTeX 解析稳健性缺数据（最大不确定项）；arXiv 限速/缓存/单连接按风险节 5 落地。 |
 | M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。 |
 | M3 Project | ⏳ 已有 Project/Session/治理/事件骨架；缺项目简报、选论文、工具循环、检索、MCP | 无工具调用、无 MCP；`Project` 只有 name/description/goal，无简报字段。**MCP server 要自己实现**（dsh/Pi 只有 client，见风险节 4）。 |
@@ -41,7 +41,7 @@
 |---|---|---|---|---|
 | **P0.1** ✅ | INFRA | 包化与 src 布局：`pyproject.toml` 补 `[project]`（Python ≥3.12、依赖、`[project.scripts]`、package-data、第三方许可证声明）；`git mv backend/app src/paperpilot`；按映射表重命名 `routers→api`、`stores→storage`；`paperpilot serve` / `paperpilot reindex` CLI；删除 `requirements.txt` 与占位 `uv.lock` | `pyproject.toml`、`src/**`、`tests/**`、`scripts/**` | `compileall` + unittest 全绿；`uv build` 产出 wheel；`uv tool install` 后 `paperpilot --help` 可用 |
 | **P0.2** ✅ | WEB | 前端产物进 wheel：`vite build` 输出到 `src/paperpilot/web`；FastAPI 挂载静态站 + SPA fallback（`/api/*` 优先）；`PAPERPOILOT_DEV=1` 时保留 Vite 5173 与 CORS 开发模式 | `vite.config.ts`、`src/paperpilot/web/**`（生成物）、`main.py` 挂载段 | 只装 wheel 的机器上打开页面即可用；`/api/health` 正常；开发模式仍走 Vite |
-| **P0.3** | DATA | 数据根移出仓库：`PAPERPOILOT_DATA_DIR`（默认 XDG `~/.local/share/paperpilot`）；`config.py` 只解析 `<data_dir>`；一次性迁移器 `paperpilot migrate`（旧 `papers/`+`references/` → `papers/<arxiv_id>/{source,derived,results,exports}` + `db.sqlite`） | `config.py`、`storage/paths.py`、新迁移模块、测试 | 现有 2 篇论文迁移后索引/标签/标注/笔记可用；路径逃逸测试仍绿；迁移可重入、有 dry-run |
+| **P0.3** ✅ | DATA | 数据根移出仓库：`PAPERPOILOT_DATA_DIR`（默认 XDG `~/.local/share/paperpilot`）；`config.py` 只解析 `<data_dir>`；一次性迁移器 `paperpilot migrate`（旧 `papers/`+`references/` → `papers/<arxiv_id>/{source,derived,results,exports}` + `db.sqlite`） | `config.py`、`storage/paths.py`、`migrate.py`、测试 | 现有 2 篇论文迁移后索引/标签/标注/笔记可用；路径逃逸测试仍绿；迁移可重入、有 dry-run |
 | P0.4 | JOBS | 任务表：job 状态/checkpoint/事件从 `references/*_jobs/*.json` 迁入 `db.sqlite`（保留 `jobs/base.py` 状态机、`job_key` 幂等、`recover()` 语义） | `jobs/**`、`storage/db.py` DDL、测试 | 重启后 running 任务恢复；幂等重复提交不产生第二个 job；既有 job 契约测试全绿 |
 | P0.5 | JOBS/WEB | 进度推送：`GET /api/jobs/{id}/events` SSE；前端订阅，断线回退轮询 | `api/jobs.py`、`frontend/src/api`、`frontend/src/hooks` | 真实任务进度逐条到达；断线重连不重复计数；无 SSE 时轮询仍工作 |
 | P0.6 | CONTRACT/JOBS | 设置页：`GET/PUT /api/settings/llm`（base_url/model/api_key），key 只回 mask、永不写日志；连通性测试；env 覆盖优先 | `api/settings.py`、`models.py` 设置模型、`llm/` 配置解析、`frontend/src/pages/SettingsPage` | 页面填 key → 保存 → 测试连接成功；`GET` 不回显明文；env 存在时以 env 为准并在 UI 标注来源 |
@@ -58,7 +58,7 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 
 顺带修掉的既有问题：`storage/documents.py` 重复调用 `get_paper` 与未使用的 `translatable`、`storage/reading.py` 未使用的 `sha256_file` 导入（`ruff check src` 之前是红的）；`check_no_inline_prompt.py` 失效的 whitelist 移除。
 
-数据根默认值（P0.3 的契约，先落地守卫）：新增 `src/paperpilot/datadir.py`，优先级 `PAPERPOILOT_DATA_DIR` > `PAPER_VALT_ROOT` > 源码 checkout > XDG。**在装好的 wheel 里 `config.py` 旧写法会把 `<site-packages>/lib/python3.x/` 当数据根并往里建 `papers/`**——这是 M0"新机器装完能起页面"必须堵的洞。
+数据根默认值（P0.3 的契约，先落地守卫）：新增 `src/paperpilot/datadir.py`，优先级 `PAPERPOILOT_DATA_DIR` > `PAPER_VALT_ROOT`（告警）> XDG。**在装好的 wheel 里 `config.py` 旧写法会把 `<site-packages>/lib/python3.x/` 当数据根并往里建 `papers/`**——这是 M0"新机器装完能起页面"必须堵的洞。（P0.3 又发现"源码 checkout 回退到仓库根"同样危险：`paperpilot migrate` 会把自己迁移到自己头上，已改为**默认永远是 XDG**。）
 
 验证证据：`ruff check src` 全绿；`lint-imports` 3 契约 KEPT；unittest **244 passed**；`uv build --wheel` 产物含 `llm/prompts/*.md`(10) 与 `LICENSE`；`uv tool install` 后 `paperpilot --version/--help` 可用、`paperpilot serve` 的 `/api/health` 返回 `{"ok":true,"data_root":...}`（`/` 仍 404，等 P0.2）。
 
@@ -71,6 +71,24 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 **踩到的坑（重要）**：hatchling 的 `packages=` 会把 .gitignore 忽略的文件静默排除，第一次打包 wheel 里 `web/` 条目为 0；必须显式写 `[tool.hatch.build] artifacts = ["src/paperpilot/web/**"]`。`make wheel` 因此依赖 `make build` 并校验 `index.html` 存在。
 
 验证证据：wheel 含 64 个 web 条目；`uv tool install` 后 `curl /` 返回 SPA HTML、`/projects` 与 `/papers/1234.5678` 深链返回 200、`/assets/index-*.js` 返回 200（1.0MB）、`/api/nope` 仍 404；**headless Chrome 实测** `#root` 有渲染子节点、Library 界面文案可见（不是白屏）。新增 `tests/test_webapp.py` 6 条（250 tests 全绿）。
+
+### P0.3 落地记录（2026-10-17）
+
+新增 `src/paperpilot/migrate.py` + `paperpilot migrate`（`--data-dir/--legacy-root/--apply/--copy/--force`，**默认 dry-run**）：探测旧数据根 → 论文目录改名 `<arxiv_id>` → `references/` 搬到数据根 → 重写 `paper_index.jsonl` / `*_json` 里的绝对路径 → 建 `<data_dir>/db.sqlite`（先拷贝旧 `references/paper_valt.db` 保运行态，再按需导入 JSON）→ 重写 DB 里的 `local_pdf_path` → 写 `.migration.json` 标记。可重入（有标记则 no-op，`--force` 才重跑）；旧数据根与目标相同会被拒绝（防止"迁移到自己头上"）。
+
+**同时修掉的三个真问题**：
+
+1. `database_path()` 原本指向 `<root>/references/paper_valt.db`，与"运行态只在 `<data_dir>/db.sqlite`"契约不符 → 改为 `<data_dir>/db.sqlite`（新增 `database_path` 文档 + `Database.rewrite_paper_paths()` 作为唯一写入口做路径改点）。
+2. `default_data_dir()` 原本在源码 checkout 里回退到**仓库根** → 仓库仍是数据根，"仓库只放代码"落不了地，且 `paperpilot migrate` 无参运行时目标就是仓库自己。现改为默认永远是 XDG（`PAPER_VALT_ROOT` 保留但 stderr 告警）。
+3. **业务代码里的演示 seed 数据**（`_ensure_seed_data` / `_write_seed_analysis` / `qwen3-vl-2511-21631` 特判，横跨 `_compat.py`、`arxiv.py`、`analysis.py`）已整段删除：空数据根不再凭空出现一篇 Qwen3-VL；新建论文目录也改为 `<arxiv_id>` 而不是 `<ShortTitle>_<arxiv_id>`。
+
+**测试卫生（顺带堵住的坑）**：`tests/test_diagrams_integration.py` 的 lifespan 用例会走真实 `get_settings()`，此前默认数据根是仓库所以看不出来；数据根改到 XDG 后它会去创建 `~/.local/share/paperpilot`（污染真实论文库）。已改为在临时数据根里跑，并全量验证测试套件不再触碰真实数据根。
+
+验证证据（真机执行）：`paperpilot migrate --apply --copy` 把 2 篇论文（`2511.21631`、`2509.20354`）与 `references/` 搬到 `~/.local/share/paperpilot`，`db.sqlite` 含 2 papers / 5 tags，`local_pdf_path` 全部指向新根；服务在该数据根下 `/api/papers`(2)、`/api/papers/{id}`、`/documents`、`/reader`(42 页)、`/diagrams`、`/assets/manifest`、`/analysis`、`/translation`、`/reading/structured` 全 200；随后**删掉仓库内 `papers/`+`references/`（22 个 tracked 文件）再复测，上述接口仍全 200** —— 这是"数据根不在仓库内"的硬证据。删除前留了原始快照 `~/.local/share/paperpilot/.legacy-repo-snapshot-20261017.tar.gz`（12MB，含旧布局与用户改过的 `paper_tags.json`）。
+
+测试与静态检查：unittest **268 passed**（新增 `tests/test_migrate.py` 14 条、`tests/test_datadir.py` 4 条）；`ruff check src tests` 全绿；`lint-imports` 3 契约 KEPT。
+
+**遗留（记入后续）**：迁移保留论文目录内部现有文件名（`latex_plain.txt`、`*_analysis.json`、`ai_takeaways.json` 等仍在论文根），四层内部归位（`derived/`、`results/analysis/` 等）需要同时改所有读写路径，留给 P0.7 `reindex` 一起做；数据根下 `references/` 目前仍是导入导出格式 + 旧 job 状态的过渡位置（P0.4 把 job 状态搬进 `db.sqlite` 后即可只留导入导出）。
 
 ### 关键技术决策（冻结，2026-10-17 用户确认）
 

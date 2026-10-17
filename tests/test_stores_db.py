@@ -161,7 +161,7 @@ class StoreDatabaseTests(unittest.TestCase):
             report = migrate_to_sqlite(root)
             self.assertEqual(report["mode"], "dry-run")
             self.assertEqual(report["planned_rows"]["papers"], 2)
-            self.assertFalse((root / "references" / "paper_valt.db").exists())
+            self.assertFalse((root / "db.sqlite").exists())
             self.assertFalse((root / "references" / "paper_index.jsonl.bak").exists())
         finally:
             temporary.cleanup()
@@ -226,7 +226,7 @@ class StoreDatabaseTests(unittest.TestCase):
             report = rollback_migration(root, remove_database=True)
             self.assertEqual(report["status"], "rolled_back")
             self.assertEqual(index.read_bytes(), original)
-            self.assertFalse((root / "references" / "paper_valt.db").exists())
+            self.assertFalse((root / "db.sqlite").exists())
         finally:
             temporary.cleanup()
 

@@ -1,11 +1,13 @@
 import json
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 from starlette.requests import Request
 
+from paperpilot.config import Settings
 from paperpilot.jobs.diagram import DiagramJobRunner
 from paperpilot.main import app
 from paperpilot.api.diagrams import (
@@ -75,7 +77,13 @@ class DiagramIntegrationTests(unittest.TestCase):
 
     def test_lifespan_shares_diagram_runner_and_recovers_on_startup(self):
         runner = Mock()
-        with patch("paperpilot.main.initialize_diagram_runner", return_value=runner) as initialize:
+        # The lifespan builds the real store from the process data root: bind it to a
+        # throwaway directory so a test run can never touch the user's library.
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"PAPERPOILOT_DATA_DIR": temp}
+        ), patch("paperpilot.main.get_settings", return_value=Settings()), patch(
+            "paperpilot.main.initialize_diagram_runner", return_value=runner
+        ) as initialize:
             async def exercise():
                 async with app.router.lifespan_context(app):
                     self.assertIs(app.state.diagram_runner, runner)

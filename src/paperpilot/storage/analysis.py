@@ -16,17 +16,10 @@ class AnalysisStore:
             return None
         raw = path.read_text(encoding="utf-8")
         if not raw.strip():
-            if paper_id == "qwen3-vl-2511-21631":
-                self._write_seed_analysis()
-                raw = path.read_text(encoding="utf-8")
-            else:
-                return None
+            return None
         try:
             return PaperAnalysis.model_validate_json(raw)
         except (ValidationError, ValueError):
-            if paper_id == "qwen3-vl-2511-21631":
-                self._write_seed_analysis()
-                return PaperAnalysis.model_validate_json(path.read_text(encoding="utf-8"))
             return None
     def get_analysis(self, paper_id: str) -> PaperAnalysis:
         analysis = self.get_analysis_or_none(paper_id)
@@ -171,64 +164,3 @@ class AnalysisStore:
             "",
         ]
         self._write_text_atomic(path, "\n".join(lines))
-    def _write_seed_analysis(self) -> None:
-        timestamp = now_iso()
-        analysis = PaperAnalysis(
-            paper_id="qwen3-vl-2511-21631",
-            identity=PaperIdentity(
-                title="Qwen3-VL",
-                short_title="Qwen3-VL",
-                authors=["Qwen Team"],
-                year=2025,
-                venue="arXiv",
-                arxiv_id="2511.21631",
-                source_url="https://arxiv.org/abs/2511.21631",
-                repo_url="https://github.com/QwenLM/Qwen3-VL",
-                local_pdf_path=str(self.settings.papers_dir / "Qwen3VL_2511.21631" / "2511.21631.pdf"),
-                repository_confidence="pending",
-            ),
-            summary=OneScreenSummary(
-                problem="理解和构建强视觉-语言能力的多模态大模型。",
-                core_idea="这是用于验证 paper_valt 论文理解工作流的 Qwen3-VL 种子草稿。具体方法、实验和代码映射必须在导入 PDF、运行 readpack 并核验仓库后继续补全。",
-                contributions=[
-                    "作为首个样例验证论文理解 schema。",
-                    "把论文事实、实验声明和工程映射分开记录。",
-                ],
-                novelty="待基于论文正文补充。",
-                result_claims=["待从论文实验章节抽取。"],
-                limitations=["尚未基于本地 PDF 全文抽取。"],
-            ),
-            method=MethodDecomposition(
-                inputs=["文本输入", "视觉输入（图片/视频等具体范围待论文确认）"],
-                outputs=["文本响应或多模态任务输出，具体边界待论文确认"],
-                modules=["多模态大模型主体，具体模块待论文确认"],
-                training_pipeline=["待从论文方法章节抽取"],
-                inference_pipeline=["待从论文方法章节抽取"],
-                failure_handling=["未知；需要从限制和实验失败案例中补充"],
-            ),
-            evidence=EvidenceSummary(
-                benchmarks=["待从实验章节抽取"],
-                metrics=["待从实验章节抽取"],
-                baselines=["待从实验章节抽取"],
-                unsupported_or_unclear_claims=["所有尚未由本地 PDF/readpack 支撑的具体数值和实现细节。"],
-            ),
-            implementation=ImplementationMapping(
-                repo_url="https://github.com/QwenLM/Qwen3-VL",
-                status="pending",
-                mismatches=["尚未检查仓库目录和具体代码入口。"],
-            ),
-            critique=Critique(
-                assumptions=["示例假设 Qwen3-VL 有可公开访问的论文来源和候选仓库。"],
-                limitations=["尚未完成全文解析。", "尚未完成代码仓库核验。"],
-                reproducibility_risks=["训练数据、训练成本、权重和完整配置可能无法完全公开。"],
-                engineering_risks=["直接复现多模态大模型通常需要大量算力和数据工程。"],
-                open_questions=["官方仓库与论文版本是否一一对应？", "论文中的训练阶段和公开代码能力边界是否一致？"],
-            ),
-            source_confidence="medium",
-            generated_at=timestamp,
-            updated_at=timestamp,
-        )
-        path = self._analysis_path(analysis.paper_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_text_atomic(path, analysis.model_dump_json(indent=2) + "\n")
-        self._write_analysis_markdown(analysis)

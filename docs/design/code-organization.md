@@ -21,6 +21,9 @@ paperpilot/                       # 仓库（远端已是 PaperPilot；本地目
     main.py                       # app 工厂：挂 router、挂 web 静态站、lifespan
     cli.py                        # paperpilot serve / reindex / migrate / doctor
     config.py                     # Settings：只解析 <data_dir>；代码根仅用于开发与测试
+    datadir.py                    # 数据根解析：PAPERPOILOT_DATA_DIR > PAPER_VALT_ROOT(告警) > XDG
+    migrate.py                    # 一次性迁移器：旧 papers/+references/ → <data_dir>（默认 dry-run）
+    webapp.py                     # 托管预构建 SPA：SPA fallback、/api 优先、dev 模式判定
     deps.py  models.py
     domain/                       # 纯领域逻辑（dataclass，禁 fastapi/pydantic）—— 保留，import-linter 契约依赖它
     api/                          # ← 原 routers/：FastAPI 薄层，一域一文件

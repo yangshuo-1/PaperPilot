@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Import legacy paper JSON/JSONL state into the v2 SQLite store.
+"""Import legacy paper JSON/JSONL state into the SQLite store.
+
+Superseded by ``paperpilot migrate`` (M0 P0.3), which also relocates the data root and
+renames paper directories; kept because it still provides the rollback of an apply.
 
 The default action is a read-only dry run.  Use ``--apply`` to create/update
-``references/paper_valt.db``; use ``--rollback`` to restore the ``.bak`` files
-created by an apply.
+``<data_dir>/db.sqlite``; use ``--rollback`` to restore the ``.bak`` files created by
+an apply.
 """
 
 from __future__ import annotations
@@ -33,13 +36,13 @@ def _parser() -> argparse.ArgumentParser:
         "--root",
         type=Path,
         default=None,
-        help="PAPER_VALT_ROOT (defaults to the environment or repository root)",
+        help="旧数据根（默认取 PAPERPOILOT_DATA_DIR / PAPER_VALT_ROOT）",
     )
     parser.add_argument(
         "--db",
         type=Path,
         default=None,
-        help="SQLite database path (defaults to <root>/references/paper_valt.db)",
+        help="SQLite database path (defaults to <data_dir>/db.sqlite)",
     )
     action = parser.add_mutually_exclusive_group()
     action.add_argument(

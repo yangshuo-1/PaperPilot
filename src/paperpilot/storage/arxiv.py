@@ -70,7 +70,9 @@ class ArxivStore:
         metadata = self._fetch_arxiv_metadata(arxiv_id)
         short_title = self._short_title(metadata.title)
         paper_id = self._paper_id(short_title, metadata.arxiv_id)
-        paper_dir = self.settings.papers_dir / f"{self._safe_filename(short_title)}_{metadata.arxiv_id}"
+        # Directory name is the arXiv id (docs/design/data-organization.md): no title
+        # prefix, so a later title/metadata refresh never moves the paper directory.
+        paper_dir = self.settings.papers_dir / metadata.arxiv_id
         paper_dir.mkdir(parents=True, exist_ok=True)
 
         pdf_path = paper_dir / f"{metadata.arxiv_id}.pdf"
@@ -413,46 +415,6 @@ class ArxivStore:
         self._write_text_atomic(path, analysis.model_dump_json(indent=2) + "\n")
         self._write_analysis_markdown(analysis)
         self._write_pdf_extract_note(paper_id, metadata, preview)
-    def _ensure_seed_data(self) -> None:
-        self.settings.ensure_dirs()
-        qwen_dir = self.settings.papers_dir / "Qwen3VL_2511.21631"
-        qwen_dir.mkdir(parents=True, exist_ok=True)
-        if not self.paper_index_path.exists():
-            record = {
-                "id": "qwen3-vl-2511-21631",
-                "title": "Qwen3-VL",
-                "short_title": "Qwen3-VL",
-                "authors": ["Qwen Team"],
-                "year": 2025,
-                "venue": "arXiv",
-                "arxiv_id": "2511.21631",
-                "source_url": "https://arxiv.org/abs/2511.21631",
-                "repo_url": "https://github.com/QwenLM/Qwen3-VL",
-                "local_pdf_path": str(qwen_dir / "2511.21631.pdf"),
-                "understanding_status": "indexed",
-                "updated_at": now_iso(),
-            }
-            self._write_text_atomic(self.paper_index_path, json.dumps(record, ensure_ascii=False) + "\n")
-        if not self.tags_path.exists():
-            self._write_text_atomic(
-                self.tags_path,
-                json.dumps(
-                    {
-                        "version": 1,
-                        "papers": {
-                            "qwen3-vl-2511-21631": {
-                                "title": "Qwen3-VL",
-                                "tags": ["vlm", "qwen", "multimodal"],
-                            }
-                        },
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-            )
-        if not self._analysis_path("qwen3-vl-2511-21631").exists():
-            self._write_seed_analysis()
     def _paper_from_record(self, record: dict[str, Any]) -> Paper:
         return Paper(
             id=record["id"],

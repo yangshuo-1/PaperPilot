@@ -114,6 +114,36 @@ jobs:
           curl -fsS http://127.0.0.1:8123/ | grep -q 'id="root"'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8123/projects)" = "200"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8123/api/definitely-missing)" = "404"
+          test -f "$PAPERPOILOT_DATA_DIR/db.sqlite"
+
+      # P0.3 acceptance: a legacy tree is relocated into the data root, paper
+      # directories are renamed to <arxiv_id>, and db.sqlite carries the index.
+      - name: Migrate a legacy data root with the installed wheel
+        run: |
+          export PATH="/tmp/wheelsmoke/bin:$PATH"
+          legacy="$(mktemp -d)"
+          data="$(mktemp -d)/data"
+          mkdir -p "$legacy/papers/Qwen3VL_2511.21631/derived" "$legacy/references"
+          printf 'x' > "$legacy/papers/Qwen3VL_2511.21631/2511.21631.pdf"
+          printf 'text' > "$legacy/papers/Qwen3VL_2511.21631/derived/latex_plain.txt"
+          printf '{"schema_version": 1}' > "$legacy/papers/Qwen3VL_2511.21631/manifest.json"
+          printf '{"id": "qwen3-vl-2511-21631", "title": "Qwen3-VL", "authors": ["A"], "arxiv_id": "2511.21631", "local_pdf_path": "%s/papers/Qwen3VL_2511.21631/2511.21631.pdf"}\n' "$legacy" > "$legacy/references/paper_index.jsonl"
+          paperpilot migrate --legacy-root "$legacy" --data-dir "$data"        # dry run must not touch anything
+          test ! -e "$data"
+          paperpilot migrate --legacy-root "$legacy" --data-dir "$data" --apply
+          test -f "$data/papers/2511.21631/2511.21631.pdf"
+          test -f "$data/papers/2511.21631/manifest.json"
+          test -f "$data/db.sqlite"
+          python - "$data" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          record = json.loads((root / "references" / "paper_index.jsonl").read_text().splitlines()[0])
+          assert record["local_pdf_path"].startswith(str(root / "papers" / "2511.21631")), record
+          marker = json.loads((root / ".migration.json").read_text())
+          assert marker["papers"] == [str(root / "papers" / "2511.21631")], marker
+          print("migrate OK:", marker["papers"])
+          PY
 
   # Optional populated-browser acceptance. Enable this only on a runner with Chrome/CDP,
   # running backend and frontend services, and a prepared test case.

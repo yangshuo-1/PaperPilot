@@ -111,12 +111,17 @@ def database_path(
     *,
     db_path: str | os.PathLike[str] | None = None,
 ) -> Path:
-    """Return the configured SQLite path (``references/paper_valt.db``)."""
+    """Return the runtime SQLite path (``<data_dir>/db.sqlite``).
+
+    M0 moved the runtime state out of ``references/`` so that deleting the database
+    and rebuilding from disk (``paperpilot reindex``) touches exactly one file.  A
+    pre-M0 ``references/paper_valt.db`` is copied here by ``paperpilot migrate``.
+    """
 
     if db_path is not None:
         return Path(db_path).expanduser().resolve()
     root = resolve_data_root(data_root)
-    return root / "references" / "paper_valt.db"
+    return root / "db.sqlite"
 
 
 def _read_ddl() -> str:
@@ -321,6 +326,35 @@ class Database:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (str(key), str(value)),
             )
+
+    def rewrite_paper_paths(self, replacements: Mapping[str, str]) -> int:
+        """Repoint ``local_pdf_path`` values after a data-root relocation.
+
+        ``replacements`` maps an old absolute prefix to its new prefix.  Used once by
+        ``paperpilot migrate``; safe to call repeatedly (a path already pointing at
+        the new prefix is left alone).  ``local_pdf_path`` is not part of the FTS
+        index, so no rebuild is needed.
+        """
+
+        pairs = [(str(old), str(new)) for old, new in replacements.items() if str(old) != str(new)]
+        if not pairs:
+            return 0
+        updated = 0
+        with self.transaction(immediate=True):
+            rows = self.connection.execute("SELECT id, local_pdf_path FROM papers").fetchall()
+            for row in rows:
+                local = row["local_pdf_path"]
+                if not local:
+                    continue
+                for old_prefix, new_prefix in pairs:
+                    if str(local).startswith(old_prefix):
+                        self.connection.execute(
+                            "UPDATE papers SET local_pdf_path = ? WHERE id = ?",
+                            (new_prefix + str(local)[len(old_prefix):], row["id"]),
+                        )
+                        updated += 1
+                        break
+        return updated
 
     def apply_migrations(self, *, target_version: int = SCHEMA_VERSION) -> int:
         """Apply each missing numbered migration exactly once.
