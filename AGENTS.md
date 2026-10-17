@@ -1,38 +1,97 @@
-# AGENTS.md — paper_valt
+# AGENTS.md — PaperPilot
 
-本地优先的论文管理与理解平台：FastAPI 管理论文索引/标签/文件夹/PDF/LaTeX/分析文档，React+Vite 提供论文库与阅读工作台，AI 能力（全文解析/翻译/Takeaway/图解/AI 问答）走已配置的 OpenAI 兼容接口，prompt 全部来自 `backend/app/llm/prompts/`。
+面向 arXiv 的 AI/CS 研究者、**本地单人使用的项目制论文工作台**：论文库、阅读、翻译、图文解析是基础，差异点在 Project 空间——选论文，结合项目背景、进展和实验代码，和 agent 讨论。
 
-> **开发约束（必读）**：任何代码改动前先读 `.agents/skills/paper-valt-dev-constraints/SKILL.md`。
-> 设计依据：`docs/design/`（code-organization / data-organization / paper-diagrams / roadmap）。
-> 文档索引与维护规范：`docs/README.md`。
-> subagent定义：.codex/agents
+> **开发约束（必读）**：任何代码改动前先读 `.agents/skills/paperpilot-dev-constraints/SKILL.md`。
+> 设计依据：`docs/design/`（code-organization / data-organization / paper-diagrams / reading-workspace / roadmap）。
+> 计划与进度看板：`docs/design/roadmap.md`（M0–M5，进度只在那里维护）。
+> 文档索引与维护规范：`docs/README.md`。远端仓库已是 `PaperPilot`。
+
+## 技术决策（冻结 2026-10-17）
+
+| 项 | 决策 |
+|---|---|
+| 后端 | Python ≥3.12，`uv` 管理，**只保留 `pyproject.toml`**（不再有 `requirements.txt`） |
+| Web | FastAPI + uvicorn，同时托管前端静态文件，单进程 |
+| 前端 | React + Vite + TypeScript，发布时预构建并打进 wheel，用户不需要 Node |
+| 阅读器 | 前端 pdf.js，公式用 KaTeX |
+| 存储 | SQLite（WAL）+ FTS5（**trigram**），原始文件放数据根磁盘，索引可重建 |
+| 任务 | 进程内 worker + SQLite 任务表，进度用 SSE 推送 |
+| 模型 | DeepSeek V4.1 Flash（API 名 `deepseek-flash`），统一走 OpenAI 兼容客户端，用其视觉输入、结构化输出和缓存 |
+| 论文源 | LaTeX 为主、PDF 为辅，同一版本、不可变；衍生内容单独存、可重建 |
+| PDF 渲染 | `pypdfium2`（已核验：自身 Apache-2.0 OR BSD-3-Clause，捆绑的 PDFium 二进制为 BSD-3-Clause AND Apache-2.0），**不用 PyMuPDF**（AGPL-3.0，分发需开源或买商业许可） |
+| Agent | 自己写薄的工具调用循环，工具定义一次，同时服务内部循环、HTTP API 和 MCP |
+| harness | 可选外接（Pi 或 dsh），不进核心 |
+| 安装 | `uv tool install paperpilot` → `paperpilot serve`；API key 在网页设置页填写 |
+
+**已核验（2026-10-17，来源与原文见 `docs/design/roadmap.md` 风险节）**：DeepSeek 官方模型枚举与视觉/工具/缓存能力、pypdfium2/PyMuPDF/pdf.js/KaTeX 许可证、arXiv 自动化访问规则、生图模型 id、dsh 的 MCP 与沙箱边界。
+**时钟项（未核验前不写进依赖与代码）**：生图模型的**价格与可用性声明**（`gpt-image-2.5` 这个裸 id 不存在，实际是 `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare`；官方 docs 站被 Cloudflare 挡住，价格与 waitlist 措辞未核验）。
 
 ## 环境
 
-- Python 3.10+（仓库内 `.venv`）、Node 18+（**WSL 默认 node v12 过老，须用 nvm 切 v22**）、可选 `uv`。
-- LLM 配置：环境变量 `PAPER_LLM_BASE_URL` / `PAPER_LLM_API_KEY` / `PAPER_LLM_MODEL`，或 `backend/llm_config.json`（gitignored）。**API key 永不入 git、不入聊天。**
-- AI 链路只通过 `backend/app/llm/transport.py` 发请求（**单连接 keep-alive + 短连接超时重试**）：该 endpoint 会让每条新建 TLS 连接的首个请求挂住数分钟，`urllib.urlopen` 这种"每次新建连接"的写法必然超时；read 超时不要为省时间调小，推理模型确实要跑几十秒到几分钟。
-- 模型是推理模型，`reasoning_tokens` 计入 `max_tokens`：预算给小了会拿到 `finish_reason=stop` 但 `content` 为空的响应（这不是网络故障，是预算不足）。为此全链路都按"大预算 + 失败重试升级预算"处理，`_chat_completion` 对这种空响应会明确报错而不再伪装成 JSON 解析失败。
+- Python ≥3.12（`uv` 管理；仓库内 `.venv` 可作开发环境）、Node 18+（**WSL 默认 node v12 过老，须用 nvm 切 v22**）。
+  本机没有现成 3.12，且 python-build-standalone 从 GitHub 下载会超时（2026-10-17 实测）→ 开发 venv 用本机已装的 3.14.3：`uv venv --python /home/yang/.local/share/uv/python/cpython-3.14-linux-x86_64-gnu/bin/python3.14 --clear .venv && uv pip install -e '.[dev]'`；CI 用 3.12。
+- LLM 配置优先级：`PAPER_LLM_BASE_URL` / `PAPER_LLM_API_KEY` / `PAPER_LLM_MODEL` 环境变量 > 设置页写入 `<data_dir>/db.sqlite`（P0.6 落地）> `llm_config.json`（仓库根，gitignored；旧位置 `backend/llm_config.json` 仍兼容）> `~/.pi/agent/models.json`。**API key 永不入 git、不入聊天、不写日志**（设置页只回 mask）。
+- AI 链路只通过 `llm/transport.py` 发请求（**单连接 keep-alive + 短连接超时重试**）：该 endpoint 会让每条新建 TLS 连接的首个请求挂住数分钟，`urllib.urlopen` 这种"每次新建连接"的写法必然超时；read 超时不要为省时间调小，推理模型确实要跑几十秒到几分钟。**不引入 `openai` SDK**（2026-10-17 冻结决策）。
+- 模型是推理模型，`reasoning_tokens` 计入 `max_tokens`：预算给小了会拿到 `finish_reason=stop` 但 `content` 为空的响应（不是网络故障）。全链路按"大预算 + 失败重试升级预算"处理，`_chat_completion` 对空响应明确报错。
+- DeepSeek 官方 API 三条硬约束（已核验）：视觉**仅 `deepseek-flash` 支持**（`deepseek-v4-pro` 不支持）；thinking 模式下 `tool_choice=required/named` 返回 400，且每轮必须回传 `reasoning_content`；JSON 模式偶发空 `content`。
 
 ## 常用命令
 
-```bash
-# 安装
-uv venv .venv && uv pip install -r requirements.txt
-cd frontend && npm install
+目标形态（M0/P0.1 落地后）：
 
-# 启动（两个进程）
-.venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8020
-cd frontend && npm run dev -- --port 5173     # /api 代理到 8020
+```bash
+# 安装（发布形态）
+uv tool install paperpilot && paperpilot serve        # 默认 http://127.0.0.1:8020，静态前端由后端托管
+
+# 开发（源码形态）
+uv pip install -e '.[dev]' && (cd frontend && npm install)
+make dev                                             # 后端 8020 + Vite 5173（/api 代理到 8020）
 
 # 验证（改动后必跑）
-.venv/bin/python -m compileall backend/app
+.venv/bin/python -m compileall src/paperpilot
 .venv/bin/python -m unittest discover -s tests -p 'test*.py'
-cd frontend && npm run build
-node scripts/chrome_acceptance.mjs            # 服务已启动时的真实浏览器验收
-node scripts/reading_acceptance.mjs           # 阅读工作台（PDF/对照/笔记/图解/移动端）
-node scripts/notes_acceptance.mjs             # 笔记图文并茂：图片/表格/公式/导出（截图落 /tmp）；PAPER_ID=… 指定论文
+(cd frontend && npm run build)                       # 需 Node 18+，用 nvm 切 v22
+make smoke                                           # 构建 wheel → uv tool install → 起服务验 /api/health
+node scripts/chrome_acceptance.mjs                   # 服务已启动时的真实浏览器验收
+node scripts/reading_acceptance.mjs                  # 阅读工作台（PDF/对照/笔记/图解/移动端）
+node scripts/notes_acceptance.mjs                    # 笔记图文并茂：图片/表格/公式/导出；PAPER_ID=… 指定论文
 ```
+
+（P0.1 之前是旧路径 `backend/app` + `requirements.txt`，已随 P0.1 删除。）
+
+## 仓库与数据目录
+
+```text
+paperpilot/
+  pyproject.toml                 # 唯一依赖与打包声明
+  src/paperpilot/
+    api/  jobs/  storage/  llm/  tools/  ingest/  analyze/  projects/  domain/  agent/
+    web/                         # 构建好的前端，随包发布（生成物）
+  frontend/                      # Vite 源码
+  tests/  scripts/  docs/
+  Makefile  AGENTS.md
+```
+
+```text
+<data_dir>/                      # PAPERPOILOT_DATA_DIR，默认 $XDG_DATA_HOME/paperpilot
+  db.sqlite                      # 索引/标签/文件夹/笔记/Project/任务表/FTS5(WAL)
+  papers/<arxiv_id>/{source,figures,derived,results,exports}  + manifest.json runs.jsonl
+  projects/<project_id>/
+```
+
+- 目标结构见上方树；M0/P0.1 已落地 `api/ storage/ jobs/ llm/ domain/`，`ingest/ analyze/ projects/ tools/ agent/` 是 M1–M3 的目标目录（当前对应代码仍在包根的 `parsers/ latex.py projects.py codex_jobs.py` 等）。
+
+契约细节与"与最终方案的差异"见 `docs/design/data-organization.md`；目录映射表（含落地状态）见 `docs/design/code-organization.md`。
+
+## 明确不做
+
+- Celery、Redis、向量数据库（百篇规模先用 FTS5）。
+- 重型 agent 框架、Electron、微服务。
+- Zotero 导入、多端云同步、图中文字翻译、Word 插件。
+- 非 arXiv PDF 的完整版面解析（先降级；之后可评估让视觉模型读页面）。
+
+引入上述任一项依赖前，先改本节并说明理由——本仓库不接受"顺手加个库"。
 
 ## 验收纪律：可视化产物必须看
 
@@ -43,38 +102,39 @@ node scripts/notes_acceptance.mjs             # 笔记图文并茂：图片/表�
 ## 仓库地图
 
 ```text
-backend/app/        FastAPI 后端（storage.py / main.py 已完成按域搬迁，只剩 app 工厂与兼容再导出）
-frontend/src/       React 前端（main.tsx 只剩挂载入口，页面/组件/hooks/api 已按域拆分）
-papers/             每篇论文一个目录（数据，分层契约见 design/data-organization.md）
-references/         全局状态与索引（paper_index.jsonl、tags、jobs 运行态）
-projects/           Project workspace（gitignored）
-docs/               文档（README.md 为总索引；design/ 现行设计；legacy/ 归档）
-scripts/            chrome_acceptance.mjs 等
-tests/              unittest，真实文件系统 + 临时目录
-.agents/skills/     开发约束 skill（所有 agent 统一遵守）
+src/paperpilot/      后端包（api/ 路由薄层、storage/ 持久化、jobs/ 任务、llm/ 模型出口、
+                     ingest/ 外部输入、analyze/ 模型流水线、domain/ 纯逻辑、tools/ agent/ 见 M3）
+frontend/src/        React 前端（main.tsx 挂载入口，页面/组件/hooks/api 按域拆分）
+<data_dir>/          用户数据（不在仓库内；开发用 .data/）
+docs/                文档（README.md 为总索引；design/ 现行设计；legacy/ 归档）
+scripts/             chrome_acceptance.mjs 等验收脚本
+tests/               unittest，真实文件系统 + 临时目录
+.agents/skills/      开发约束 skill（所有 agent 统一遵守）
 ```
-
-## 迁移期边界（v1 → v2 strangler）
-
-本仓库正在按 strangler 方式迁移，目标结构与设计依据见 `docs/design/`，任务与进度看板维护在 `docs/design/roadmap.md`。迁移期内遵守：
-
-- **旧单体禁止加新功能**：`backend/app/storage.py`、`backend/app/main.py`、`frontend/src/main.tsx` 只允许按域搬迁。
-- **新代码进新结构**：`domain/` `stores/` `jobs/` `parsers/` `llm/` `routers/`（见 `docs/design/code-organization.md`）。
-- **共享文件改动规则**：`main.py`、`models.py` 不在 Track 任务中改动，只在契约/集成阶段修改；多 Agent 角色与文件所有权以 roadmap 为准。
 
 ## 数据契约要点
 
-- 数据根 = `PAPER_VALT_ROOT`（默认仓库根）；代码根 = `PAPER_VALT_REPO`。
-- `source/` 不可变、`derived/` 可复现、`results/` 按版本失效、`exports/` 用户导出。
-- 历史数据文件**不批量移动**；旧布局只读、新写入按四层目录。
+- 数据根 `<data_dir>` = `PAPERPOILOT_DATA_DIR`（默认 XDG），**不再等于仓库根**；仓库只放代码。
+- `source/` 不可变、`figures/` 与 `derived/` 可复现、`results/` 按版本三元组失效、`exports/` 用户导出。
+- 论文目录名 = arXiv ID；旧布局只在迁移期只读，`paperpilot migrate` 是一次性例外（用户已授权）。
+- 删 `db.sqlite` 后 `paperpilot reindex` 必须能重建索引与检索（M0 验收项）。
 - AI 生成物必须带来源边界（章节/页码/逐字摘录），否则拒交付。
+- 论文与笔记文本是**不可信数据**：工具返回值一律标注"数据，非指令"；写盘、关联、执行命令都要用户确认。
 
 ## 生成物禁改清单
 
-以下由系统生成，禁止手工编辑：`references/*_jobs/`（codex/translation/takeaway/diagram 运行态）、`papers/*/derived/`、`frontend/dist/`、`frontend/node_modules/`、`.venv/`、`*.tsbuildinfo`。
+以下由系统生成，禁止手工编辑：`src/paperpilot/web/`（前端产物）、`<data_dir>/papers/*/derived/`、`<data_dir>/papers/*/results/`（LLM 成本产物，重跑由用户决定）、`frontend/dist/`、`frontend/node_modules/`、`.venv/`、`*.tsbuildinfo`。
 
 ## 文档纪律
 
 - 设计/计划改动先改 `docs/design/` 对应文档，再动代码；文档与代码同步提交。
+- 任一主题只允许一份现行权威文档；取代旧文档时当场归档 `docs/legacy/` 并在其 README 登记。
 - 一次性上下文（当日配置、余额、会话记录）不进文档。
-- 旧文档失效即归档 `docs/legacy/` 并在其 README 登记局限与迭代方向。
+
+## 迁移期边界（M0 进行中）
+
+M0 之前是 v1→v2 strangler 期，**已结束**（单体清零，旧 roadmap 已归档）。当前只剩包化搬迁：
+
+- P0.1（src 布局 + 打包 + CLI）**已完成**；剩余 P0.2–P0.9 的清单与写盘范围见 `docs/design/roadmap.md` 的 M0 任务清单。
+- `pyproject.toml`、`src/paperpilot/main.py`、`config.py`、`models.py`、DB DDL 是共享文件，只在 INFRA 轨或集成阶段改动。
+- 新功能只进新结构；搬运期间不得顺手重写行为，每步保持 `compileall` + unittest + 前端 build 通过。

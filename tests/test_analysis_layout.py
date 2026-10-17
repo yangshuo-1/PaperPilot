@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.app.domain.analysis_layout import (
+from paperpilot.domain.analysis_layout import (
     citation_key,
     dedupe_texts,
     format_pages,

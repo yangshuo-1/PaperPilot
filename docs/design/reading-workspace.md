@@ -1,8 +1,8 @@
 # 论文阅读工作台：HTML 笔记、连续 PDF 与双栏译文
 
-状态：本轮实现已落地并完成收口复核（2026-10-07）。工程检查与真实页面验收记录、以及尚未覆盖的边界统一维护在 `docs/design/roadmap.md` 的阅读工作台改造章节；本文保留设计契约与行为约束。
+状态：本轮实现已落地并完成收口复核（2026-10-07）。工程检查、真实页面验收记录与尚未覆盖的边界统一维护在 `docs/legacy/roadmap-multi-agent-strangler.md` 的「阅读工作台改造」章节（该章节随 strangler 计划于 2026-10-17 归档，原因是它记录的是已完成的实施与验收事实，不是待办）；本文保留设计契约与行为约束。
 
-本文定义阅读工作台改造的诊断依据、目标行为、数据契约与验收边界。分阶段任务、依赖和状态统一维护在 [roadmap.md 的阅读工作台改造章节](roadmap.md#阅读工作台改造)。
+本文定义阅读工作台改造的诊断依据、目标行为、数据契约与验收边界。已完成阶段的实施与验收记录见 [archived roadmap 的阅读工作台改造章节](../legacy/roadmap-multi-agent-strangler.md#阅读工作台改造)；后续计划见 [roadmap.md](roadmap.md)（M0–M5）。
 
 本文补充阅读工作台设计；图解 IR、证据校验仍以 [paper-diagrams.md](paper-diagrams.md) 为准，存储分层仍以 [data-organization.md](data-organization.md) 为准。既有产品参考文档用于理解产品背景，本轮阅读布局与对照阅读行为以本文为准。
 
@@ -27,8 +27,8 @@ PDF 原版与解析原文是同一阅读工作台的两种视图。原版负责�
 | PDF 太小、不能连续翻页 | 42 页论文只显示一个 canvas，默认页面约 685px 宽；无可靠目录仍保留 240px 侧栏 | `PdfReader.tsx` 只维护当前页并替换单 canvas，固定初始 scale=1.15；`pdf-reader.css` 固定侧栏与 28px 舞台内边距，没有适应宽度计算和连续页面容器 |
 | 图解小且空间浪费 | iframe 约 1146 × 640px，内部图解约 263 × 524px | `components/diagram.css` 限制 iframe 高度；实际产物画布为 526 × 1048px，内部 fit 脚本同时受宽、高约束，缩至约 0.5；纵向长链布局、190px 产物列表与上方信息进一步挤占空间 |
 | 译文不是左右对照 | 原文在上、译文在下；存在原始 `##` 文本；页面有大量重复 key 警告 | `components/PaperPanels.tsx` 的 TranslationPane 直接显示字符串；`.chunk` 未采用双栏；以段落 hash 作为 React key，重复段落具有相同 key |
-| 图表公式不能保真 | 对照接口只有 source、translated、hash，无内容类型和页码 | `stores/documents.py` 从 `latex_plain.txt` 读取文本；`latex.py::cleanup_text` 明确删除 figure、equation、algorithm 等环境和数学表达式，表格结构也没有被保存为结构化内容块 |
-| 翻译结果难以稳定对齐 | 展示与生成分别处理段落 | `stores/documents.py::translation` 按空行切分，`generate_translation` 调用 `llm.py::split_paragraphs`，两者切分逻辑不一致；仅凭文本 hash 无法表达重复段落的位置、页码和版本 |
+| 图表公式不能保真 | 对照接口只有 source、translated、hash，无内容类型和页码 | `storage/documents.py` 从 `latex_plain.txt` 读取文本；`latex.py::cleanup_text` 明确删除 figure、equation、algorithm 等环境和数学表达式，表格结构也没有被保存为结构化内容块 |
+| 翻译结果难以稳定对齐 | 展示与生成分别处理段落 | `storage/documents.py::translation` 按空行切分，`generate_translation` 调用 `llm.py::split_paragraphs`，两者切分逻辑不一致；仅凭文本 hash 无法表达重复段落的位置、页码和版本 |
 
 边界说明：重复文档标题已在笔记页观察到；实际重复 key 警告来自译文列表，不能据此断言笔记列表也有相同错误。LaTeX 清洗的显式删除列表不含 table 环境，表格问题是结构未被保留，不能概括为直接删除所有 table 环境。
 
@@ -138,4 +138,4 @@ arXiv HTML/LaTeX 结构不天然具有 PDF 页码。页码映射必须标明可�
 - workflow 与 data_flow 均截图，检查节点、边、文字、重叠、缩放和证据弹层。
 - 检查页面级横向溢出、控制台错误、重复 key；长文不能一次性渲染全部高分辨率 PDF canvas。
 
-具体阶段门禁及项目命令见 [roadmap.md](roadmap.md#阅读工作台改造)。
+具体阶段门禁及项目命令见 [archived roadmap 的阅读工作台改造章节](../legacy/roadmap-multi-agent-strangler.md#阅读工作台改造)，现行计划见 [roadmap.md](roadmap.md)。

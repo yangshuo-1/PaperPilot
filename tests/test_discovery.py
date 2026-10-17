@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from backend.app.discovery import DISCOVERY_ARXIV_TIMEOUT, DISCOVERY_SOURCE_TIMEOUT, DiscoveryConfig, discover, enrich_html, review_candidate, review_markdown, score_paper, score_breakdown
+from paperpilot.discovery import DISCOVERY_ARXIV_TIMEOUT, DISCOVERY_SOURCE_TIMEOUT, DiscoveryConfig, discover, enrich_html, review_candidate, review_markdown, score_paper, score_breakdown
 
 
 ARXIV_XML = """

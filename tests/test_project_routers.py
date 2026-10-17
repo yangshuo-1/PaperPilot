@@ -5,12 +5,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.app.config import get_settings
-from backend.app.main import app
-from backend.app.projects import ProjectStore
-from backend.app.routers.projects import get_projects
-from backend.app.routers.session_messages import get_session_messages
-from backend.app.stores.session_messages import SessionMessageStore
+from paperpilot.config import get_settings
+from paperpilot.main import app
+from paperpilot.projects import ProjectStore
+from paperpilot.api.projects import get_projects
+from paperpilot.api.session_messages import get_session_messages
+from paperpilot.storage.session_messages import SessionMessageStore
 
 
 

@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from backend.app.paper_ai import ContextPolicy, _pdf_context
+from paperpilot.paper_ai import ContextPolicy, _pdf_context
 
 
 class _Page:
@@ -24,7 +24,7 @@ class _Reader:
 class ContextPolicyTests(unittest.TestCase):
     def test_query_ranks_relevant_passage_and_respects_budget(self):
         policy = ContextPolicy(max_chars=180, passage_chars=80, overlap_chars=10, top_k=4, quote_chars=60)
-        with patch("backend.app.paper_ai.PdfReader", _Reader):
+        with patch("paperpilot.paper_ai.PdfReader", _Reader):
             context, pages = _pdf_context(__import__("pathlib").Path("paper.pdf"), policy=policy, query="rareterm")
         self.assertLessEqual(len(context), 180)
         self.assertEqual(pages[0]["page"], 2)

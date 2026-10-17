@@ -6,13 +6,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.app.codex_jobs import ANALYSIS_TIMEOUT_SECONDS, DOC_SUFFIX, CodexJobRunner
-from backend.app import llm
-from backend.app.jobs.base import Job, JobStatus, make_job_key
-from backend.app.jobs.diagram import DiagramJobRunner
-from backend.app.jobs.full_analysis import GENERATOR_VERSION, SECTION_MIN_CHARS
-from backend.app.llm.loader import PromptNotConfigured, prompt_version
-from backend.app.models import Paper
+from paperpilot.codex_jobs import ANALYSIS_TIMEOUT_SECONDS, DOC_SUFFIX, CodexJobRunner
+from paperpilot import llm
+from paperpilot.jobs.base import Job, JobStatus, make_job_key
+from paperpilot.jobs.diagram import DiagramJobRunner
+from paperpilot.jobs.full_analysis import GENERATOR_VERSION, SECTION_MIN_CHARS
+from paperpilot.llm.loader import PromptNotConfigured, prompt_version
+from paperpilot.models import Paper
 
 
 class _Page:
@@ -81,7 +81,7 @@ class JobReliabilityTests(unittest.TestCase):
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
             runner = CodexJobRunner(SimpleNamespace(references_dir=root / "references", repo_root=root), store)
             with patch(
-                "backend.app.codex_jobs.prompt_version",
+                "paperpilot.codex_jobs.prompt_version",
                 side_effect=PromptNotConfigured("prompt 未配置: full_analysis"),
             ):
                 with self.assertRaisesRegex(ValueError, "prompt 未配置: full_analysis"):
@@ -96,7 +96,7 @@ class JobReliabilityTests(unittest.TestCase):
             paper = Paper(id="paper-1", title="Paper", local_pdf_path=str(pdf))
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
             runner = _runner(root, store)
-            with patch("backend.app.codex_jobs.document_version", return_value="sha256:paper-v1"):
+            with patch("paperpilot.codex_jobs.document_version", return_value="sha256:paper-v1"):
                 params = {"extra_instructions": "", "prompt_version": prompt_version("full_analysis")}
                 runner._write_job(Job(
                     job_id="a" * 32, paper_id="paper-1", document_version="sha256:paper-v1",
@@ -117,7 +117,7 @@ class JobReliabilityTests(unittest.TestCase):
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
             runner = _runner(root, store)
             (root / f"Paper{DOC_SUFFIX}").write_text("old", encoding="utf-8")
-            with patch("backend.app.codex_jobs.document_version", return_value="sha256:paper-v1"):
+            with patch("paperpilot.codex_jobs.document_version", return_value="sha256:paper-v1"):
                 with self.assertRaisesRegex(ValueError, "already exists"):
                     runner.start_analysis("paper-1")
 
@@ -133,8 +133,8 @@ class JobReliabilityTests(unittest.TestCase):
                 _record_assets=lambda *args, **kwargs: recorded.append({"args": args, "kwargs": kwargs}),
             )
             runner = _runner(root, store)
-            with patch("backend.app.codex_jobs.document_version", return_value="sha256:v1"), patch(
-                "backend.app.parsers.pypdf_parser.PdfReader", _Reader
+            with patch("paperpilot.codex_jobs.document_version", return_value="sha256:v1"), patch(
+                "paperpilot.parsers.pypdf_parser.PdfReader", _Reader
             ):
                 job = runner.start_analysis("paper-1")
                 final = runner.run(job.job_id)
@@ -154,8 +154,8 @@ class JobReliabilityTests(unittest.TestCase):
             paper = Paper(id="paper-1", title="Paper One", short_title="Paper", local_pdf_path=str(pdf))
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
             runner = _runner(root, store, llm_callable=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
-            with patch("backend.app.codex_jobs.document_version", return_value="sha256:v1"), patch(
-                "backend.app.parsers.pypdf_parser.PdfReader", _Reader
+            with patch("paperpilot.codex_jobs.document_version", return_value="sha256:v1"), patch(
+                "paperpilot.parsers.pypdf_parser.PdfReader", _Reader
             ):
                 job = runner.start_analysis("paper-1")
                 final = runner.run(job.job_id)
@@ -174,8 +174,8 @@ class JobReliabilityTests(unittest.TestCase):
             runner = _runner(root, store, llm_callable=lambda *_a, **_k: "not json at all")
             target = root / f"Paper{DOC_SUFFIX}"
             target.write_text("旧文档", encoding="utf-8")
-            with patch("backend.app.codex_jobs.document_version", return_value="sha256:v1"), patch(
-                "backend.app.parsers.pypdf_parser.PdfReader", _Reader
+            with patch("paperpilot.codex_jobs.document_version", return_value="sha256:v1"), patch(
+                "paperpilot.parsers.pypdf_parser.PdfReader", _Reader
             ):
                 job = runner.start_analysis("paper-1", overwrite=True)
                 final = runner.run(job.job_id)
@@ -275,8 +275,8 @@ class JobReliabilityTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"), patch(
-                "backend.app.jobs.diagram.load_prompt", return_value="diagram prompt"
+            with patch("paperpilot.jobs.diagram.prompt_version", return_value="v1"), patch(
+                "paperpilot.jobs.diagram.load_prompt", return_value="diagram prompt"
             ):
                 runner = DiagramJobRunner(
                     root / "references" / "diagram_jobs",

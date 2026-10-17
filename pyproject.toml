@@ -1,18 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paperpilot"
+version = "0.1.0"
+description = "本地单人使用的项目制论文工作台：论文库、阅读、图文解析，以及结合项目背景与实验代码的 Project 讨论。"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+keywords = ["arxiv", "papers", "research", "local-first"]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.8.0",
+    "pypdf>=5.0.0",
+    "jsonschema>=4.20.0",
+]
+
+[project.scripts]
+paperpilot = "paperpilot.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+    "import-linter>=2.0",
+    # starlette's TestClient (used by the router tests) requires httpx2.
+    "httpx2>=2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paperpilot"]
+
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-# These are migration-era files. Keep their current behavior unchanged while new modules use
-# the full baseline above.
-"backend/app/codex_jobs.py" = ["E702"]
-"backend/app/main.py" = ["E701", "E702", "F401"]
-"backend/app/projects.py" = ["E701", "E702", "E703"]
-"backend/app/storage.py" = ["F821", "F841"]
-"backend/app/translation_jobs.py" = ["E702", "F821"]
+# Migration-era modules keep their current behavior until they are split by domain.
+"src/paperpilot/codex_jobs.py" = ["E702"]
+"src/paperpilot/main.py" = ["E701", "E702", "F401"]
+"src/paperpilot/projects.py" = ["E701", "E702", "E703"]
+"src/paperpilot/storage/paper_store.py" = ["F821", "F841"]
+"src/paperpilot/translation_jobs.py" = ["E702", "F821"]
 
 [tool.ruff.format]
 line-ending = "auto"
@@ -20,9 +53,9 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pyright]
-include = ["backend"]
-exclude = ["**/__pycache__", "**/dist", "**/node_modules"]
-pythonVersion = "3.10"
+include = ["src"]
+exclude = ["**/__pycache__", "**/dist", "**/node_modules", "src/paperpilot/web"]
+pythonVersion = "3.12"
 typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
@@ -30,28 +63,28 @@ testpaths = ["tests"]
 python_files = ["test*.py"]
 
 [tool.importlinter]
-root_package = "backend"
+root_package = "paperpilot"
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Domain is framework independent"
 type = "forbidden"
-source_modules = ["backend.app.domain.*"]
+source_modules = ["paperpilot.domain.*"]
 forbidden_modules = ["fastapi", "pydantic"]
 as_packages = true
 
 [[tool.importlinter.contracts]]
-name = "Stores do not import domain"
+name = "Storage does not import domain"
 type = "forbidden"
-source_modules = ["backend.app.stores.*"]
-forbidden_modules = ["backend.app.domain", "backend.app.domain.*"]
+source_modules = ["paperpilot.storage.*"]
+forbidden_modules = ["paperpilot.domain", "paperpilot.domain.*"]
 as_packages = true
 
 [[tool.importlinter.contracts]]
 # Concrete jobs are independent of each other but may import the shared base.
 name = "Jobs do not import sibling jobs"
 type = "forbidden"
-source_modules = ["backend.app.jobs.*"]
-forbidden_modules = ["backend.app.jobs.*"]
-ignore_imports = ["backend.app.jobs.* -> backend.app.jobs.base"]
+source_modules = ["paperpilot.jobs.*"]
+forbidden_modules = ["paperpilot.jobs.*"]
+ignore_imports = ["paperpilot.jobs.* -> paperpilot.jobs.base"]
 as_packages = true

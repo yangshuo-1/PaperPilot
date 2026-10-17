@@ -39,7 +39,7 @@
 | `latex/` | arXiv LaTeX 源码（tar.gz 解包） | `download_latex_sources` 可重拉 | ❌ |
 | `latex_source.md` | LaTeX → 可读原文 | `parse_latex` 确定性生成 | ❌（可复现，避免 diff 噪音） |
 | `latex_plain.txt` | 解析正文纯文本 | 同上 | ❌ |
-| `derived/structured_reading.json` | 结构化阅读块（`reading-blocks.v1`）：block_id、类型、source_text/source_html、章节与来源锚点、页码可靠性、图表资产与 LaTeX；确定性生成，带 `document_version` 与 `generator_version` | `stores/reading.py` 按版本缓存重建 | ❌（可复现，避免 diff 噪音） |
+| `derived/structured_reading.json` | 结构化阅读块（`reading-blocks.v1`）：block_id、类型、source_text/source_html、章节与来源锚点、页码可靠性、图表资产与 LaTeX；确定性生成，带 `document_version` 与 `generator_version` | `storage/reading.py` 按版本缓存重建 | ❌（可复现，避免 diff 噪音） |
 | `translation_zh.json` | 块级中文翻译缓存（LLM 产物，按 `document_version + block_id + source_hash` 关联） | 需 LLM key 重生成 | ❌（成本产物） |
 | `ai_answers.jsonl` | 论文内 Ask AI、选区解释/翻译的保存历史 | 需重新调用 LLM | ❌（成本产物） |
 | `ai_takeaways.json` | 带论文页码/摘录锚点的 AI 重点 | 需重新调用 LLM | ❌（成本产物） |
@@ -96,7 +96,7 @@ Project 的状态写在 `references/projects_sessions.json`，可编辑研究文
 ## 管理命令（供 CI / 脚本）
 
 - 重拉 PDF：`import_arxiv(<arxiv_id>)`（storage）。
-- 重拉并解析 LaTeX：`download_latex_sources(id, dest)` → `parse_latex(dest)`（`backend/app/latex.py`）。
+- 重拉并解析 LaTeX：`download_latex_sources(id, dest)` → `parse_latex(dest)`（`src/paperpilot/latex.py`）。
 - 重生成翻译：调用 `POST /api/papers/<id>/translation/generate` 创建后台 job，再轮询 `GET /api/papers/<id>/translation/jobs/<job_id>`。
 - 生成 AI Takeaways：调用 `POST /api/papers/<id>/takeaways/generate` 创建后台 job，再轮询 `GET /api/papers/<id>/takeaways/jobs/<job_id>`。
 - 论文内搜索：调用 `GET /api/papers/<id>/search?q=<term>`，结果包含 PDF 页码或本地文档来源。

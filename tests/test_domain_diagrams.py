@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from backend.app.domain.diagrams import validate_ir
+from paperpilot.domain.diagrams import validate_ir
 
 
 ROOT = Path(__file__).resolve().parents[1]

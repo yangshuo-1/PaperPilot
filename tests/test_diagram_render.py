@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unittest
 
-from backend.app.domain.diagram_render import NODE_HEIGHT, NODE_WIDTH, layout, render_html
+from paperpilot.domain.diagram_render import NODE_HEIGHT, NODE_WIDTH, layout, render_html
 
 
 def _ir(**overrides):

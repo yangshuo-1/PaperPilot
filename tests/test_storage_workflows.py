@@ -4,10 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app.parsers import ParsedPaper
-from backend.app.routers.reader import get_quickview, router as reader_router
-from backend.app.storage import PaperStore
-from backend.app.stores.arxiv import ArxivMetadata
+from paperpilot.parsers import ParsedPaper
+from paperpilot.api.reader import get_quickview, router as reader_router
+from paperpilot.storage.paper_store import PaperStore
+from paperpilot.storage.arxiv import ArxivMetadata
 
 
 class TestSettings:
@@ -171,7 +171,7 @@ class StorageWorkflowTests(unittest.TestCase):
             with (
                 patch.object(store, "_fetch_arxiv_metadata", return_value=metadata),
                 patch.object(store, "_download_file", side_effect=download),
-                patch("backend.app.stores.arxiv.parse_preferred", return_value=parsed) as parse,
+                patch("paperpilot.storage.arxiv.parse_preferred", return_value=parsed) as parse,
             ):
                 paper = store.import_arxiv("2401.12345")
 

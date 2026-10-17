@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app.parsers import (
+from paperpilot.parsers import (
     ArxivFetchError,
     ArxivHtmlParser,
     ParsedDocument,
@@ -33,7 +33,7 @@ class ParserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "paper.pdf"
             path.write_bytes(b"pdf")
-            with patch("backend.app.parsers.pypdf_parser.PdfReader", _Reader):
+            with patch("paperpilot.parsers.pypdf_parser.PdfReader", _Reader):
                 result = PypdfParser().parse(path)
         self.assertIsInstance(result, ParsedDocument)
         self.assertEqual(result.text, "first page\n\nsecond page")
@@ -114,7 +114,7 @@ class ParserTests(unittest.TestCase):
 
     def test_arxiv_html_parser_defaults_to_discovery_transport(self):
         with patch(
-            "backend.app.parsers.arxiv_html._discovery._http_get",
+            "paperpilot.parsers.arxiv_html._discovery._http_get",
             return_value="<article><p>Discovery transport.</p></article>",
         ) as fetch:
             result = ArxivHtmlParser().parse("2401.12345")

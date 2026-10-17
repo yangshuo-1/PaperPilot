@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app.projects import ProjectStore
+from paperpilot.projects import ProjectStore
 
 
 class Phase5ProjectTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class Phase5ProjectTests(unittest.TestCase):
         self.assertEqual(self.store.governance(session["id"])["candidates"], [])
         with self.assertRaises(ValueError):
             self.store.save_closeout(session["id"], {"summary": "again", "handoff": "h", "next_steps": ["n"]})
-        with patch("backend.app.projects.llm.chat_once"):
+        with patch("paperpilot.projects.llm.chat_once"):
             with self.assertRaises(ValueError):
                 self.store.generate_closeout(session["id"])
 
@@ -56,10 +56,10 @@ class Phase5ProjectTests(unittest.TestCase):
         session = self.session()
         self.store.link_session(session["id"], {"kind": "paper", "ref": "paper"})
         raw = '{"summary":"ok","handoff":"next","next_steps":["do"]}'
-        with patch("backend.app.projects.llm.chat_once", return_value=raw), patch("backend.app.projects.llm.llm_status", return_value={"model": "test"}):
+        with patch("paperpilot.projects.llm.chat_once", return_value=raw), patch("paperpilot.projects.llm.llm_status", return_value={"model": "test"}):
             result = self.store.generate_closeout(session["id"])
         self.assertEqual([x["ref"] for x in result["closeout"]["citations"]], ["paper"])
-        with patch("backend.app.projects.llm.chat_once", return_value='{"summary": 1,"handoff":"x","next_steps":[]}'):
+        with patch("paperpilot.projects.llm.chat_once", return_value='{"summary": 1,"handoff":"x","next_steps":[]}'):
             with self.assertRaises(ValueError):
                 self.store.generate_closeout(session["id"])
 
@@ -107,8 +107,8 @@ class Phase5ProjectTests(unittest.TestCase):
         self.assertTrue((self.root / "projects" / other["id"] / "notes" / "other.md").is_file())
 
     def test_latest_job_requires_an_existing_paper(self):
-        from backend.app.takeaway_jobs import TakeawayJobRunner
-        from backend.app.translation_jobs import TranslationJobRunner
+        from paperpilot.takeaway_jobs import TakeawayJobRunner
+        from paperpilot.translation_jobs import TranslationJobRunner
         from types import SimpleNamespace
 
         job_store = SimpleNamespace(

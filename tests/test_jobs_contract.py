@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.jobs.base import JobRunner
+from paperpilot.jobs.base import JobRunner
 
 
 class JobContractNamingTests(unittest.TestCase):

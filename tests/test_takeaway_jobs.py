@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.app.models import Paper
-from backend.app.takeaway_jobs import TakeawayJobRunner
+from paperpilot.models import Paper
+from paperpilot.takeaway_jobs import TakeawayJobRunner
 
 
 class TakeawayJobRunnerTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class TakeawayJobRunnerTests(unittest.TestCase):
                 output.write_text(json.dumps({"takeaways": [{"id": "item", "content": "claim"}]}), encoding="utf-8")
                 return {"available": True, "takeaways": [{"id": "item", "content": "claim"}]}
 
-            with patch("backend.app.takeaway_jobs._llm.llm_available", return_value=True), patch("backend.app.takeaway_jobs.document_version", return_value="sha256:test"), patch("backend.app.takeaway_jobs.threading.Thread") as thread_class, patch("backend.app.takeaway_jobs.paper_ai.generate_takeaway", side_effect=generate):
+            with patch("paperpilot.takeaway_jobs._llm.llm_available", return_value=True), patch("paperpilot.takeaway_jobs.document_version", return_value="sha256:test"), patch("paperpilot.takeaway_jobs.threading.Thread") as thread_class, patch("paperpilot.takeaway_jobs.paper_ai.generate_takeaway", side_effect=generate):
                 job = runner.start("paper")
                 thread_class.return_value.start.assert_called_once()
                 target = thread_class.call_args.kwargs["target"]

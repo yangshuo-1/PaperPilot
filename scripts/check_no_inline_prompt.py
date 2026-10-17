@@ -7,7 +7,7 @@ import tokenize
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_APP = PROJECT_ROOT / "backend" / "app"
+PACKAGE_ROOT = PROJECT_ROOT / "src" / "paperpilot"
 MIN_TRIPLE_QUOTED_LENGTH = 120
 PROMPT_MARKERS = (
     "你是",
@@ -19,9 +19,10 @@ PROMPT_MARKERS = (
     "Return strict JSON",
 )
 
-# The legacy Codex prompt remains inline until roadmap task J2 extracts it into llm/prompts/.
-# Keep this allowlist narrow and explicit so newly added prompt literals still fail the check.
-PROMPT_WHITELIST = {Path("backend/app/codex_jobs.py")}
+# No allowlist: every prompt literal must live in llm/prompts/*.md (roadmap J2 is done).
+# Known gap: this check only inspects triple-quoted strings, so a long single-line
+# f-string prompt still passes — see src/paperpilot/projects.py::generate_closeout
+# and the M0 P0.6 cleanup task.
 PREFIX_CHARS = frozenset("rRuUbBfF")
 
 
@@ -47,10 +48,8 @@ def _suspicious_strings(path: Path) -> list[tuple[int, str]]:
 def main() -> int:
     violations: list[str] = []
     scanned = 0
-    for path in sorted(BACKEND_APP.rglob("*.py")):
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         relative_path = path.relative_to(PROJECT_ROOT)
-        if relative_path in PROMPT_WHITELIST:
-            continue
         scanned += 1
         try:
             findings = _suspicious_strings(path)

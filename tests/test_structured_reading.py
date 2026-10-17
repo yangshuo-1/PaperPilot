@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app.parsers.structured_reading import latex_blocks, pdf_blocks
-from backend.app import llm
+from paperpilot.parsers.structured_reading import latex_blocks, pdf_blocks
+from paperpilot import llm
 
 
 class _Page:
@@ -72,7 +72,7 @@ class StructuredReadingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             pdf = Path(temp) / "paper.pdf"
             pdf.write_bytes(b"pdf")
-            with patch("backend.app.parsers.structured_reading.pypdf_parser.PdfReader", _Reader):
+            with patch("paperpilot.parsers.structured_reading.pypdf_parser.PdfReader", _Reader):
                 blocks, warnings = pdf_blocks(pdf)
             self.assertTrue(warnings)
             self.assertEqual([block["page_start"] for block in blocks], [1, 2])

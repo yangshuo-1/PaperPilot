@@ -11,7 +11,11 @@ dist/
 
 # ---- LLM secrets ----
 # Self-contained LLM config holds the api_key; only the example is committed.
-backend/llm_config.json
+# M0 后主载体是设置页写入 <data_dir>/db.sqlite；本文件是开发/迁移期来源。
+llm_config.json
+
+# ---- Local dev data root (PAPERPOILOT_DATA_DIR 指向仓库内时使用) ----
+.data/
 
 # ---- Local Codex agents ----
 .codex

@@ -131,10 +131,10 @@ fi
 
 if [[ -n "${PAPER_LLM_API_KEY:-}" ]]; then
 	pass "LLM config: PAPER_LLM_API_KEY is set (value hidden)"
-elif [[ -f "$REPO_ROOT/backend/llm_config.json" ]]; then
-	pass "LLM config: backend/llm_config.json exists"
+elif [[ -f "$REPO_ROOT/llm_config.json" ]]; then
+	pass "LLM config: llm_config.json exists"
 else
-	fail "LLM config: no API key environment variable or backend/llm_config.json" "Set PAPER_LLM_API_KEY or create backend/llm_config.json; secrets must stay out of git and logs."
+	fail "LLM config: no API key environment variable or llm_config.json" "Set PAPER_LLM_API_KEY or create llm_config.json; secrets must stay out of git and logs."
 fi
 
 GIT_BIN="$(command -v git 2>/dev/null || true)"

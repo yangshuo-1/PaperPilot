@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.jobs.base import (
+from paperpilot.jobs.base import (
     InvalidStateTransition,
     JobCancelled,
     JobRunner,

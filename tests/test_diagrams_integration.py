@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from starlette.requests import Request
 
-from backend.app.jobs.diagram import DiagramJobRunner
-from backend.app.main import app
-from backend.app.routers.diagrams import (
+from paperpilot.jobs.diagram import DiagramJobRunner
+from paperpilot.main import app
+from paperpilot.api.diagrams import (
     DiagramGenerateRequest,
     generate_diagram,
     get_diagram_artifact,
@@ -17,7 +17,7 @@ from backend.app.routers.diagrams import (
     initialize_diagram_runner,
     list_diagrams,
 )
-from backend.app.storage import PaperStore
+from paperpilot.storage.paper_store import PaperStore
 
 
 class _Settings:
@@ -64,8 +64,8 @@ class DiagramIntegrationTests(unittest.TestCase):
             )
             runner._launch = lambda _job: None
             store = PaperStore(settings)
-            with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"), patch(
-                "backend.app.jobs.diagram.load_prompt", return_value="diagram prompt"
+            with patch("paperpilot.jobs.diagram.prompt_version", return_value="v1"), patch(
+                "paperpilot.jobs.diagram.load_prompt", return_value="diagram prompt"
             ):
                 job = generate_diagram(
                     "paper", DiagramGenerateRequest(diagram_type="workflow"), store=store, runner=runner
@@ -75,7 +75,7 @@ class DiagramIntegrationTests(unittest.TestCase):
 
     def test_lifespan_shares_diagram_runner_and_recovers_on_startup(self):
         runner = Mock()
-        with patch("backend.app.main.initialize_diagram_runner", return_value=runner) as initialize:
+        with patch("paperpilot.main.initialize_diagram_runner", return_value=runner) as initialize:
             async def exercise():
                 async with app.router.lifespan_context(app):
                     self.assertIs(app.state.diagram_runner, runner)
@@ -89,7 +89,7 @@ class DiagramIntegrationTests(unittest.TestCase):
 
     def test_initialize_diagram_runner_recovers_jobs(self):
         runner = Mock()
-        with patch("backend.app.routers.diagrams.create_diagram_runner", return_value=runner):
+        with patch("paperpilot.api.diagrams.create_diagram_runner", return_value=runner):
             self.assertIs(initialize_diagram_runner(_Settings(Path("/tmp"))), runner)
         runner.recover.assert_called_once_with()
 
@@ -112,8 +112,8 @@ class DiagramIntegrationTests(unittest.TestCase):
             app.dependency_overrides[get_diagram_store] = lambda: PaperStore(settings)
             app.dependency_overrides[get_diagram_runner] = lambda: runner
             try:
-                with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"), patch(
-                    "backend.app.jobs.diagram.load_prompt", return_value="diagram prompt"
+                with patch("paperpilot.jobs.diagram.prompt_version", return_value="v1"), patch(
+                    "paperpilot.jobs.diagram.load_prompt", return_value="diagram prompt"
                 ):
                     response = generate_diagram(
                         "paper",
@@ -163,7 +163,7 @@ class DiagramIntegrationTests(unittest.TestCase):
             (diagrams_dir / "method.html").write_text("legacy", encoding="utf-8")
             app.dependency_overrides[get_diagram_store] = lambda: PaperStore(settings)
             try:
-                with self.assertLogs("backend.app.routers.diagrams", level="WARNING") as logs:
+                with self.assertLogs("paperpilot.api.diagrams", level="WARNING") as logs:
                     response = list_diagrams("paper", store=PaperStore(settings))
                 self.assertEqual(response.artifacts, [])
                 self.assertIn("method", " ".join(logs.output))

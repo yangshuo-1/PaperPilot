@@ -17,7 +17,7 @@ Archify（`tt-a1i/archify`，MIT）的核心思想值得借鉴：**Typed JSON IR
 
 ```text
 Method 章节（derived/latex_plain.txt，tier1 时用结构化章节）
-  → 摘录（routers/diagram_context.py::diagram_excerpt）
+  → 摘录（api/diagram_context.py::diagram_excerpt）
       - 关键词打分挑出架构相关段落，上限 40k 字符：整篇正文会把模型拖进长推理，
         实测一次就烧光 8000 token 预算并返回空内容
       - 段内空白归一化：LaTeX 硬换行会让跨行引文不再"逐字命中"，归一化后

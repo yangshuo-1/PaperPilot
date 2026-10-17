@@ -4,7 +4,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from backend.app.asset_audit import append_run, asset_record, update_manifest
+from paperpilot.asset_audit import append_run, asset_record, update_manifest
 
 
 class AssetAuditTests(unittest.TestCase):

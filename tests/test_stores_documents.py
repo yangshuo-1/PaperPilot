@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.stores.documents import DocumentsStore, document_rank
+from paperpilot.storage.documents import DocumentsStore, document_rank
 
 #: The real filenames that exposed the bug: the import draft is named after the
 #: paper title, so its ":" sorted the draft ahead of the produced analysis and

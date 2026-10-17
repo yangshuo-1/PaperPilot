@@ -8,7 +8,7 @@ module keeps the checks that do not need HTTP.
 import unittest
 from unittest.mock import patch
 
-from backend.app import llm
+from paperpilot import llm
 
 
 class ChatCompletionWiringTests(unittest.TestCase):
@@ -45,7 +45,7 @@ class ChatCompletionWiringTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["model"], "model")
 
     def test_transport_failure_becomes_llm_unavailable(self):
-        from backend.app.llm.transport import TransportError
+        from paperpilot.llm.transport import TransportError
 
         def fake_transport_for(*_args, **_kwargs):
             class _Transport:
@@ -61,7 +61,7 @@ class ChatCompletionWiringTests(unittest.TestCase):
                 llm._chat_completion("prompt", base_url="https://provider.test", api_key="key", model="model")
 
     def test_chat_once_without_provider_degrades_explicitly(self):
-        with patch("backend.app.llm._effective_config", return_value=None):
+        with patch("paperpilot.llm._effective_config", return_value=None):
             with self.assertRaisesRegex(llm.LLMUnavailable, "No LLM provider configured"):
                 llm.chat_once("prompt")
 
@@ -80,7 +80,7 @@ class ContentBudgetTests(unittest.TestCase):
             return llm._chat_completion("prompt", base_url="https://provider.test", api_key="k", model="m", max_tokens=8000)
 
     def test_missing_content_with_reasoning_usage_is_a_budget_error(self):
-        from backend.app.llm import LLMContentBudgetExceeded
+        from paperpilot.llm import LLMContentBudgetExceeded
 
         response = {
             "choices": [{"index": 0, "message": {"role": "assistant"}, "finish_reason": "stop"}],
@@ -95,7 +95,7 @@ class ContentBudgetTests(unittest.TestCase):
             self._run(response)
 
     def test_empty_content_with_reasoning_usage_is_a_budget_error(self):
-        from backend.app.llm import LLMContentBudgetExceeded
+        from paperpilot.llm import LLMContentBudgetExceeded
 
         response = {
             "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],

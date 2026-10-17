@@ -20,14 +20,14 @@ NODE_BIN := $(shell \
 NODE_DIR := $(if $(NODE_BIN),$(dir $(NODE_BIN)),)
 NPM_BIN := $(if $(NODE_BIN),$(NODE_DIR)npm,)
 
-.PHONY: dev doctor test build _check-venv _check-node
+.PHONY: dev doctor test build wheel smoke _check-venv _check-node
 
 doctor:
 	@bash "$(ROOT_DIR)/scripts/doctor.sh"
 
 _check-venv:
 	@if [[ ! -x "$(VENV_PYTHON)" ]]; then
-		printf '%s\n' "ERROR: .venv/bin/python is missing. Run: uv venv .venv && uv pip install -r requirements.txt" >&2
+		printf '%s\n' "ERROR: .venv/bin/python is missing. Run: uv sync" >&2
 		exit 1
 	fi
 
@@ -63,7 +63,7 @@ dev: _check-venv _check-node
 
 	(
 		cd "$(ROOT_DIR)"
-		exec "$(VENV_PYTHON)" -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8020
+		exec "$(VENV_PYTHON)" -m uvicorn paperpilot.main:app --host 127.0.0.1 --port 8020
 	) &
 	backend_pid=$$!
 	(
@@ -118,10 +118,23 @@ dev: _check-venv _check-node
 
 test: _check-venv _check-node
 	@cd "$(ROOT_DIR)"
-	"$(VENV_PYTHON)" -m compileall backend/app && \
+	"$(VENV_PYTHON)" -m compileall -q src/paperpilot && \
 	"$(VENV_PYTHON)" -m unittest discover -s tests -p 'test*.py' && \
 	cd frontend && PATH="$(NODE_DIR):$$PATH" "$(NPM_BIN)" run build
 
 build: _check-node
 	@cd "$(ROOT_DIR)/frontend"
 	PATH="$(NODE_DIR):$$PATH" "$(NPM_BIN)" run build
+
+# Build the distributable wheel (前端产物由 P0.2 打进包内).
+wheel:
+	@cd "$(ROOT_DIR)"
+	rm -rf dist
+	uv build --wheel
+
+# M0 验收：构建 wheel → 装进 tool 环境 → 起服务 → 验 /api/health（前端页面由 P0.2 接管）。
+# 用临时数据根，避免 smoke 污染真实 <data_dir>；失败时非零退出。
+smoke: wheel
+	@cd "$(ROOT_DIR)"
+	uv tool install --force ./dist/paperpilot-*.whl
+	@PATH="$$HOME/.local/bin:$$PATH" "$(ROOT_DIR)/scripts/smoke_serve.sh"

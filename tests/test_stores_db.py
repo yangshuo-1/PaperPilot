@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.stores.db import (
+from paperpilot.storage.db import (
     Database,
     load_legacy_snapshot,
     migrate_to_sqlite,

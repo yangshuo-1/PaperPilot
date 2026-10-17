@@ -15,8 +15,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch  # noqa: F401
 
-from backend.app import llm
-from backend.app.llm.transport import JsonTransport, TransportError, reset_transports
+from paperpilot import llm
+from paperpilot.llm.transport import JsonTransport, TransportError, reset_transports
 
 
 class _Behavior:
@@ -343,7 +343,7 @@ class ChatCompletionStreamTests(unittest.TestCase):
         self.assertEqual(captured["path"], "/chat/completions")
 
     def test_empty_streamed_answer_reports_the_reasoning_budget(self):
-        from backend.app.llm import LLMContentBudgetExceeded
+        from paperpilot.llm import LLMContentBudgetExceeded
 
         class _Transport:
             backoff = ()

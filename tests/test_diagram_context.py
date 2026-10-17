@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from backend.app.models import Paper
-from backend.app.routers.diagram_context import paper_context
-from backend.app.routers.diagrams import DiagramGenerateRequest, generate_diagram
+from paperpilot.models import Paper
+from paperpilot.api.diagram_context import paper_context
+from paperpilot.api.diagrams import DiagramGenerateRequest, generate_diagram
 
 
 class _Store:

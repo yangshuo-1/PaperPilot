@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app import paper_ai, reader
-from backend.app.parsers import ArxivFetchError, ParsedPaper, parse_preferred, write_manifest_quality
+from paperpilot import paper_ai, reader
+from paperpilot.parsers import ArxivFetchError, ParsedPaper, parse_preferred, write_manifest_quality
 
 
 class _Page:
@@ -25,7 +25,7 @@ class _Reader:
 class ParserCapabilityIntegrationTests(unittest.TestCase):
     def test_prefers_versioned_html_and_preserves_provenance(self):
         with patch(
-            "backend.app.parsers.selection.ArxivHtmlParser.parse",
+            "paperpilot.parsers.selection.ArxivHtmlParser.parse",
             return_value=ParsedPaper(
                 text="Structured HTML text.",
                 quality_tier="tier1",
@@ -33,7 +33,7 @@ class ParserCapabilityIntegrationTests(unittest.TestCase):
                 parser="arxiv_html",
                 source_provenance={"arxiv_id": "2401.12345v3"},
             ),
-        ) as html_parse, patch("backend.app.parsers.selection.PypdfParser.parse") as pdf_parse:
+        ) as html_parse, patch("paperpilot.parsers.selection.PypdfParser.parse") as pdf_parse:
             result = parse_preferred("paper.pdf", arxiv_id="2401.12345v3")
 
         self.assertEqual(result.quality_tier, "tier1")
@@ -50,9 +50,9 @@ class ParserCapabilityIntegrationTests(unittest.TestCase):
             source_provenance={"source_type": "local_pdf", "pdf_path": "paper.pdf"},
         )
         with patch(
-            "backend.app.parsers.selection.ArxivHtmlParser.parse",
+            "paperpilot.parsers.selection.ArxivHtmlParser.parse",
             side_effect=ArxivFetchError("404"),
-        ), patch("backend.app.parsers.selection.PypdfParser.parse", return_value=fallback) as pdf_parse:
+        ), patch("paperpilot.parsers.selection.PypdfParser.parse", return_value=fallback) as pdf_parse:
             result = parse_preferred("paper.pdf", arxiv_id="2401.12345v3")
 
         pdf_parse.assert_called_once_with("paper.pdf")
@@ -75,10 +75,10 @@ class ParserCapabilityIntegrationTests(unittest.TestCase):
                     warnings=("structure may be incomplete",),
                 ),
             )
-            with patch("backend.app.reader.PdfReader", _Reader):
+            with patch("paperpilot.reader.PdfReader", _Reader):
                 manifest = reader.load_or_build(pdf, "paper", paper_dir / "reader_manifest.json")
-            with patch("backend.app.paper_ai.PdfReader", _Reader), patch(
-                "backend.app.paper_ai.llm.chat_once",
+            with patch("paperpilot.paper_ai.PdfReader", _Reader), patch(
+                "paperpilot.paper_ai.llm.chat_once",
                 return_value='{"answer":"Supported.","citations":[{"page":1,"quote":"Evidence from the paper."}]}',
             ):
                 response = paper_ai.ask(pdf, "paper", mode="ask", question="What is supported?", selection=None)
@@ -115,7 +115,7 @@ class ParserCapabilityIntegrationTests(unittest.TestCase):
             pdf = paper_dir / "paper.pdf"
             pdf.write_bytes(b"fixture")
             (paper_dir / "manifest.json").write_text("not valid JSON", encoding="utf-8")
-            with patch("backend.app.reader.PdfReader", _Reader):
+            with patch("paperpilot.reader.PdfReader", _Reader):
                 manifest = reader.load_or_build(pdf, "paper", paper_dir / "reader_manifest.json")
 
         self.assertEqual(manifest["quality_tier"], "tier0")

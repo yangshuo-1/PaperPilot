@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unittest
 
-from backend.app.domain.illustration import (
+from paperpilot.domain.illustration import (
     INLINE_TABLE_ROWS,
     equation_to_latex,
     extract_caption,

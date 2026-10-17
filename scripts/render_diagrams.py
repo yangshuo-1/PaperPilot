@@ -19,11 +19,13 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_DIR = REPO_ROOT / "src"
+for _entry in (REPO_ROOT, SRC_DIR):
+    if str(_entry) not in sys.path:
+        sys.path.insert(0, str(_entry))
 
-from backend.app.asset_audit import append_run, asset_record, update_manifest  # noqa: E402
-from backend.app.domain.diagram_render import RENDERER_VERSION, render_html  # noqa: E402
+from paperpilot.asset_audit import append_run, asset_record, update_manifest  # noqa: E402
+from paperpilot.domain.diagram_render import RENDERER_VERSION, render_html  # noqa: E402
 
 
 def _diagram_dirs(root: Path) -> list[Path]:

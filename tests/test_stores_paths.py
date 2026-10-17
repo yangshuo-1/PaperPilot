@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.stores.paths import (
+from paperpilot.storage.paths import (
     DataPathError,
     DataPaths,
     LAYERS,

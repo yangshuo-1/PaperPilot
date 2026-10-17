@@ -5,9 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.app.jobs.base import JobStatus
-from backend.app.jobs.diagram import DiagramJobRunner
-from backend.app.llm.loader import PromptNotConfigured
+from paperpilot.jobs.base import JobStatus
+from paperpilot.jobs.diagram import DiagramJobRunner
+from paperpilot.llm.loader import PromptNotConfigured
 
 
 VALID_IR = {
@@ -29,8 +29,8 @@ class DiagramJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             calls = []
-            with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"), patch(
-                "backend.app.jobs.diagram.load_prompt", return_value="diagram prompt"
+            with patch("paperpilot.jobs.diagram.prompt_version", return_value="v1"), patch(
+                "paperpilot.jobs.diagram.load_prompt", return_value="diagram prompt"
             ):
                 runner = self.runner(root, lambda prompt: calls.append(prompt) or json.dumps(VALID_IR), lambda _ir, **_: [])
                 job = runner.generate("paper", "doc-v1", "workflow", "source")
@@ -50,8 +50,8 @@ class DiagramJobTests(unittest.TestCase):
             issue = SimpleNamespace(code="QUOTE_NOT_FOUND", subject="node-a", message="quote missing")
             llm_calls = []
             validation = iter([[issue], []])
-            with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"), patch(
-                "backend.app.jobs.diagram.load_prompt", return_value="diagram prompt"
+            with patch("paperpilot.jobs.diagram.prompt_version", return_value="v1"), patch(
+                "paperpilot.jobs.diagram.load_prompt", return_value="diagram prompt"
             ):
                 runner = self.runner(
                     root,
@@ -67,8 +67,8 @@ class DiagramJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             issue = SimpleNamespace(code="SCHEMA_VIOLATION", subject="$", message="bad")
-            with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"), patch(
-                "backend.app.jobs.diagram.load_prompt", return_value="diagram prompt"
+            with patch("paperpilot.jobs.diagram.prompt_version", return_value="v1"), patch(
+                "paperpilot.jobs.diagram.load_prompt", return_value="diagram prompt"
             ):
                 runner = self.runner(root, lambda _prompt: "{}", lambda _ir, **_: [issue])
                 final = runner.run(runner.generate("paper", "doc-v1", "workflow", "source").job_id)
@@ -80,8 +80,8 @@ class DiagramJobTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             llm = unittest.mock.Mock()
-            with patch("backend.app.jobs.diagram.prompt_version", side_effect=PromptNotConfigured("prompt 未配置: diagram_ir")), patch(
-                "backend.app.jobs.diagram.load_prompt", side_effect=PromptNotConfigured("prompt 未配置: diagram_ir")
+            with patch("paperpilot.jobs.diagram.prompt_version", side_effect=PromptNotConfigured("prompt 未配置: diagram_ir")), patch(
+                "paperpilot.jobs.diagram.load_prompt", side_effect=PromptNotConfigured("prompt 未配置: diagram_ir")
             ):
                 runner = self.runner(root, llm, lambda **_: [])
                 final = runner.run(runner.generate("paper", "doc-v1", "workflow", "source").job_id)
@@ -92,7 +92,7 @@ class DiagramJobTests(unittest.TestCase):
     def test_queued_cancellation_is_cooperative(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            with patch("backend.app.jobs.diagram.prompt_version", return_value="v1"):
+            with patch("paperpilot.jobs.diagram.prompt_version", return_value="v1"):
                 runner = self.runner(root, lambda _prompt: json.dumps(VALID_IR), lambda _ir, **_: [])
                 job = runner.generate("paper", "doc-v1", "workflow", "source")
             self.assertEqual(runner.cancel(job.job_id).status, JobStatus.CANCELLED)

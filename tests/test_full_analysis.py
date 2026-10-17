@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app.codex_jobs import CodexJobRunner
-from backend.app.domain.illustration import Illustration
-from backend.app.jobs.base import JobCancelled
-from backend.app.jobs.full_analysis import (
+from paperpilot.codex_jobs import CodexJobRunner
+from paperpilot.domain.illustration import Illustration
+from paperpilot.jobs.base import JobCancelled
+from paperpilot.jobs.full_analysis import (
     DEFAULT_CHUNK_ATTEMPTS,
     EXPERIMENT_TOPICS,
     MAX_CHUNK_TOKENS,
@@ -25,7 +25,7 @@ from backend.app.jobs.full_analysis import (
     render_markdown,
     section_chars,
 )
-from backend.app.llm.loader import load_prompt, prompt_version
+from paperpilot.llm.loader import load_prompt, prompt_version
 
 
 class _Page:
@@ -94,7 +94,7 @@ class ReadPagesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "paper.pdf"
             path.write_bytes(b"pdf")
-            with patch("backend.app.parsers.pypdf_parser.PdfReader", _Reader):
+            with patch("paperpilot.parsers.pypdf_parser.PdfReader", _Reader):
                 pages, warnings = read_pages(path)
         self.assertEqual([page.number for page in pages], [1, 2, 3])
         self.assertTrue(any("pypdf" in warning for warning in warnings))
@@ -111,7 +111,7 @@ class AnalysisTests(unittest.TestCase):
         self._temp.cleanup()
 
     def _analyze(self, llm, **kwargs):
-        with patch("backend.app.parsers.pypdf_parser.PdfReader", _Reader):
+        with patch("paperpilot.parsers.pypdf_parser.PdfReader", _Reader):
             return analyze_pdf(
                 self.pdf,
                 paper_id="paper-1",
@@ -167,7 +167,7 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(len(set(calls[1:])), 1, "a non-budget failure keeps the same budget")
 
     def test_a_starved_reasoning_budget_retries_with_more_tokens(self):
-        from backend.app.llm import LLMContentBudgetExceeded
+        from paperpilot.llm import LLMContentBudgetExceeded
 
         budgets: list[int] = []
 
@@ -232,7 +232,7 @@ class AnalysisTests(unittest.TestCase):
             def __init__(self, _path: str) -> None:
                 self.pages = []
 
-        with patch("backend.app.parsers.pypdf_parser.PdfReader", _EmptyReader):
+        with patch("paperpilot.parsers.pypdf_parser.PdfReader", _EmptyReader):
             with self.assertRaisesRegex(RuntimeError, "未抽取到任何页面文本"):
                 analyze_pdf(
                     self.pdf, paper_id="p", title="t", document_version="v",

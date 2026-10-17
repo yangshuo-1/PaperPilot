@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from backend.app.deps import get_store
-from backend.app.config import get_settings
-from backend.app.main import app
-from backend.app.storage import PaperStore
+from paperpilot.deps import get_store
+from paperpilot.config import get_settings
+from paperpilot.main import app
+from paperpilot.storage.paper_store import PaperStore
 
 
 
@@ -120,7 +120,7 @@ class RuntimeStorageTests(unittest.TestCase):
             derived.mkdir()
             (derived / "latex_plain.txt").write_text("runtime search marker", encoding="utf-8")
             store.database.rebuild_fts()
-            with patch("backend.app.reader.PdfReader", side_effect=AssertionError("PDF opened")):
+            with patch("paperpilot.reader.PdfReader", side_effect=AssertionError("PDF opened")):
                 result = store.search_paper("paper", "search marker")
             self.assertEqual(result["total"], 1)
             self.assertIn("search marker", result["results"][0]["quote"])
@@ -203,7 +203,7 @@ class RuntimeStorageTests(unittest.TestCase):
                 "total_pages": 1,
                 "document_version": "sha256:test",
             }
-            with patch("backend.app.routers.reader.reader_mod.load_or_build", return_value=manifest):
+            with patch("paperpilot.api.reader.reader_mod.load_or_build", return_value=manifest):
                 with TestClient(app) as client:
                     reader_response = client.get("/api/papers/paper/reader")
                     pdf_response = client.get("/api/papers/paper/pdf")

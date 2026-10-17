@@ -1,5 +1,7 @@
 # paper-vault Reproduction Design
 
+> **阅读须知（2026-10-17 更新）**：本文件的**产品/UI 设计意图**（Library / Reader / AI / Project 分层、页面与交互目标）仍是现行参照；**后端结构描述是历史快照**——文中的 `workflow/adapter.py`、`tools/literature-workflow/`、`routers/` 与 `PAPER_VAULT_*` 环境变量均已被 v2 与 M0/P0.1 取代（现行结构见 `docs/design/code-organization.md`，数据根见 `docs/design/data-organization.md`）。文中的 TODO 勾选记录历史进度，**不要**据此判断现状；计划与进度只看 `docs/design/roadmap.md`。
+
 Codex URL:
 
 - [paper-understanding-ui-design.md](./paper-understanding-ui-design.md)
@@ -95,17 +97,14 @@ papers/<PaperName>/                one paper per directory
 ## Repository Layout
 
 ```text
-backend/
-  app/
-    main.py                 FastAPI app and CORS setup
-    config.py               repo/data root settings
-    deps.py                 cached WorkflowAdapter dependency
-    models.py               Pydantic API contracts (Paper, PaperMetadata, Folder, ...)
-    routers/
-      health.py             health endpoint
-      papers.py             paper, tag, metadata, folder, document, export APIs
-    workflow/
-      adapter.py            bridge from workflow scripts to API models
+src/paperpilot/               # M0/P0.1 后：旧 backend/app 已搬迁
+  main.py                 FastAPI app and CORS setup
+  config.py               repo/data root settings（数据根 = PAPERPOILOT_DATA_DIR）
+  deps.py                 cached store/runner dependencies
+  models.py               Pydantic API contracts (Paper, PaperMetadata, Folder, ...)
+  api/
+    health.py             health endpoint
+    papers.py             paper, tag, metadata, folder, document, export APIs
 
 frontend/
   src/
@@ -182,14 +181,13 @@ Vite proxies `/api` to `http://127.0.0.1:8020`.
 Verification:
 
 ```bash
-.venv/bin/python -m compileall backend/app
-.venv/bin/python -m py_compile tools/literature-workflow/scripts/paper_workflow.py tools/literature-workflow/scripts/build_paper_index.py
+.venv/bin/python -m compileall src/paperpilot
 cd frontend && npm run build
 ```
 
 ## Backend Design
 
-`backend/app/main.py` creates a FastAPI app and mounts:
+`src/paperpilot/main.py` 创建 FastAPI app 并挂载（M0/P0.1 前为 `backend/app/main.py`；下同）：
 
 ```text
 /api/health

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.annotations import AnnotationStore
+from paperpilot.annotations import AnnotationStore
 
 
 class AnnotationStoreTests(unittest.TestCase):
