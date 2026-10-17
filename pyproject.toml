@@ -29,6 +29,12 @@ dev = [
     "httpx2>=2.0",
 ]
 
+[tool.hatch.build]
+# The Vite build output is a generated artifact (gitignored, produced by
+# `npm run build`) but it must ship inside the wheel: a wheel-only install has no
+# Node toolchain. `artifacts` is hatchling's way to include VCS-ignored files.
+artifacts = ["src/paperpilot/web/**"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/paperpilot"]
 

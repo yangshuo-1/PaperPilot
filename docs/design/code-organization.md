@@ -89,9 +89,10 @@ frontend/src/
 ## 打包与发布
 
 - **`pyproject.toml` 是唯一依赖声明**：Python ≥3.12，`uv` 管理；`requirements.txt` 已删除。
-- 发布物是**包含前端产物的 wheel**：`src/paperpilot/web/` 由 `make build`（`tsc -b && vite build`，`outDir` 指向该目录）生成并通过 package-data 打进去。用户机器不需要 Node。
-- 安装形态：`uv tool install paperpilot` → `paperpilot serve`。开发形态：`.venv` + `make dev`（Vite 5173 代理 8020），由 `PAPERPOILOT_DEV=1` 切换。
+- 发布物是**包含前端产物的 wheel**：`src/paperpilot/web/` 由 `make build`（`tsc -b && vite build`，`outDir` 指向该目录）生成。该目录是生成物（gitignored，禁手改），但必须进 wheel，因此用 hatchling 的 `artifacts = ["src/paperpilot/web/**"]`（`artifacts` 正是"被 VCS 忽略但要打包"的机制）；只用 `packages=` 会因 .gitignore 静默漏掉它，已实测。用户机器不需要 Node，维护者与 CI 构建 wheel 前必须先 build 前端。
+- 单进程托管：`main.mount_web()` 在所有 `/api` 路由之后挂 SPA，`BrowserRouter` 的真实路径（`/papers/<id>`、`/projects`）落到 `index.html`；未知 `/api/*` 仍是 404，不会被 HTML 兜住。bundle 不存在（未构建的源码树）或 `PAPERPOILOT_DEV=1` 时保留 CORS，走 Vite 5173 代理 8020 的开发形态。
+- 安装形态：`uv tool install paperpilot` → `paperpilot serve`。
 - **许可证随包分发**：pypdfium2 捆绑的 PDFium 二进制要求随二进制分发其及依赖的许可证声明（约 20 项第三方 notice），wheel 必须携带 `THIRD_PARTY_NOTICES`/许可证目录；前端依赖 pdf.js（Apache-2.0，含 `external/` 子组件声明）与 KaTeX（MIT）同理。
 - **`import-linter`**：CI 机械执行上述依赖约束（domain 禁 import fastapi、storage 禁 import domain、jobs 禁互导）。
-- `Makefile`：`dev` / `doctor` / `test` / `build` / `wheel` / `smoke`（装 wheel 起服务验 `/api/health`）。
-- CI：ruff + import-linter + `compileall` + unittest + 前端 build + wheel 构建与 `uv tool install` 冒烟。
+- `Makefile`：`dev` / `doctor` / `test` / `build` / `wheel`（依赖 `build`）/ `smoke`（装 wheel 起服务验 `/api/health`）。
+- CI：ruff + import-linter + `compileall` + unittest + 前端 build + wheel 构建与 `uv tool install` 冒烟（冒烟必须验 `/` 返回页面而不仅是 `/api/health`）。

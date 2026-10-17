@@ -36,18 +36,6 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -p 'test*.py'
 
-      - name: Build wheel
-        run: |
-          python -m pip install build
-          python -m build --wheel --outdir dist
-
-      - name: Smoke-test the wheel in a clean venv
-        run: |
-          python -m venv /tmp/wheelsmoke
-          /tmp/wheelsmoke/bin/pip install --quiet dist/paperpilot-*.whl
-          /tmp/wheelsmoke/bin/paperpilot --version
-          /tmp/wheelsmoke/bin/paperpilot --help >/dev/null
-
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -68,6 +56,64 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+  # 发布形态验收：预构建前端 → wheel → 干净环境安装 → 起服务验 / 与 /api/health。
+  # 这是 M0 的"新机器 uv tool install 后能起页面"验收项（P0.2/P0.9）。
+  wheel:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the frontend bundle into the package
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist
+          python - <<'PY'
+          import zipfile, glob
+          wheel = sorted(glob.glob("dist/paperpilot-*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          assert any(n.endswith("paperpilot/web/index.html") for n in names), names[:20]
+          print(f"{wheel}: {len(names)} entries, SPA bundle present")
+          PY
+
+      - name: Install the wheel in a clean environment
+        run: |
+          python -m venv /tmp/wheelsmoke
+          /tmp/wheelsmoke/bin/pip install --quiet dist/paperpilot-*.whl
+          /tmp/wheelsmoke/bin/paperpilot --version
+          /tmp/wheelsmoke/bin/paperpilot --help >/dev/null
+
+      - name: Serve the wheel and check the page
+        run: |
+          export PATH="/tmp/wheelsmoke/bin:$PATH"
+          export PAPERPOILOT_DATA_DIR="$(mktemp -d)"
+          paperpilot serve --port 8123 >/tmp/serve.log 2>&1 &
+          for _ in $(seq 1 40); do curl -fsS http://127.0.0.1:8123/api/health >/dev/null 2>&1 && break; sleep 0.5; done
+          curl -fsS http://127.0.0.1:8123/api/health
+          echo
+          curl -fsS http://127.0.0.1:8123/ | grep -q 'id="root"'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8123/projects)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8123/api/definitely-missing)" = "404"
 
   # Optional populated-browser acceptance. Enable this only on a runner with Chrome/CDP,
   # running backend and frontend services, and a prepared test case.

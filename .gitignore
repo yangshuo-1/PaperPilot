@@ -23,6 +23,8 @@ llm_config.json
 # ---- Node / Vite ----
 frontend/node_modules/
 frontend/dist/
+# 预构建前端随 wheel 发布，由 `npm run build` 生成（vite outDir），禁止手改/入库
+src/paperpilot/web/
 *.tsbuildinfo
 
 # ---- Data assets ----

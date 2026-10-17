@@ -49,3 +49,21 @@ if [[ "$HEALTH" != *'"ok":true'* ]]; then
 fi
 
 echo "smoke OK: paperpilot serve -> /api/health (data_root=$DATA_DIR)"
+
+# P0.2: the wheel must carry the prebuilt SPA, so the page has to come from this process.
+PAGE="$(curl -fsS "http://127.0.0.1:$PORT/" 2>/dev/null || true)"
+if [[ "$PAGE" != *'id="root"'* ]]; then
+	printf '%s\n' "smoke FAILED: / did not return the SPA shell (missing src/paperpilot/web?)" >&2
+	tail -20 "$LOG" >&2
+	exit 1
+fi
+
+DEEP_LINK="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/projects" 2>/dev/null || true)"
+UNKNOWN_API="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/definitely-missing" 2>/dev/null || true)"
+if [[ "$DEEP_LINK" != "200" || "$UNKNOWN_API" != "404" ]]; then
+	printf '%s\n' "smoke FAILED: SPA deep link (got $DEEP_LINK, want 200) or unknown API (got $UNKNOWN_API, want 404)" >&2
+	tail -20 "$LOG" >&2
+	exit 1
+fi
+
+echo "smoke OK: / (SPA shell) + /projects (deep link 200) + /api/health + unknown API 404"

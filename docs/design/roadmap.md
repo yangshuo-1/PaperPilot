@@ -14,7 +14,7 @@
 
 | 阶段 | 状态 | 备注 |
 |---|---|---|
-| M0 骨架 | 🔄 进行中 | **P0.1 + P0.8 已完成**（包化搬迁 + 文档契约）；剩余 P0.2/P0.3/P0.4/P0.5/P0.6/P0.7/P0.9。 |
+| M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.8 已完成**；剩余 P0.3/P0.4/P0.5/P0.6/P0.7/P0.9。 |
 | M1 入库与阅读 | ⏳ 功能在旧结构下已可用，待在新结构上做 20 篇成功率统计 | 当前库内仅 2 篇论文，LaTeX 解析稳健性缺数据（最大不确定项）；arXiv 限速/缓存/单连接按风险节 5 落地。 |
 | M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。 |
 | M3 Project | ⏳ 已有 Project/Session/治理/事件骨架；缺项目简报、选论文、工具循环、检索、MCP | 无工具调用、无 MCP；`Project` 只有 name/description/goal，无简报字段。**MCP server 要自己实现**（dsh/Pi 只有 client，见风险节 4）。 |
@@ -40,7 +40,7 @@
 | # | owner | 任务 | 写盘范围 | 验收 |
 |---|---|---|---|---|
 | **P0.1** ✅ | INFRA | 包化与 src 布局：`pyproject.toml` 补 `[project]`（Python ≥3.12、依赖、`[project.scripts]`、package-data、第三方许可证声明）；`git mv backend/app src/paperpilot`；按映射表重命名 `routers→api`、`stores→storage`；`paperpilot serve` / `paperpilot reindex` CLI；删除 `requirements.txt` 与占位 `uv.lock` | `pyproject.toml`、`src/**`、`tests/**`、`scripts/**` | `compileall` + unittest 全绿；`uv build` 产出 wheel；`uv tool install` 后 `paperpilot --help` 可用 |
-| P0.2 | WEB | 前端产物进 wheel：`vite build` 输出到 `src/paperpilot/web`；FastAPI 挂载静态站 + SPA fallback（`/api/*` 优先）；`PAPERPOILOT_DEV=1` 时保留 Vite 5173 与 CORS 开发模式 | `vite.config.ts`、`src/paperpilot/web/**`（生成物）、`main.py` 挂载段 | 只装 wheel 的机器上打开页面即可用；`/api/health` 正常；开发模式仍走 Vite |
+| **P0.2** ✅ | WEB | 前端产物进 wheel：`vite build` 输出到 `src/paperpilot/web`；FastAPI 挂载静态站 + SPA fallback（`/api/*` 优先）；`PAPERPOILOT_DEV=1` 时保留 Vite 5173 与 CORS 开发模式 | `vite.config.ts`、`src/paperpilot/web/**`（生成物）、`main.py` 挂载段 | 只装 wheel 的机器上打开页面即可用；`/api/health` 正常；开发模式仍走 Vite |
 | **P0.3** | DATA | 数据根移出仓库：`PAPERPOILOT_DATA_DIR`（默认 XDG `~/.local/share/paperpilot`）；`config.py` 只解析 `<data_dir>`；一次性迁移器 `paperpilot migrate`（旧 `papers/`+`references/` → `papers/<arxiv_id>/{source,derived,results,exports}` + `db.sqlite`） | `config.py`、`storage/paths.py`、新迁移模块、测试 | 现有 2 篇论文迁移后索引/标签/标注/笔记可用；路径逃逸测试仍绿；迁移可重入、有 dry-run |
 | P0.4 | JOBS | 任务表：job 状态/checkpoint/事件从 `references/*_jobs/*.json` 迁入 `db.sqlite`（保留 `jobs/base.py` 状态机、`job_key` 幂等、`recover()` 语义） | `jobs/**`、`storage/db.py` DDL、测试 | 重启后 running 任务恢复；幂等重复提交不产生第二个 job；既有 job 契约测试全绿 |
 | P0.5 | JOBS/WEB | 进度推送：`GET /api/jobs/{id}/events` SSE；前端订阅，断线回退轮询 | `api/jobs.py`、`frontend/src/api`、`frontend/src/hooks` | 真实任务进度逐条到达；断线重连不重复计数；无 SSE 时轮询仍工作 |
@@ -63,6 +63,14 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 验证证据：`ruff check src` 全绿；`lint-imports` 3 契约 KEPT；unittest **244 passed**；`uv build --wheel` 产物含 `llm/prompts/*.md`(10) 与 `LICENSE`；`uv tool install` 后 `paperpilot --version/--help` 可用、`paperpilot serve` 的 `/api/health` 返回 `{"ok":true,"data_root":...}`（`/` 仍 404，等 P0.2）。
 
 环境事实：本机无 3.12，python-build-standalone 从 GitHub 下载超时，故开发 venv 用本机 3.14.3（见 `AGENTS.md` 环境节），CI 仍用 3.12。**第三方许可证声明目录（`BUILD_LICENSES/`）等引入 pypdfium2 时随 P0.9 落地**，当前 wheel 只带项目自身 `LICENSE`。
+
+### P0.2 落地记录（2026-10-17）
+
+前端产物 `outDir` 改为 `src/paperpilot/web`（生成物，gitignored）；新增 `src/paperpilot/webapp.py`：`mount_web()` 在所有 API 路由之后挂 SPA 兜底，bundle 缺失时不挂载；CORS 只在"未托管 bundle"或 `PAPERPOILOT_DEV=1` 时启用（本机当前两种情形都与旧行为一致）。
+
+**踩到的坑（重要）**：hatchling 的 `packages=` 会把 .gitignore 忽略的文件静默排除，第一次打包 wheel 里 `web/` 条目为 0；必须显式写 `[tool.hatch.build] artifacts = ["src/paperpilot/web/**"]`。`make wheel` 因此依赖 `make build` 并校验 `index.html` 存在。
+
+验证证据：wheel 含 64 个 web 条目；`uv tool install` 后 `curl /` 返回 SPA HTML、`/projects` 与 `/papers/1234.5678` 深链返回 200、`/assets/index-*.js` 返回 200（1.0MB）、`/api/nope` 仍 404；**headless Chrome 实测** `#root` 有渲染子节点、Library 界面文案可见（不是白屏）。新增 `tests/test_webapp.py` 6 条（250 tests 全绿）。
 
 ### 关键技术决策（冻结，2026-10-17 用户确认）
 

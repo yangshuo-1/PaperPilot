@@ -25,6 +25,7 @@ from .api.reader import router as reader_router
 from .api.reading import router as reading_router
 from .api.session_messages import router as session_messages_router
 from .api.sessions import router as sessions_router
+from .webapp import is_dev_mode, mount_web
 
 
 @asynccontextmanager
@@ -45,13 +46,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="paper_valt", version="0.1.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 for router in (
     health_router,
@@ -69,3 +63,16 @@ for router in (
     diagrams_router,
 ):
     app.include_router(router)
+
+# The prebuilt SPA is served by this same process (single-process deployment). CORS is
+# only needed when the page is served by the Vite dev server instead: either the bundle
+# is absent, or PAPERPOILOT_DEV=1 explicitly asks for the dev workflow.
+served_web_dir = mount_web(app)
+if served_web_dir is None or is_dev_mode():
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )

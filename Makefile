@@ -126,9 +126,12 @@ build: _check-node
 	@cd "$(ROOT_DIR)/frontend"
 	PATH="$(NODE_DIR):$$PATH" "$(NPM_BIN)" run build
 
-# Build the distributable wheel (前端产物由 P0.2 打进包内).
-wheel:
+# Build the distributable wheel. 前端产物（src/paperpilot/web，gitignored）由
+# `npm run build` 生成后经 hatchling artifacts 打进 wheel：只装 wheel 的机器不需要 Node。
+wheel: build
 	@cd "$(ROOT_DIR)"
+	@test -f src/paperpilot/web/index.html || { \
+		printf '%s\n' "ERROR: src/paperpilot/web/index.html 缺失；先跑 make build（需要 Node）" >&2; exit 1; }
 	rm -rf dist
 	uv build --wheel
 

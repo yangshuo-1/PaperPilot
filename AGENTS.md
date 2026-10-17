@@ -51,12 +51,15 @@ make dev                                             # 后端 8020 + Vite 5173�
 # 验证（改动后必跑）
 .venv/bin/python -m compileall src/paperpilot
 .venv/bin/python -m unittest discover -s tests -p 'test*.py'
+.venv/bin/ruff check src && .venv/bin/lint-imports
 (cd frontend && npm run build)                       # 需 Node 18+，用 nvm 切 v22
-make smoke                                           # 构建 wheel → uv tool install → 起服务验 /api/health
+make smoke                                           # 构建 wheel（含前端产物）→ uv tool install → 验 /api/health 与 /
 node scripts/chrome_acceptance.mjs                   # 服务已启动时的真实浏览器验收
 node scripts/reading_acceptance.mjs                  # 阅读工作台（PDF/对照/笔记/图解/移动端）
 node scripts/notes_acceptance.mjs                    # 笔记图文并茂：图片/表格/公式/导出；PAPER_ID=… 指定论文
 ```
+
+`make wheel` / `make smoke` 会先构建前端（`src/paperpilot/web/`，生成物、gitignored、靠 hatchling `artifacts` 进 wheel），因此**只有维护者与 CI 需要 Node**；最终用户 `uv tool install paperpilot` 不需要。开发模式（Vite 5173 + CORS）用 `PAPERPOILOT_DEV=1`。
 
 （P0.1 之前是旧路径 `backend/app` + `requirements.txt`，已随 P0.1 删除。）
 
@@ -135,6 +138,6 @@ tests/               unittest，真实文件系统 + 临时目录
 
 M0 之前是 v1→v2 strangler 期，**已结束**（单体清零，旧 roadmap 已归档）。当前只剩包化搬迁：
 
-- P0.1（src 布局 + 打包 + CLI）**已完成**；剩余 P0.2–P0.9 的清单与写盘范围见 `docs/design/roadmap.md` 的 M0 任务清单。
+- P0.1（src 布局 + 打包 + CLI）与 P0.2（前端产物进 wheel + SPA 托管）**已完成**；剩余 P0.3–P0.7、P0.9 的清单与写盘范围见 `docs/design/roadmap.md` 的 M0 任务清单。
 - `pyproject.toml`、`src/paperpilot/main.py`、`config.py`、`models.py`、DB DDL 是共享文件，只在 INFRA 轨或集成阶段改动。
 - 新功能只进新结构；搬运期间不得顺手重写行为，每步保持 `compileall` + unittest + 前端 build 通过。
