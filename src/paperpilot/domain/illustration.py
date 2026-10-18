@@ -36,6 +36,16 @@ _UNSUPPORTED_MACROS = (
     "landscape", "adjustbox", "cellcolor", "rowcolor", "columncolor",
 )
 _CELL_MACRO = re.compile(r"\\([A-Za-z]+)")
+#: Citations and cross-references inside a cell carry no readable content: the
+#: cell text stays, the marker goes. Dropping them is what lets the paper's
+#: main comparison table convert instead of blocking on `\citep`.
+_CELL_REF_MACRO = re.compile(r"\\(?:cite|citep|citet|citealp|citeauthor|ref|eqref|autoref|label|nameref)\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}")
+_CELL_SIZE_MACRO = re.compile(r"\\(?:footnotesize|scriptsize|tiny|small|normalsize|large|Large|LARGE|huge|Huge)\b")
+#: A rule command between rows: with no ``\midrule`` it is what separates
+#: the header rows from the body rows.
+_BOUNDARY_RULE = re.compile(r"\s*\\(?:midrule|cmidrule|cline|Xcline|hline|toprule|bottomrule)")
+#: Footnote markers inside cells keep their symbol instead of literal TeX.
+_CELL_MARKER_MATH = re.compile(r"\$\s*\^\s*\{?([*]+|\\dagger|\\ddagger|\\ast)\}?\s*\$")
 _MATH_SPAN = re.compile(r"\$[^$]*\$")
 _CAPTION = re.compile(r"\\caption\s*\{")
 _TABULAR_BEGIN = re.compile(r"\\begin\{tabular\*?\}")
@@ -180,11 +190,35 @@ def _replace_parbox(text: str, limit: int = 40) -> str:
     return text
 
 
+def _replace_mcrot(value: str) -> str:
+    """``\\mcrot{n}{align}{angle}{text}`` (rotated header cell) keeps only its text.
+
+    Rotated headers are how the paper's main comparison table fits eleven model
+    names across a page. The rotation itself is presentation, but dropping the
+    macro is what makes that table convertible at all — and its column labels
+    are what the numeric-attribution check needs.
+    """
+    pattern = re.compile(r"\\mcrot\s*\{")
+    while True:
+        match = pattern.search(value)
+        if match is None:
+            return value
+        cursor = match.end() - 1
+        for _ in range(3):
+            _, cursor = _read_braced(value, cursor)
+        text, end = _read_braced(value, cursor)
+        value = value[: match.start()] + text + value[end:]
+
+
 def _clean_cell(raw: str) -> tuple[str, str]:
     """Return (html-ish cell text, unsupported reason)."""
     value = strip_comments(raw or "").strip()
     value = _RULE_MACROS.sub(" ", value)
     value = _NOISE_MACROS.sub(" ", value)
+    value = _replace_mcrot(value)
+    value = _CELL_REF_MACRO.sub("", value)
+    value = _CELL_SIZE_MACRO.sub("", value)
+    value = _CELL_MARKER_MATH.sub(lambda match: _MARKER_MATH.get(match.group(1).strip(), ""), value)
     value = _replace_macro(value, "hphantom", lambda _arg: "")
     value = _replace_two_arg_macro(value, "textcolor", lambda _color, arg: f'<span class="noteMark">{arg}</span>')
     value = _replace_macro(value, "textbf", lambda arg: f"<b>{arg}</b>")
@@ -194,6 +228,7 @@ def _clean_cell(raw: str) -> tuple[str, str]:
     value = _replace_macro(value, "underline", lambda arg: f"<u>{arg}</u>")
     value = _replace_macro(value, "textsc", lambda arg: arg)
     value = _replace_parbox(value)
+    value = _replace_macro(value, "mbox", lambda arg: arg)
     for name in ("makecell", "shortstack"):
         value = _replace_macro(value, name, lambda arg: arg.replace("\\\\", "<br>").replace("\\", ""))
     value = re.sub(r"\\\\\s*(\[[^\]]*\])?", "<br>", value)
@@ -287,6 +322,10 @@ def table_to_html(latex: str) -> tuple[str | None, int, str]:
         if f"\\{macro}" in lowered:
             return None, 0, f"含 {macro} 排版，未做机器转换"
     raw_rows = _split_top_level(body, rows=True)
+    # ``\midrule`` is the ordinary header/body separator. Only when it is absent
+    # (the main comparison table separates *header* rows with ``\cmidrule``) may
+    # a rule end the header, and then only at a row that carries a row label.
+    midrule_present = bool(re.search(r"\\midrule", body))
     header: list[list[tuple[int, int, str]]] = []
     rows: list[list[tuple[int, int, str]]] = []
     in_body = False
@@ -295,8 +334,7 @@ def table_to_html(latex: str) -> tuple[str | None, int, str]:
         if not trimmed:
             continue
         starts_body = bool(re.match(r"\s*\\midrule", trimmed))
-        if starts_body:
-            in_body = True
+        starts_rule = bool(_BOUNDARY_RULE.match(trimmed))
         cells: list[tuple[int, int, str]] = []
         for raw_cell in _split_top_level(trimmed, rows=False):
             colspan, content = _cell_span(raw_cell, "multicolumn")
@@ -307,6 +345,10 @@ def table_to_html(latex: str) -> tuple[str | None, int, str]:
             cells.append((colspan, rowspan, text))
         if not any(text for _, _, text in cells):
             continue
+        if not in_body and (
+            starts_body or (not midrule_present and starts_rule and cells[0][2].strip())
+        ):
+            in_body = True
         (rows if in_body else header).append(cells)
     if not header and not rows:
         return None, 0, "表格没有可读行"

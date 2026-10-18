@@ -225,7 +225,7 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
         resume_job_id = str(job.task_params.get("resume_job_id") or "")
         resume_payload = _completed_payload(getattr(checkpoint, "payload", None))
         if resume_payload is None and resume_job_id:
-            resume_payload = self._previous_payload(resume_job_id)
+            resume_payload = self._resume_payload(resume_job_id)
         if resume_job_id and resume_payload is None:
             raise RuntimeError("复用分片失败：来源任务没有可用的分片结果，未调用模型")
         result = analyze_pdf(
@@ -305,6 +305,28 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
         }
 
     # -- helpers ---------------------------------------------------------
+
+    def _resume_payload(self, job_id: str) -> Mapping[str, Any] | None:
+        """What a reused run starts from.
+
+        Page readings are always reusable. The plan and the draft are only
+        reusable while they never became a document: replaying a delivered draft
+        would make re-running a no-op, so a note that already passed could never
+        be improved with a better prompt.
+        """
+        payload = self._previous_payload(job_id)
+        if payload is None or not self._job_succeeded(job_id):
+            return payload
+        return {
+            key: value for key, value in payload.items()
+            if key not in {"plan", "draft", "stage"}
+        }
+
+    def _job_succeeded(self, job_id: str) -> bool:
+        for job in self.list_jobs():
+            if job.job_id == job_id:
+                return job.status == JobStatus.SUCCEEDED
+        return False
 
     def _resumable_job(self, paper_id: str) -> Job | None:
         """Newest job whose checkpoint can seed the next run.

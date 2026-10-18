@@ -64,7 +64,38 @@ class TableConversionTests(unittest.TestCase):
     def test_colour_and_bold_macros_survive_as_markup(self):
         html, _rows, _reason = table_to_html(SIMPLE_TABLE)
         self.assertIn('<span class="noteMark"><b>60.62</b></span>', html)
-        self.assertIn("<td>int4$^*$</td>", html, "math stays inline for KaTeX")
+        # A footnote marker is a symbol, not a formula: literal TeX in a cell
+        # reads as noise, so `$^*$` becomes `*` while real maths stays inline.
+        self.assertIn("<td>int4*</td>", html)
+
+    def test_real_maths_in_a_cell_stays_inline_for_katex(self):
+        latex = SIMPLE_TABLE.replace("int4$^*$", "int4$d_U$")
+        html, _rows, _reason = table_to_html(latex)
+        self.assertIn("<td>int4$d_U$</td>", html)
+
+    def test_rotated_header_macros_convert_to_column_labels(self):
+        r"""`\mcrot` is how the main comparison table fits its model names."""
+        latex = (
+            r"\begin{tabular}{lcc}" "\n" r"\Xcline{1-3}{0.08em}" "\n"
+            r"\rule{0pt}{3ex} & \multicolumn{2}{l}{Open Models} \\" "\n"
+            r"\cline{1-3}" "\n"
+            r"\rule{0pt}{3ex} & \mcrot{1}{l}{\rotangle}{\shortstack[l]{Embedding\\Gemma}}"
+            r" & \mcrot{1}{l}{\rotangle}{\shortstack[l]{Gecko\\Embedding$^\dagger$}} \\" "\n"
+            r"\cmidrule{1-3}" "\n"
+            r"\textbf{Parameters} & 308M & 278M \\" "\n"
+            r"\bottomrule" "\n"
+            r"\end{tabular}"
+        )
+        html, rows, reason = table_to_html(latex)
+        self.assertEqual(reason, "", reason)
+        self.assertEqual(rows, 1)
+        self.assertIn("Embedding<br>Gemma", html)
+        self.assertIn("Gecko<br>Embedding†", html, "footnote in a header keeps its symbol")
+        self.assertIn("<td>308M</td>", html)
+        # Both header rows stay in <thead>: the group row and the model row.
+        thead = html[html.find("<thead>"):html.find("</thead>")]
+        self.assertIn("Open Models", thead)
+        self.assertIn("Embedding<br>Gemma", thead)
 
     def test_rotated_headers_are_refused_instead_of_approximated(self):
         html, _rows, reason = table_to_html(ROTATED_TABLE)

@@ -249,6 +249,55 @@ class GateTests(unittest.TestCase):
         item = next(item for item in report["items"] if item["id"] == "H7")
         self.assertTrue(item["passed"], item["detail"])
 
+    def _table_illustration(self, latex: str):
+        from paperpilot.domain.illustration import table_to_html
+
+        html, rows, reason = table_to_html(latex)
+        self.assertIsNotNone(html, reason)
+        return v5.Illustration(
+            kind="table", number=1, title="表 1", section="", html=html, rows=rows,
+        )
+
+    # Models as *columns*: the shape of the paper's main comparison table.
+    _COLUMN_TABLE = (
+        r"\begin{tabular}{lcc}" "\n"
+        r"\toprule" "\n"
+        r" & EmbeddingGemma & Gecko \\" "\n"
+        r"\midrule" "\n"
+        r"Mean (Task) & 61.15 & 53.47 \\" "\n"
+        r"\bottomrule" "\n"
+        r"\end{tabular}"
+    )
+
+    def test_number_from_another_models_column_fails_fact_check(self):
+        note = _assembled()[1]["note"].replace(
+            "这一段说明该设计的原因", "这一段 `EmbeddingGemma` 的 `Mean(Task)` 为 `53.47`。"
+        )
+        report = v5.gate(
+            note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload(),
+            illustrations=[self._table_illustration(self._COLUMN_TABLE)],
+        )
+        item = next(item for item in report["items"] if item["id"] == "H2")
+        self.assertFalse(item["passed"], item["detail"])
+        self.assertIn("归属", item["detail"])
+        self.assertIn("53.47", item["detail"])
+
+    def test_owned_and_derived_numbers_stay_silent(self):
+        illustration = self._table_illustration(self._COLUMN_TABLE)
+        owned = _assembled()[1]["note"].replace(
+            "这一段说明该设计的原因", "这一段 `EmbeddingGemma` 的 `Mean(Task)` 为 `61.15`。"
+        )
+        derived = _assembled()[1]["note"].replace(
+            "这一段说明该设计的原因", "这一段 `EmbeddingGemma` 比基线高 `8.2` 分。"
+        )
+        for note in (owned, derived):
+            report = v5.gate(
+                note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload(),
+                illustrations=[illustration],
+            )
+            self.assertEqual(v5.numeric_attribution(note, [illustration]), [])
+            self.assertNotIn("归属", next(i for i in report["items"] if i["id"] == "H2")["detail"])
+
     def test_missing_evidence_index_fails_traceability(self):
         markdown, stats = _assembled(_draft(entries=0))
         note = markdown.split("## 附录 A")[0]

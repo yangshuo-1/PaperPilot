@@ -320,6 +320,21 @@ class JobReliabilityTests(unittest.TestCase):
             self.assertEqual(started.task_params["read_prompt_version"], "v4")
             self.assertEqual(started.task_params["resume_job_id"], "c" * 32)
 
+    def test_resume_keeps_readings_but_never_replays_a_delivered_draft(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "paper.pdf").write_bytes(b"%PDF-test")
+            store = SimpleNamespace(get_paper=lambda paper_id: Paper(id="paper-1", title="Paper", local_pdf_path=str(root / "paper.pdf")))
+            runner = _runner(root, store)
+            payload = {"completed": [{"first_page": 1, "last_page": 4, "payload": {}}], "plan": {"thesis": "x"}, "draft": "草稿"}
+            with patch.object(CodexJobRunner, "_previous_payload", return_value=payload):
+                with patch.object(CodexJobRunner, "_job_succeeded", return_value=True):
+                    reused = runner._resume_payload("a" * 32)
+                self.assertEqual(sorted(reused), ["completed"])
+                with patch.object(CodexJobRunner, "_job_succeeded", return_value=False):
+                    failed = runner._resume_payload("b" * 32)
+                self.assertEqual(sorted(failed), ["completed", "draft", "plan"])
+
     def test_a_failed_run_still_seeds_the_next_run_when_it_has_a_plan(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -67,11 +67,14 @@ v5 门禁逐条（文档内 marker 原样）：H1 叙述占正文中文 89%（�
 | 表 5 的 `Open Models`、`Commercial API Models` 被判混排 | 未转换表格的 LaTeX 源码围栏、HTML 表格块被当成正文 | `_prose_lines`/`_prose_chars`/`_fact_lines` 先剥离代码围栏与 `<div|details|table>` 块 |
 | H2 形同虚设（报 0/0 个小数） | 取数前被 `prose_only` 剥掉了反引号，而数字恰好都在反引号里 | 数字核查改在原始行上做（已批准的契约示例仍是 28/28 命中，旧产物仍被拦） |
 | `reuse_chunks=true` 复用失败，报"来源任务没有保存成文结果" | 复用只看"最近一次成功任务"，且 v4 的 `require_resume` 要求已存成文 | 分片检查点与 plan/draft 合并在同一 payload；`_resumable_job` 也接受**失败任务**留下的 plan/draft；成文阶段有已存断点时 0 次模型调用、1 秒完成闭环 |
+| 主结果对比表只能折叠显示 LaTeX 源码 | `\mcrot`（旋转表头）、`\citep`、`\mbox`、字号宏与单元格脚注标记都不被表格转换支持；该表没有 `\midrule`，头/体切分也判错 | `illustration.table_to_html`：支持 `\mcrot`、丢掉引用与字号宏、单元格脚注标记转符号；无 `\midrule` 时用「规则 + 有行标签」判定表体起点。12/12 张表（含主结果表，列头为 11 个模型名）全部可渲染 |
+| 正文可能引用别的模型列的数字 | 抽文本后的错列表格无法用「数字是否在论文里」判出归属 | `analysis_v5.numeric_attribution`：按表格列标签与列内数值建索引，只对「主语列没有、同表别的列有、且该列未在句中出现」的数字报 H2 失败；派生差值与他人列无关的数字保持沉默（交付稿复核 0 误报） |
 | 门禁不过的稿子会不会污染已有文档 | 顺序问题 | 先判后写：本轮 4 次门禁失败（H7/H8）全部**未写入**，交付文档在通过前逐字节不变 |
 
 ## 5. 未解决的问题（进 roadmap，不在本轮修）
 
-1. **主结果表不可读 → 数值错列**：论文 Table 5 用 `\mcrot` 旋转表头，`\shortstack`/`\mcrot` 未被 LaTeX 表格转换支持，只能折叠显示源码；PDF 文本抽取后该表列错位，模型据此把相邻列 Gecko 的 `68.14` 写成 EmbeddingGemma 的 `MTEB(Code)`（消融表 p6 为 `68.76`）。H2 只能验证"数字在论文里存在"，验证不了"数字属于该模型"。→ roadmap P2.6 / P2.7。
+1. **主结果表口径未写明（原判断已更正）**：论文 Table 5 的 `MTEB(Code)*` 带星号（剔除多数模型缺结果的 `COIRCodeSearchNetRetrieval`）＝`68.14`，而消融表 p6 的完整 `MTEB(Code)`＝`68.76`——**同一论文两个口径，都不错**，交付稿写 `68.14` 是正确的。更正说明：本文件初稿曾据此判为「模型把相邻列 Gecko 的值写成了 EmbeddingGemma 的」；复核 Table 5 的 `MTEB(Code)` 行按列对齐后，首列（EmbeddingGemma）确为 `68.14`，Gecko 该行是 `--`。错的是当时的判断，不是文档。
+   真正缺的是**口径标注**：正文写 `68.14` 时应写明「不含 COIR 的均值」。→ prompt 已加口径规则；P2.6（表格可读）与 P2.7（数字归属核对）已实现。
 2. `render_illustration` 对 LaTeX 关联资产没有页码，v5 图注只能用"源码 `main.tex L…`"代替"第 N 页"；P2.3 的"位置断言"因此只部分满足。
 3. 正文 6,072 字仍贴 H8 下限（本稿由抬高中段目标之前的预算生成）；下一次重跑应按 7,000–9,000 中段成文。
 4. 既有旧缺陷未动：`audit_assets` 把所有 `*.md` 标成 `generated_by: paper.document`；`_sanitize_claims._norm` 空距不一致。

@@ -16,7 +16,7 @@
 |---|---|---|
 | M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.4 + P0.7 + P0.8 已完成**；剩余 P0.5/P0.6/P0.9。 |
 | M1 入库与阅读 | ⏳ 功能在旧结构下已可用，待在新结构上做 20 篇成功率统计 | 当前库内仅 2 篇论文，LaTeX 解析稳健性缺数据（最大不确定项）；arXiv 限速/缓存/单连接按风险节 5 落地。 |
-| M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。**全文解析 v5：P2.1–P2.5 已完成（引擎 + 真实重跑对照，8/8 门禁通过）**，剩 P2.6（旋转表头表格可读）与 P2.7（数字归属核对）。 |
+| M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。**全文解析 v5：P2.1–P2.5 已完成（引擎 + 真实重跑对照，8/8 门禁通过）**，**P2.6（主结果表可渲染）与 P2.7（数字归属核对）已完成**。 |
 | M3 Project | ⏳ 已有 Project/Session/治理/事件骨架；缺项目简报、选论文、工具循环、检索、MCP | 无工具调用、无 MCP；`Project` 只有 name/description/goal，无简报字段。**MCP server 要自己实现**（dsh/Pi 只有 client，见风险节 4）。 |
 | M4 代码 agent | ⏸ 未开工 | 实验代码在本机（用户确认）。默认只读，在副本或 git worktree 上跑。 |
 | M5 增强 | ⏸ 未开工 | 翻译已存在；引文悬浮卡片、高亮、Obsidian 导出、生图按需取舍。 |
@@ -160,10 +160,10 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 | **P2.3** ✅ | ANALYZE | 资产就近装配：取消集中「图表与公式」章节，`[[ASSET:id]]` 占位符由模型写在论证段后，渲染时替换为论文原图/原表/公式（`style="v5"` 把 PDF 链接折进图注单行），未放置资产进附录 B | `domain/analysis_v5.py`、`domain/illustration.py`、`jobs/full_analysis.py` | 编号与论文一致（`table3`/`equation2`/`figure1`）；未知占位符被删除并记 note；无可就近资产时进附录 B 不丢内容；`test_analysis_v5.py` 覆盖替换/未知 id/附录 B/图注样式 |
 | **P2.4** ✅ | JOBS | rubric 硬门禁（H1–H8）替换 `SECTION_MIN_CHARS`；**先判后写**：门禁不过不得覆盖既有文档 | `domain/analysis_v5.py`、`codex_jobs.py`、`jobs/full_analysis.py`、`tests/**` | `test_jobs.py::test_failed_v5_gate_never_overwrites_the_existing_document` 断言旧文档逐字节不变且报错含"未写入文档"；门禁报告（H1–H8 逐条 + 指标）写进 `<!-- paper_valt:gate … -->` 与 job run 记录；标定：已批准示例 8/8 全绿，v3/v4 旧产物在 H1/H3/H4/H5/H7 被拦 |
 | **P2.5** ✅ | ANALYZE | EmbeddingGemma（arXiv 2509.20354）重跑对照：新旧文档并列指标 + 人工与视觉复核 | `scripts/analysis_v5_compare.py`、`scripts/notes_acceptance.mjs`、`docs/design/m2-v5-rerun.md` | 旧 v4 稿（106,758 B／正文 9,545 字／页码钉 44／中英混排 104／「图表与公式」占 39%）→ v5 精读笔记（78,157 B／正文 6,072 字／页码钉 0／混排 0／资产就近／证据 15/15 逐字命中）；门禁 8/8 通过而旧稿未过 H1/H3/H4/H5/H6/H7；`notes_acceptance.mjs` 全绿（图片走资产接口、10 表、KaTeX、导出 HTML、390px 无溢出、0 控制台错误）+ 截图多模态复核；结论与过程见 `docs/design/m2-v5-rerun.md` |
-| P2.6 | ANALYZE | LaTeX 表格支持 `\mcrot`/`\shortstack` 组合，让旋转表头的主结果对比表可读（当前只能折叠源码，且是 68.14/68.76 错列的根因） | `domain/**`、`parsers/**`、`tests/**` | Table 5 渲染出行列与列头；仅真正不支持的排版才折叠源码；`notes_acceptance.mjs` 覆盖该表 |
-| P2.7 | ANALYZE | 数字归属核对：计划的 `key_numbers`（值+页码+上下文）与正文数字交叉比对，捕出"数值真实但属于别的模型/列" | `domain/analysis_v5.py`、`llm/prompts/full_analysis_plan.v5.md`、`tests/**` | 能对 2509.20354 捕出"68.14 应为 68.76"；不误伤已写明算式的派生差值 |
+| **P2.6** ✅ | ANALYZE | LaTeX 表格支持 `\mcrot` 旋转表头、`\citep`/`\mbox`/字号宏与单元格脚注标记，并修正无 `\midrule` 表的头体切分 | `domain/illustration.py`、`tests/test_illustration.py` | 2509.20354 的 12/12 张表全部可渲染（此前主结果表只能折叠源码）；列头还原 11 个模型名、`Embedding Gemma` 列与 `61.15` 对齐；测试覆盖 `\mcrot`、脚注符号、真数学保留 |
+| **P2.7** ✅ | ANALYZE | 数字归属核对：按表格列标签建「列→数值」索引，正文中「主语列没有、同表别的列有」的数字判 H2 失败 | `domain/analysis_v5.py`、`jobs/full_analysis.py`、`tests/test_analysis_v5.py` | 合成用例可捕出「把 Gecko 列的值写成 EmbeddingGemma 的」；交付稿复核 0 误报（口径不同的 `68.14` 属正确引用）；`gate(..., illustrations=…)` 为可选参数，旧调用方不受影响 |
 
-**执行顺序**：P2.2 → P2.3 → P2.4 → P2.5 已完成；后续 P2.6（表格解析，`domain/`+`parsers/`）与 P2.7（门禁，`analysis_v5.py`）写盘范围不重叠，可并行。
+**执行顺序**：P2.2 → P2.3 → P2.4 → P2.5 → P2.6 → P2.7 已完成；后续进入 P2.5 的第二次重跑（按新口径规则与可渲染的主结果表复核）。
 
 ### 关键技术决策（冻结，2026-10-17 用户确认）
 

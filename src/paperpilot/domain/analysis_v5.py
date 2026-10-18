@@ -633,12 +633,107 @@ def _missing_numbers(note: str, page_texts: Mapping[int, str]) -> tuple[list[str
     return seen, missing
 
 
+_HTML_TAG = re.compile(r"<[^>]+>")
+_CLAUSE_SPLIT = re.compile(r"[，。；；：、！？!?]")
+#: A number is only treated as an assertion of the subject when the clause says
+#: so ("… 为 `61.15`"); comparisons ("高约 `16` 分") carry no ownership.
+_ATTRIBUTION = re.compile(r"(?:为|是|达到|等于)")
+#: Column labels of parsed tables, keyed by a space-free lowercase form so that
+#: `Embedding Gemma` (a rotated two-line header) matches `EmbeddingGemma`.
+AttributionIndex = dict[str, set[str]]
+
+
+def _table_attribution(illustrations: Sequence[Illustration]) -> tuple[AttributionIndex, dict[str, set[int]]]:
+    """Column label → numbers in that column (and label → table indices).
+
+    The paper's own tables are the only structure that says which number belongs
+    to which model: a value can be perfectly traceable to the PDF and still be
+    quoted for the wrong column, which a text-level existence check cannot see.
+    """
+    columns: AttributionIndex = {}
+    tables_of: dict[str, set[int]] = {}
+    for index, item in enumerate(illustrations or ()):
+        html = getattr(item, "html", None) or ""
+        if getattr(item, "kind", "") != "table" or "<thead>" not in html:
+            continue
+        head, _, body = html.partition("</thead>")
+        body = body.split("<tbody>", 1)[-1]
+        labels: dict[int, str] = {}
+        column = 0
+        for cell in re.finditer(r"<th([^>]*)>(.*?)</th>", head, re.S):
+            attrs, text = cell.group(1), _HTML_TAG.sub(" ", cell.group(2))
+            label = re.sub(r"\s+", " ", text).strip()
+            span = int(re.search(r'colspan="(\d+)"', attrs).group(1)) if "colspan=" in attrs else 1
+            if len(re.sub(r"[^A-Za-z0-9]", "", label)) >= 3:
+                labels[column] = label
+            column += span
+        if not labels:
+            continue
+        for row in re.finditer(r"<tr>(.*?)</tr>", body, re.S):
+            column = 0
+            for cell in re.finditer(r"<td([^>]*)>(.*?)</td>", row.group(1), re.S):
+                attrs, text = cell.group(1), _HTML_TAG.sub(" ", cell.group(2))
+                label = labels.get(column)
+                if label:
+                    key = re.sub(r"[^a-z0-9]", "", label.lower())
+                    if key:
+                        columns.setdefault(key, set()).update(DECIMAL_NUMBER.findall(text))
+                        tables_of.setdefault(key, set()).add(index)
+                span = int(re.search(r'colspan="(\d+)"', attrs).group(1)) if "colspan=" in attrs else 1
+                column += span
+    return {key: values for key, values in columns.items() if values}, tables_of
+
+
+def numeric_attribution(
+    note: str, illustrations: Sequence[Illustration]
+) -> list[str]:
+    """Numbers quoted for an entity whose table column holds a different value.
+
+    Conservative by construction: it only reports a number that is missing from
+    the clause's subject column *and* present in another column of the same
+    table. Derived arithmetic and values no table column owns stay silent.
+    """
+    columns, tables_of = _table_attribution(illustrations)
+    if not columns:
+        return []
+    violations: list[str] = []
+    for line in _prose_lines(note):
+        subject = ""
+        for clause in _CLAUSE_SPLIT.split(line):
+            plain = _HTML_TAG.sub(" ", clause.replace("`", ""))
+            normalized = re.sub(r"[^a-z0-9]", "", plain.lower())
+            mentioned = [
+                key for key in columns
+                if len(key) >= 4 and key in normalized
+            ]
+            if mentioned:
+                subject = mentioned[0]
+            if not subject or _ATTRIBUTION.search(clause) is None:
+                continue
+            for token in DECIMAL_NUMBER.findall(plain):
+                if token in columns.get(subject, ()):
+                    continue
+                owners = [
+                    key for key, values in columns.items()
+                    if key != subject
+                    and token in values
+                    and tables_of.get(key, set()) & tables_of.get(subject, set())
+                    and key not in normalized
+                ]
+                if owners:
+                    violations.append(
+                        f"`{token}` 写成了 {subject} 的取值，但该值出现在同表的 {owners[0]} 列"
+                    )
+    return violations
+
+
 def gate(
     *,
     note: str,
     system: str,
     page_texts: Mapping[int, str],
     plan: Mapping[str, Any],
+    illustrations: Sequence[Illustration] = (),
 ) -> dict[str, Any]:
     """H1–H8 of the v5 contract; a single failure means "do not deliver"."""
     present = sections(note)
@@ -651,6 +746,7 @@ def gate(
 
     numbers, missing_numbers = _missing_numbers(note, page_texts)
     number_ratio = 1.0 if not numbers else 1 - len(missing_numbers) / len(numbers)
+    misattributed = numeric_attribution(note, illustrations)
 
     entries, _ = verified_evidence(evidence_entries(note), page_texts)
     unverified = len(evidence_entries(note)) - len(entries)
@@ -683,9 +779,10 @@ def gate(
         {
             "id": "H2",
             "name": "事实",
-            "passed": number_ratio >= NUMBER_HIT_RATIO,
+            "passed": number_ratio >= NUMBER_HIT_RATIO and not misattributed,
             "detail": f"{len(numbers) - len(missing_numbers)}/{len(numbers)} 个小数可在 PDF 文本中找到"
-            + (f"；未命中示例：{'、'.join(missing_numbers[:5])}" if missing_numbers else ""),
+            + (f"；未命中示例：{'、'.join(missing_numbers[:5])}" if missing_numbers else "")
+            + (f"；数字归属存疑：{'；'.join(misattributed[:3])}" if misattributed else ""),
         },
         {
             "id": "H3",

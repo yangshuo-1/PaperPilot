@@ -980,7 +980,11 @@ def _v5_document(
             reader_notes=(),
         )
         report = analysis_v5.gate(
-            note=stats["note"], system=stats["system"], page_texts=page_texts, plan=plan
+            note=stats["note"],
+            system=stats["system"],
+            page_texts=page_texts,
+            plan=plan,
+            illustrations=illustrations,
         )
         final = (
             stats["note"]
