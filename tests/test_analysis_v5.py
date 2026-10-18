@@ -223,6 +223,32 @@ class GateTests(unittest.TestCase):
         report = v5.gate(note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
         self.assertFalse(next(item for item in report["items"] if item["id"] == "H7")["passed"])
 
+    def test_fabricated_number_in_backticks_fails_fact_check(self):
+        """The house style backticks every number, so H2 must look inside them."""
+        markdown, stats = _assembled()
+        note = stats["note"].replace("这一段说明该设计的原因", "这一段把分数推到 `99.99`，说明该设计的原因")
+        report = v5.gate(note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
+        item = next(item for item in report["items"] if item["id"] == "H2")
+        self.assertFalse(item["passed"])
+        self.assertIn("99.99", item["detail"])
+
+    def test_latex_symbols_are_not_mixed_language(self):
+        markdown, stats = _assembled()
+        note = stats["note"].replace("这一段说明该设计的原因", "这一段用 oplus q 与 ne j 表示该设计的原因")
+        report = v5.gate(note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
+        self.assertTrue(next(item for item in report["items"] if item["id"] == "H7")["passed"])
+
+    def test_source_fences_and_table_html_are_not_prose(self):
+        markdown, stats = _assembled()
+        injected = (
+            stats["note"]
+            + "\n```latex\n\\multicolumn{2}{l}{Open Models} & Commercial API Models \\\\\n```\n"
+            + '\n<div class="noteTableScroll"><table><tr><td>Multilingual Base</td></tr></table></div>\n'
+        )
+        report = v5.gate(note=injected, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
+        item = next(item for item in report["items"] if item["id"] == "H7")
+        self.assertTrue(item["passed"], item["detail"])
+
     def test_missing_evidence_index_fails_traceability(self):
         markdown, stats = _assembled(_draft(entries=0))
         note = markdown.split("## 附录 A")[0]
@@ -400,6 +426,111 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
         self.assertTrue(result["gate"]["passed"])
         self.assertTrue(any(entry.get("plan") for entry in checkpoints))
         self.assertTrue(any(entry.get("draft") for entry in checkpoints))
+
+    def test_truncated_draft_retries_with_a_bigger_budget(self):
+        budgets: list[int] = []
+        attempts = 0
+
+        def call(prompt: str, **kwargs) -> str:
+            nonlocal attempts
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                budgets.append(kwargs["max_tokens"])
+                attempts += 1
+                return "太短了，远不到篇幅下限。" if attempts == 1 else _draft()
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        result = self._analyze(call)
+        self.assertEqual(len(budgets), 2)
+        self.assertGreater(budgets[1], budgets[0])
+        self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
+
+    def test_reused_reading_without_a_draft_still_writes_the_note(self):
+        """`reuse_chunks` reuses the reading, not the writing (P2.5 upgrade path)."""
+        saved = {"completed": [{"first_page": 1, "last_page": 3, "payload": json.loads(_chunk_payload())}]}
+        calls: list[str] = []
+
+        def call(prompt: str, **_kwargs) -> str:
+            is_writer = "## 第一阶段阅读计划（JSON）" in prompt
+            calls.append("draft" if is_writer else "plan")
+            return _draft() if is_writer else json.dumps(_plan_payload(), ensure_ascii=False)
+
+        result = self._analyze(call, resume=saved, require_resume=True)
+        self.assertEqual(calls, ["plan", "draft"])
+        self.assertEqual(result["mode"], "v5")
+        self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
+
+    def test_plan_and_draft_checkpoints_keep_the_page_readings(self):
+        checkpoints: list[dict] = []
+
+        def save(payload, *, status):
+            checkpoints.append(payload)
+
+        result = self._analyze(self._llm(), save_checkpoint=save)
+        self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
+        stage_saves = [entry for entry in checkpoints if "plan" in entry or "draft" in entry]
+        self.assertEqual(len(stage_saves), 2)
+        for entry in stage_saves:
+            self.assertEqual(entry["chunks_done"], 1)
+            self.assertEqual(entry["completed"][0]["first_page"], 1)
+            self.assertEqual(entry["completed"][0]["last_page"], 3)
+
+    def test_failed_first_round_triggers_a_repair_round(self):
+        calls: list[str] = []
+
+        def call(prompt: str, **_kwargs) -> str:
+            calls.append(prompt)
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                first = len([item for item in calls if "## 第一阶段阅读计划（JSON）" in item]) == 1
+                return _draft().replace("这一段说明该设计的原因", "这一段 rich encoder design 说明原因") if first else _draft()
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        result = self._analyze(call)
+        writers = [item for item in calls if "## 第一阶段阅读计划（JSON）" in item]
+        self.assertEqual(len(writers), 2)
+        self.assertIn("## 上一稿的门禁结论", writers[-1])
+        self.assertIn("H7", writers[-1])
+        self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
+        self.assertTrue(any("重写一稿" in note for note in result["notes"]))
+
+    def test_two_failing_rounds_report_the_better_draft(self):
+        def call(prompt: str, **_kwargs) -> str:
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                mixed = _draft().replace("这一段说明该设计的原因", "这一段 rich encoder design 说明原因")
+                # round 1 also loses a skeleton section; round 2 only mixes language
+                return mixed.replace("## 我的笔记", "## 备注", 1) if "上一稿的门禁结论" not in prompt else mixed
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        result = self._analyze(call)
+        self.assertFalse(result["gate"]["passed"])
+        self.assertEqual(
+            [item["id"] for item in result["gate"]["items"] if not item["passed"]], ["H7"]
+        )
+
+    def test_tie_keeps_the_newest_draft(self):
+        drafts = 0
+
+        def call(prompt: str, **_kwargs) -> str:
+            nonlocal drafts
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                drafts += 1
+                if drafts == 1:
+                    return _draft().replace("## 我的笔记", "## 备注", 1)
+                return _draft().replace("这一段说明该设计的原因", "这一段 rich encoder design 说明原因")
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        result = self._analyze(call)
+        self.assertEqual(drafts, 2)
+        self.assertEqual(
+            [item["id"] for item in result["gate"]["items"] if not item["passed"]], ["H7"]
+        )
 
     def test_resume_reuses_the_saved_plan_and_draft_without_model_calls(self):
         saved = {"plan": _plan_payload(), "draft": _draft(), "completed": [

@@ -104,6 +104,24 @@ class ContentBudgetTests(unittest.TestCase):
         with self.assertRaises(LLMContentBudgetExceeded):
             self._run(response)
 
+    def test_content_truncated_by_the_token_limit_is_a_budget_error(self):
+        """finish_reason=length means a partial answer, not a short one."""
+        from paperpilot.llm import LLMContentBudgetExceeded
+
+        response = {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "半截稿"}, "finish_reason": "length"}],
+            "usage": {"completion_tokens": 8000},
+        }
+        with self.assertRaisesRegex(LLMContentBudgetExceeded, "finish_reason=length"):
+            self._run(response)
+
+    def test_complete_content_is_returned_even_when_short(self):
+        response = {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 12},
+        }
+        self.assertEqual(self._run(response), "OK")
+
 
 if __name__ == "__main__":
     unittest.main()

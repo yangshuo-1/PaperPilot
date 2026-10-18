@@ -144,6 +144,18 @@ const notes = await evaluate(`(() => {
       return (clone.textContent.match(/\\\\begin\{/g) || []).length;
     })(),
     details: markdown.querySelectorAll("details").length,
+    // v5 contract: assets sit next to the argument they support, so the
+    // load-bearing tables/figures/formulas must live before the evidence
+    // index instead of in one集中 section.
+    inlineAssetsBeforeEvidence: (() => {
+      const evidence = Array.from(markdown.querySelectorAll("h2"))
+        .find((node) => node.textContent.includes("附录 A"));
+      let count = 0;
+      markdown.querySelectorAll(".noteTableScroll, .noteFigure, .katex-display").forEach((node) => {
+        if (!evidence || node.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING) count += 1;
+      });
+      return count;
+    })(),
     sections: Array.from(markdown.querySelectorAll("h2")).map((node) => node.textContent.trim()),
     documentScrollWidth: document.documentElement.scrollWidth,
     innerWidth: window.innerWidth,
@@ -169,13 +181,13 @@ check("表格保留加粗/高亮标记", notes.tableMarks >= 3, `noteMark=${note
 check("公式已排版为 KaTeX", notes.katexDisplay >= 1 && notes.katexNodes >= 3, `display=${notes.katexDisplay} katex=${notes.katexNodes}`);
 check("正文不残留字面 $$ 或未折叠的原始 LaTeX", !notes.literalDoubleDollar && notes.latexOutsideFoldedSource === 0, `$$=${notes.literalDoubleDollar} latexOutsideDetails=${notes.latexOutsideFoldedSource}`);
 check("逐字证据保持折叠", notes.details >= 3, `details=${notes.details}`);
-check("图表与公式一节位于摘要之后", notes.sections.indexOf("图表与公式") === notes.sections.indexOf("摘要") + 1, notes.sections.slice(0, 5).join(" / "));
+check("资产就近放置在正文内（v5 不再集中成节）", notes.inlineAssetsBeforeEvidence >= 8 && !notes.sections.slice(0, 6).some((title) => title === "图表与公式"), `inline=${notes.inlineAssetsBeforeEvidence} sections=${notes.sections.slice(0, 6).join(" / ")}`);
 check("1440px 无横向溢出", notes.documentScrollWidth <= notes.innerWidth + 1, `${notes.documentScrollWidth} > ${notes.innerWidth}`);
 check("笔记滚动容器自身无横向溢出", notes.scrollerOverflow <= 1, `overflow=${notes.scrollerOverflow}`);
 
-const figureView = await scrollToSection("图表与公式");
+const figureView = await scrollToSection("方法主线");
 artifacts.figureView = figureView;
-check("目录/正文可定位到图表与公式一节", Boolean(figureView), JSON.stringify(figureView));
+check("目录/正文可定位到方法主线（公式与就近表格）", Boolean(figureView), JSON.stringify(figureView));
 await new Promise((resolve) => setTimeout(resolve, 600));
 artifacts.figureShot = await shot("figures");
 

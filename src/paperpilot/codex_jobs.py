@@ -307,13 +307,21 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
     # -- helpers ---------------------------------------------------------
 
     def _resumable_job(self, paper_id: str) -> Job | None:
-        """Latest succeeded analysis job whose checkpoint still holds its chunks."""
+        """Newest job whose checkpoint can seed the next run.
+
+        A succeeded job offers its page readings; a failed one may still hold a
+        validated reading plan or a draft (writing stage died, or the gate
+        rejected the draft), and finishing from that costs no reading calls.
+        """
         candidates = [
             job for job in self.list_jobs()
-            if job.paper_id == paper_id and job.status == JobStatus.SUCCEEDED
+            if job.paper_id == paper_id and job.status in {JobStatus.SUCCEEDED, JobStatus.FAILED}
         ]
         for job in sorted(candidates, key=lambda item: item.created_at, reverse=True):
-            if _completed_payload(self._previous_payload(job.job_id)) is not None:
+            payload = self._previous_payload(job.job_id)
+            if not isinstance(payload, Mapping):
+                continue
+            if payload.get("plan") or payload.get("draft") or _completed_payload(payload) is not None:
                 return job
         return None
 

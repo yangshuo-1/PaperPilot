@@ -46,15 +46,23 @@ MAX_CHUNK_TOKENS = 24000
 
 #: v5 stage budgets (contract §13.5). The plan stage answers a compact JSON
 #: question over a long input; the draft stage writes a 6–10k-character document
-#: in one go, so it gets the largest budget and the widest escalation.
+#: in one go. Reasoning tokens are billed against the same budget, so the draft
+#: starts high and escalates when a response comes back truncated or too short.
 MIN_PLAN_TOKENS = 20000
 MAX_PLAN_TOKENS = 40000
-MIN_WRITE_TOKENS = 32000
+MIN_WRITE_TOKENS = 40000
 MAX_WRITE_TOKENS = 48000
+#: A draft below this is a truncated or stubbed answer, not a short document:
+#: it cannot satisfy the 6000-character floor no matter how it is assembled.
+MIN_DRAFT_CHARS = 5200
 #: The plan stage also sees the raw page text when it fits; the reading material
 #: pack carries the traced evidence anyway, so a very long paper still plans.
 PLAN_INPUT_MAX_CHARS = 90000
 DEFAULT_V5_ATTEMPTS = 3
+#: One writing round plus one repair round driven by the gate report: a draft
+#: that fails on presentation-level rules (mixed language, length) converges
+#: when the model is told exactly which rule it broke.
+V5_WRITE_ROUNDS = 2
 
 
 def chunk_token_budget(pages_in_chunk: int, attempt: int = 0) -> int:
@@ -300,21 +308,34 @@ def write_request_text(
     plan: Mapping[str, Any],
     materials: str,
     assets: str,
+    feedback: Sequence[Mapping[str, Any]] = (),
 ) -> str:
-    """Stage-2 request: the plan is the spine, the material pack is only material."""
+    """Stage-2 request: the plan is the spine, the material pack is only material.
+
+    ``feedback`` carries the previous round's failed gates verbatim (the gate's
+    own report, not authored text), which turns a failing draft into a repair
+    round instead of a dead end.
+    """
     header = _stage_header(
         write_prompt, title=title, paper_id=paper_id, document_version=document_version,
         total_pages=total_pages, extra_instructions=extra_instructions,
     )
     plan_json = json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True)
-    return "\n\n".join(
-        [
-            header,
-            "## 第一阶段阅读计划（JSON）\n```json\n" + plan_json + "\n```",
-            "## 分片阅读材料包\n" + materials,
-            "## 可装配资产清单\n" + assets,
-        ]
-    ) + "\n"
+    parts = [
+        header,
+        "## 第一阶段阅读计划（JSON）\n```json\n" + plan_json + "\n```",
+        "## 分片阅读材料包\n" + materials,
+        "## 可装配资产清单\n" + assets,
+    ]
+    if feedback:
+        parts.append(
+            "## 上一稿的门禁结论\n"
+            + "\n".join(
+                f"- {'通过' if item['passed'] else '未通过'} {item['id']} {item['name']}：{item['detail']}"
+                for item in feedback
+            )
+        )
+    return "\n\n".join(parts) + "\n"
 
 
 def material_pack(outcomes: Sequence[ChunkOutcome]) -> str:
@@ -803,6 +824,11 @@ def _parse_draft(raw: str) -> str:
     text = (raw or "").strip()
     if not text:
         raise LLMContentBudgetExceeded("成文阶段返回空内容（token 预算被推理耗尽）")
+    if analysis_v5.chinese_chars(text) < MIN_DRAFT_CHARS:
+        raise LLMContentBudgetExceeded(
+            f"成文阶段只返回 {analysis_v5.chinese_chars(text)} 个中文字（低于 {MIN_DRAFT_CHARS}），"
+            "视为被 token 预算截断"
+        )
     return text
 
 
@@ -862,21 +888,40 @@ def _v5_document(
     failed: Sequence[str],
     notes: list[str],
     resume: Mapping[str, Any] | None,
+    chunks: Sequence[Mapping[str, Any]],
+    chunks_total: int,
     attempts: int,
     should_cancel: Callable[[], bool] | None,
     save_checkpoint: Callable[..., Any] | None,
-    require_resume: bool,
 ) -> tuple[str, dict[str, Any], dict[str, Any]] | None:
     """Plan → draft → assemble → gate (contract §13.5).
 
     Returns ``(markdown, gate_report, stats)``, or ``None`` when the plan could
     not be established — the caller then renders the v4 document from the same
     chunk results instead of failing the run.
+
+    The reading plan and the draft are written into the job checkpoint together
+    with the page readings, so a resumed or reused run pays only for the stage
+    that is still missing.
     """
     page_texts = {page.number: page.text for page in pages}
     assets = analysis_v5.asset_catalog(illustrations)
     materials = material_pack(outcomes)
     resume_map = resume if isinstance(resume, Mapping) else {}
+    chunk_records = [dict(record) for record in chunks]
+
+    def checkpoint(payload: dict[str, Any]) -> None:
+        if save_checkpoint is None:
+            return
+        save_checkpoint(
+            {
+                "completed": chunk_records,
+                "chunks_done": len(chunk_records),
+                "chunks_total": chunks_total,
+                **payload,
+            },
+            status="running",
+        )
 
     # -- stage 1: reading plan ------------------------------------------- #
     plan: dict[str, Any] = {}
@@ -902,39 +947,14 @@ def _v5_document(
             return None
         plan, plan_notes = analysis_v5.sanitize_plan(payload, page_texts)
     notes.extend(plan_notes)
-    if save_checkpoint is not None:
-        save_checkpoint({"plan": plan, "stage": "plan"}, status="running")
+    checkpoint({"plan": plan, "stage": "plan"})
     if not analysis_v5.plan_is_usable(plan):
         notes.append(
             "阅读计划校验未通过（可溯源断言或机制—结果对应不足），本次降级为 v4 文档形态"
         )
         return None
 
-    # -- stage 2: write the note in one go ------------------------------- #
-    draft = resume_map.get("draft")
-    if isinstance(draft, str) and draft.strip():
-        notes.append("成文结果来自上一次运行的断点，未重复调用模型。")
-    else:
-        if require_resume:
-            raise RuntimeError("复用失败：来源任务没有保存成文结果，未调用模型；请重新运行全文解析")
-        request = write_request_text(
-            write_prompt, title=title, paper_id=paper_id, document_version=document_version,
-            total_pages=len(pages), extra_instructions=extra_instructions,
-            plan=plan, materials=materials, assets=assets,
-        )
-        draft, error = _stage_call(
-            llm, request, parse=_parse_draft, label="draft",
-            min_tokens=MIN_WRITE_TOKENS, max_tokens=MAX_WRITE_TOKENS, attempts=attempts,
-            should_cancel=should_cancel, save_checkpoint=save_checkpoint,
-        )
-        if draft is None:
-            raise RuntimeError(
-                f"全文解析未完成：成文阶段失败（{type(error).__name__ if error else '未知错误'}: {str(error)[:180]}）"
-            )
-        if save_checkpoint is not None:
-            save_checkpoint({"plan": plan, "draft": draft, "stage": "draft"}, status="running")
-
-    # -- deterministic assembly + gates ---------------------------------- #
+    # -- stage 2: write the note, then repair it against the gate --------- #
     coverage_lines = _v5_coverage_lines(coverage, outcomes, failed, illustrations)
     provenance_lines = [
         f"paper_id：{paper_id}",
@@ -947,27 +967,76 @@ def _v5_document(
         f"{len(plan.get('mechanism_result_map') or [])} 条机制—结果对应",
         f"分片阅读：{len(outcomes)} 个页片段（失败 {len(failed)} 个）",
     ]
-    markdown, stats = analysis_v5.assemble_document(
-        draft,
-        illustrations=illustrations,
-        paper_id=paper_id,
-        page_texts=page_texts,
-        plan=plan,
-        coverage_lines=coverage_lines,
-        provenance_lines=provenance_lines,
-        reader_notes=(),
-    )
-    report = analysis_v5.gate(
-        note=stats["note"], system=stats["system"], page_texts=page_texts, plan=plan
-    )
-    final = (
-        stats["note"]
-        + "\n"
-        + stats["system"]
-        + analysis_v5.gate_marker(report, prompt_version=write_prompt_version)
-        + "\n"
-    )
-    return final, report, {**stats, "plan": plan}
+
+    def assemble(text: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        markdown, stats = analysis_v5.assemble_document(
+            text,
+            illustrations=illustrations,
+            paper_id=paper_id,
+            page_texts=page_texts,
+            plan=plan,
+            coverage_lines=coverage_lines,
+            provenance_lines=provenance_lines,
+            reader_notes=(),
+        )
+        report = analysis_v5.gate(
+            note=stats["note"], system=stats["system"], page_texts=page_texts, plan=plan
+        )
+        final = (
+            stats["note"]
+            + "\n"
+            + stats["system"]
+            + analysis_v5.gate_marker(report, prompt_version=write_prompt_version)
+            + "\n"
+        )
+        return final, report, {**stats, "plan": plan}
+
+    def failed_ids(report: Mapping[str, Any]) -> list[str]:
+        return [item["id"] for item in report["items"] if not item["passed"]]
+
+    draft = resume_map.get("draft")
+    feedback: Sequence[Mapping[str, Any]] = ()
+    best: tuple[str, dict[str, Any], dict[str, Any]] | None = None
+    best_failed = 99
+    if isinstance(draft, str) and draft.strip():
+        notes.append("成文结果来自上一次运行的断点，未重复调用模型。")
+    else:
+        draft = ""
+    # A saved draft is used as-is when it passes; when it does not, the repair
+    # round below writes a new one with the gate report attached.
+    for round_index in range(V5_WRITE_ROUNDS):
+        if not draft:
+            request = write_request_text(
+                write_prompt, title=title, paper_id=paper_id, document_version=document_version,
+                total_pages=len(pages), extra_instructions=extra_instructions,
+                plan=plan, materials=materials, assets=assets, feedback=feedback,
+            )
+            draft, error = _stage_call(
+                llm, request, parse=_parse_draft, label=f"draft{round_index + 1}",
+                min_tokens=MIN_WRITE_TOKENS, max_tokens=MAX_WRITE_TOKENS, attempts=attempts,
+                should_cancel=should_cancel, save_checkpoint=save_checkpoint,
+            )
+            if draft is None:
+                raise RuntimeError(
+                    f"全文解析未完成：成文阶段失败（{type(error).__name__ if error else '未知错误'}: {str(error)[:180]}）"
+                )
+            checkpoint({"plan": plan, "draft": draft, "stage": f"draft{round_index + 1}"})
+        produced = assemble(draft)
+        missing = failed_ids(produced[1])
+        if not missing:
+            return produced
+        if len(missing) <= best_failed:
+            # On a tie keep the newest draft: the repair round saw the full gate
+            # report, so an equal score is at worst an equal document.
+            best, best_failed = produced, len(missing)
+        if round_index + 1 < V5_WRITE_ROUNDS:
+            notes.append(
+                f"第 {round_index + 1} 稿未通过门禁（{'、'.join(missing)}），已带门禁结论重写一稿。"
+            )
+            feedback = list(produced[1]["items"])
+            draft = ""
+    assert best is not None
+    return best
 
 
 def _v5_coverage_lines(
@@ -1131,10 +1200,11 @@ def analyze_pdf(
             failed=failed,
             notes=notes,
             resume=resume,
+            chunks=progress,
+            chunks_total=len(chunk_ranges(len(pages), pages_per_chunk)),
             attempts=chunk_attempts,
             should_cancel=should_cancel,
             save_checkpoint=save_checkpoint,
-            require_resume=require_resume,
         )
         if produced is not None:
             markdown, report, stats = produced

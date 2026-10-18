@@ -11,6 +11,7 @@
 | `design/data-organization.md` | 数据根契约（`PAPERPOILOT_DATA_DIR` 移出仓库）、四层目录 + figures、`db.sqlite`(WAL+FTS5 trigram)、迁移与 reindex |
 | `design/paper-diagrams.md` | 论文图解能力：IR schema、evidence 锚点、校验与渲染、不 fork Archify 的决策 |
 | `design/reading-workspace.md` | 阅读工作台诊断与设计：HTML 笔记、空间布局、图解缩放、连续 PDF、保留图表公式的双栏翻译 |
+| `design/m2-v5-rerun.md` | 全文解析 v5 真实重跑验收（P2.5）：新旧文档并列指标、门禁逐条、视觉/多模态复核、本轮修掉的问题与未解决项 |
 | `design/roadmap.md` | **唯一现行计划入口**：M0–M5、M0 任务清单（P0.1–P0.9）、冻结决策、风险与"明确不做" |
 
 ## 现行参考（docs/ 根下）—— 仍有效的契约与产品设计

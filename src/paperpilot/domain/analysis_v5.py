@@ -70,6 +70,22 @@ EVIDENCE_ENTRY = re.compile(
 )
 PAGE_PIN = re.compile(r"第\s*\d+(?:\s*[-–~—]\s*\d+)?\s*页")
 MIXED_LANGUAGE = re.compile(r"[A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z][A-Za-z'’\-]*)+")
+#: LaTeX commands and one-letter symbols leak into prose when a formula is not
+#: wrapped in ``$…$``; they are math, not a mixed-language phrase. A hit counts
+#: as mixed language only when at least two *English words* remain after these
+#: are removed.
+LATEX_WORDS = frozenset(
+    """
+    oplus otimes cdot times frac dfrac tfrac sqrt sum prod int iint oint log ln exp
+    text textrm textbf textit mathrm mathbf mathit mathcal mathbb mathsf mathtt
+    left right big Big bigl bigr quad qquad hspace vspace neq ne le leq ge geq
+    approx sim simeq propto infty alpha beta gamma delta epsilon zeta eta theta
+    iota kappa lambda mu nu xi rho sigma tau phi chi psi omega
+    to rightarrow leftarrow mapsto top bot ell prime partial nabla forall exists
+    arg min max sup inf lim binom begin end label ref cite sec eq
+    """.split()
+)
+ENGLISH_WORD = re.compile(r"[A-Za-z][A-Za-z'’\-]{2,}")
 DECIMAL_NUMBER = re.compile(r"\d+\.\d+")
 #: Math and inline code are not prose; quotes are English by design.
 _NOT_PROSE = re.compile(r"\$\$?[^$]*\$?\$|`[^`]*`")
@@ -517,13 +533,28 @@ def assemble_document(
 # --------------------------------------------------------------------------- #
 
 
+_FENCED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+_HTML_BLOCK = re.compile(r"<(div|details|table)\b.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_non_prose_blocks(text: str) -> str:
+    """Remove fenced source and embedded HTML before judging prose.
+
+    An asset that could not be converted keeps its LaTeX source in a fence, and
+    a converted table is one HTML block; neither is prose, so their English
+    column headers and macro names must not count as mixed-language writing or
+    as page-pinned claims.
+    """
+    return _HTML_BLOCK.sub("\n", _FENCED_BLOCK.sub("\n", text))
+
+
 def _prose_lines(note: str) -> list[str]:
     """Lines that are prose: not a heading, list item, table, or asset caption.
 
     Language and page-pin rules apply to prose only — evidence entries quote
     English by design, and asset captions carry a page number by design.
     """
-    body = note.split(f"## {EVIDENCE_SECTION}")[0]
+    body = _strip_non_prose_blocks(note.split(f"## {EVIDENCE_SECTION}")[0])
     result: list[str] = []
     for raw in body.splitlines():
         line = raw.strip()
@@ -541,7 +572,7 @@ def _fact_lines(note: str) -> list[str]:
     so the number gate looks at the body only. Headings, tables and asset
     captions are structure, not claims.
     """
-    body = note.split(f"## {EVIDENCE_SECTION}")[0]
+    body = _strip_non_prose_blocks(note.split(f"## {EVIDENCE_SECTION}")[0])
     first = body.find("\n## ")
     if first >= 0:
         body = body[first:]
@@ -561,12 +592,18 @@ def _prose_page_pins(note: str) -> list[str]:
 def _mixed_language(note: str) -> list[str]:
     hits: list[str] = []
     for line in _prose_lines(note):
-        hits.extend(match.group(0) for match in MIXED_LANGUAGE.finditer(prose_only(line)))
+        for match in MIXED_LANGUAGE.finditer(prose_only(line)):
+            words = [
+                word for word in ENGLISH_WORD.findall(match.group(0))
+                if word.lower() not in LATEX_WORDS
+            ]
+            if len(words) >= 2:
+                hits.append(match.group(0))
     return hits
 
 
 def _prose_chars(note: str) -> int:
-    body = note.split(f"## {EVIDENCE_SECTION}")[0]
+    body = _strip_non_prose_blocks(note.split(f"## {EVIDENCE_SECTION}")[0])
     total = 0
     for raw in body.splitlines():
         line = raw.strip()
@@ -579,11 +616,15 @@ def _prose_chars(note: str) -> int:
 
 
 def _missing_numbers(note: str, page_texts: Mapping[int, str]) -> tuple[list[str], list[str]]:
+    """Numbers asserted in the body versus the numbers that exist in the PDF.
+
+    Inline code spans are *not* stripped here: the house style puts every number
+    in backticks, so stripping them would make this check vacuous.
+    """
     haystack = "".join(flatten(text) for text in page_texts.values())
     seen: list[str] = []
     missing: list[str] = []
-    body = note.split(f"## {EVIDENCE_SECTION}")[0]
-    for token in DECIMAL_NUMBER.findall(prose_only("\n".join(_fact_lines(body)))):
+    for token in DECIMAL_NUMBER.findall("\n".join(_fact_lines(note))):
         if token in seen:
             continue
         seen.append(token)

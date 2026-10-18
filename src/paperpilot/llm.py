@@ -234,6 +234,18 @@ def _chat_completion(  # noqa: PLR0913
         if reasoning or reasoning_chars:
             raise _budget_error()
         raise LLMUnavailable(f"LLM returned empty content: {str(data)[:200]}")
+    # A response cut off by the token limit is not an answer: for JSON it will
+    # not parse, and for long-form prose it silently becomes a short document.
+    # Both are budget problems, and the fix is the same — retry with more room.
+    try:
+        finish_reason = str(data["choices"][0].get("finish_reason") or "")
+    except (KeyError, IndexError, TypeError):
+        finish_reason = ""
+    if finish_reason == "length":
+        raise LLMContentBudgetExceeded(
+            f"LLM output truncated by the {max_tokens}-token budget "
+            f"({len(text)} characters returned, finish_reason=length)"
+        )
     return text
 
 

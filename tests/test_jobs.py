@@ -320,6 +320,32 @@ class JobReliabilityTests(unittest.TestCase):
             self.assertEqual(started.task_params["read_prompt_version"], "v4")
             self.assertEqual(started.task_params["resume_job_id"], "c" * 32)
 
+    def test_a_failed_run_still_seeds_the_next_run_when_it_has_a_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            paper = Paper(id="paper-1", title="Paper", local_pdf_path=str(pdf))
+            store = SimpleNamespace(get_paper=lambda paper_id: paper)
+            runner = _runner(root, store)
+            for job_id, status, created in (
+                ("a" * 32, JobStatus.SUCCEEDED, "2026-01-01T00:00:00+00:00"),
+                ("b" * 32, JobStatus.FAILED, "2026-01-02T00:00:00+00:00"),
+            ):
+                runner._write_job(Job(
+                    job_id=job_id, paper_id="paper-1", document_version="v1", task_params={},
+                    job_key=job_id, status=status, created_at=created, updated_at=created,
+                ))
+            chunks = [{"first_page": 1, "last_page": 4, "payload": {"blocks": []}}]
+            payloads = {
+                "a" * 32: {"completed": chunks},
+                "b" * 32: {"completed": chunks, "plan": {"central_claims": [{"claim": "x"}]}},
+            }
+            with patch.object(CodexJobRunner, "_previous_payload", side_effect=lambda job_id: payloads[job_id]):
+                self.assertEqual(runner._resumable_job("paper-1").job_id, "b" * 32)
+                payloads["b" * 32] = {}
+                self.assertEqual(runner._resumable_job("paper-1").job_id, "a" * 32)
+
     def test_timeout_budget_is_declared_for_the_api_call(self):
         self.assertEqual(ANALYSIS_TIMEOUT_SECONDS, 600)
 
