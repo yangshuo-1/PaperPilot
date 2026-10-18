@@ -86,7 +86,10 @@ class JobReliabilityTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "prompt 未配置: full_analysis"):
                     runner.start_analysis("paper-1")
+            # P0.4: runtime job state lives in db.sqlite, not in jobs_dir.
             self.assertEqual(list(runner.jobs_dir.glob("*.json")), [])
+            self.assertEqual(runner.list_jobs(), [])
+            self.assertEqual(runner._job_store.database.count_jobs("codex"), {"total": 0})
 
     def test_repeated_default_submission_reuses_succeeded_job(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -106,7 +109,9 @@ class JobReliabilityTests(unittest.TestCase):
                 ))
                 result = runner.start_analysis("paper-1")
             self.assertEqual(result.job_id, "a" * 32)
-            self.assertEqual(len(list(runner.jobs_dir.glob("*.json"))), 1)
+            self.assertEqual([job.job_id for job in runner.list_jobs()], ["a" * 32])
+            self.assertEqual(runner._job_store.database.count_jobs("codex"), {"codex": 1, "total": 1})
+            self.assertEqual(list(runner.jobs_dir.glob("*.json")), [])
 
     def test_existing_target_document_requires_overwrite(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -145,6 +150,7 @@ class JobReliabilityTests(unittest.TestCase):
             self.assertEqual(recorded[0]["kwargs"]["generator_version"], GENERATOR_VERSION)
             self.assertEqual(recorded[0]["kwargs"]["run"]["prompt_version"], prompt_version("full_analysis"))
             self.assertEqual(final.result["claims"], 5)
+            runner.close()
 
     def test_llm_failure_surfaces_the_failed_chunk_range(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -163,6 +169,7 @@ class JobReliabilityTests(unittest.TestCase):
             self.assertIn("解析失败", final.error or "")
             self.assertIn("boom", final.error or "")
             self.assertFalse((root / f"Paper{DOC_SUFFIX}").exists())
+            runner.close()
 
     def test_failed_analysis_keeps_the_previous_document(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -181,6 +188,7 @@ class JobReliabilityTests(unittest.TestCase):
                 final = runner.run(job.job_id)
             self.assertEqual(final.status.value, "failed")
             self.assertEqual(target.read_text(encoding="utf-8"), "旧文档")
+            runner.close()
 
     def test_recover_relaunches_active_job(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -49,7 +49,7 @@ paperpilot/                       # 仓库（远端已是 PaperPilot；本地目
 | `backend/app/stores/` | `src/paperpilot/storage/` | ✅ P0.1 | `db.py` 仍是 SQLite 唯一写入口；原 `storage.py` 聚合根 → `storage/paper_store.py`（不放进 `__init__.py`：包内 `arxiv.py` 会 import `..parsers`/`..discovery`，聚合进 `__init__` 会让 `import ...storage.db` 触发整包导入） |
 | `backend/app/parsers/` | `src/paperpilot/ingest/parsers/` | ⏳ M1 | tier0/tier1 解析器 |
 | `backend/app/stores/arxiv.py`、`latex.py` | `src/paperpilot/ingest/` | ⏳ M1 | arXiv 下载 + LaTeX 解析归入 ingest（目前仍在 `storage/arxiv.py` 与包根 `latex.py`） |
-| `backend/app/jobs/` | `src/paperpilot/jobs/` | ✅ P0.1（路径） | 状态机保留，持久化换 SQLite（P0.4） |
+| `backend/app/jobs/` | `src/paperpilot/jobs/` | ✅ P0.1 + P0.4 | 状态机（`base.py`）签名不变，持久化已换 SQLite：`jobs/sqlite_store.py` 是 `JobRunner` 的存储适配器（`JobStorage` Protocol），JSON 文件模式保留给测试与嵌入式用法 |
 | `backend/app/llm/` | `src/paperpilot/llm/` | ✅ P0.1 | transport / loader / prompts 原样；兼容层 `llm.py` 仍在包根（`llm/__init__.py` 动态加载它），合并属后续任务 |
 | `backend/app/codex_jobs.py`、`full_analysis`、`translation_jobs.py`、`takeaway_jobs.py` | `src/paperpilot/analyze/` + `jobs/` | ⏳ M2/M3 | 引擎与 job 状态机解耦 |
 | `backend/app/projects.py`、`routers/sessions*.py` | `src/paperpilot/projects/` | ⏳ M3 | Project / Session / 治理 |
@@ -63,7 +63,7 @@ paperpilot/                       # 仓库（远端已是 PaperPilot；本地目
 1. `api → domain → storage`，禁止反向。
 2. `domain/` 禁止 import fastapi / pydantic；领域对象用 dataclass，API 模型转换只发生在 `api/`。
 3. `storage/` 禁止 import domain；只接受/返回 dict 与 dataclass。SQLite 唯一写入口是 `storage/db.py`。
-4. `jobs/` 可依赖 domain + storage + llm；job 之间禁止互相调用，共享逻辑下沉 `jobs/base.py`。
+4. `jobs/` 可依赖 domain + storage + llm；job 之间禁止互相调用，共享逻辑下沉 `jobs/base.py`。job 状态只经 `storage/db.py` 落库（`jobs/sqlite_store.py` 只做适配，不直接写 SQL）。
 5. `llm/prompts/` 是唯一 prompt 来源；**任何 `.py` 文件禁止内嵌 prompt 字符串**（含单行 f-string——检查脚本必须覆盖，见 P0.6）。
 6. `ingest/` 只通过 `parsers/base.Parser` 接口被调用；新增解析器不改调用方。
 7. 业务代码禁止写入演示/seed 数据；demo 数据只在 `scripts/seed_demo.py` 与测试 fixture。

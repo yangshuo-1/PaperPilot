@@ -151,9 +151,10 @@ tests/               unittest，真实文件系统 + 临时目录
 
 M0 之前是 v1→v2 strangler 期，**已结束**（单体清零，旧 roadmap 已归档）。当前只剩包化搬迁：
 
-- M0 进度：P0.1（src 布局 + 打包 + CLI）、P0.2（前端产物进 wheel + SPA 托管）、P0.3（数据根移出仓库 + `paperpilot migrate`）、P0.7（`paperpilot reindex` 删库重建）**已完成**；剩余 P0.4–P0.6、P0.9 的清单与写盘范围见 `docs/design/roadmap.md` 的 M0 任务清单。
+- M0 进度：P0.1（src 布局 + 打包 + CLI）、P0.2（前端产物进 wheel + SPA 托管）、P0.3（数据根移出仓库 + `paperpilot migrate`）、P0.4（任务表进 `db.sqlite` + 重启恢复）、P0.7（`paperpilot reindex` 删库重建）**已完成**；剩余 P0.5、P0.6、P0.9 的清单与写盘范围见 `docs/design/roadmap.md` 的 M0 任务清单。
 - 仓库已无 `papers/`、`references/`（2026-10-17 迁移完成，数据在 `~/.local/share/paperpilot`）：数据相关的改动只能指向 `<data_dir>`，禁止再往仓库根读写。旧布局快照在 `<data_dir>/.legacy-repo-snapshot-20261017.tar.gz`。
 - `paperpilot migrate` 是唯一被授权批量移动历史数据的入口；默认 dry-run，`--apply` 才动盘，且拒绝"旧根=目标根"。
-- 运行期只写 `<data_dir>/db.sqlite` 与 `<data_dir>/index/`（用户态索引导出，内容变了才写）；`references/` 的字节是冻结的迁移输入，**运行期禁止改写**。M0 验收脚本：`bash scripts/acceptance_reindex.sh`。
+- 运行期只写 `<data_dir>/db.sqlite` 与 `<data_dir>/index/`（用户态索引导出，内容变了才写）；`references/` 的字节是冻结的迁移输入，**运行期禁止改写**。M0 验收脚本：`bash scripts/acceptance_reindex.sh`（删库重建）、`bash scripts/acceptance_jobs.sh`（任务重启恢复）。
+- 任务状态（`jobs`/`job_checkpoints`/`job_events` 表）只在 `db.sqlite` 里：`references/*_jobs/*.json` 仅在 runner 启动时按"存在即不改"导入一次，之后 DB 权威；状态机、`job_key` 幂等与 `recover()` 语义不得改。
 - `pyproject.toml`、`src/paperpilot/main.py`、`config.py`、`models.py`、DB DDL 是共享文件，只在 INFRA 轨或集成阶段改动。
 - 新功能只进新结构；搬运期间不得顺手重写行为，每步保持 `compileall` + unittest + 前端 build 通过。

@@ -44,7 +44,7 @@ from .paths import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DDL_PATH = Path(__file__).with_name("ddl.sql")
 
 LEGACY_FILENAMES: dict[str, str] = {
@@ -158,7 +158,67 @@ def _migration_2(connection: sqlite3.Connection) -> None:
 
 # The mapping is deliberately numbered.  A later schema change adds a new
 # function under its number; existing migrations are never rewritten.
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migration_1, 2: _migration_2}
+def _migration_3(connection: sqlite3.Connection) -> None:
+    """Move job lifecycle state out of ``references/*_jobs/*.json`` (M0 P0.4).
+
+    Tables mirror :class:`paperpilot.jobs.base.Job` / ``Checkpoint`` one-to-one so
+    the runner's state machine, ``job_key`` idempotency and ``recover()`` semantics
+    are unchanged; ``kind`` separates the four runners that used to own separate
+    directories.  JSON payloads stay as TEXT to keep arbitrary ``task_params`` and
+    results round-trippable.
+    """
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            paper_id TEXT NOT NULL,
+            document_version TEXT NOT NULL,
+            task_params TEXT NOT NULL,
+            job_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            error TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            checkpoint_path TEXT,
+            result TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_jobs_kind_status ON jobs(kind, status);
+        CREATE INDEX IF NOT EXISTS idx_jobs_job_key ON jobs(kind, job_key);
+        CREATE INDEX IF NOT EXISTS idx_jobs_paper_id ON jobs(paper_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS job_checkpoints (
+            job_id TEXT PRIMARY KEY REFERENCES jobs(job_id) ON DELETE CASCADE,
+            paper_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS job_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (job_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, seq);
+        """
+    )
+
+
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    1: _migration_1,
+    2: _migration_2,
+    3: _migration_3,
+}
 
 
 def _coerce_version(value: Any) -> int:
@@ -462,6 +522,333 @@ class Database:
         if not getattr(self, "export_on_write", False):
             return None
         return self.export_index_files(only_if_changed=True)
+
+    # -------------------------------------------------------------------- jobs
+    # Job lifecycle state (M0 P0.4) used to live in ``references/*_jobs/*.json``.
+    # `jobs/` owns the state machine; these methods are the only SQLite writers.
+
+    JOB_FIELDS = (
+        "job_id",
+        "kind",
+        "paper_id",
+        "document_version",
+        "task_params",
+        "job_key",
+        "status",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+        "error",
+        "cancel_requested",
+        "attempts",
+        "checkpoint_path",
+        "result",
+    )
+
+    def upsert_job(self, kind: str, record: Mapping[str, Any]) -> dict[str, Any]:
+        """Insert or update one job row; ``record`` uses ``Job.to_dict()`` keys."""
+
+        job_id = str(record.get("job_id") or "")
+        if not job_id:
+            raise DatabaseError("job record needs a job_id")
+        values = {
+            "job_id": job_id,
+            "kind": str(kind),
+            "paper_id": str(record.get("paper_id") or ""),
+            "document_version": str(record.get("document_version") or ""),
+            "task_params": _dump_json(record.get("task_params", {})),
+            "job_key": str(record.get("job_key") or ""),
+            "status": str(record.get("status") or "queued"),
+            "created_at": str(record.get("created_at") or now_iso()),
+            "updated_at": str(record.get("updated_at") or now_iso()),
+            "started_at": record.get("started_at"),
+            "finished_at": record.get("finished_at"),
+            "error": record.get("error"),
+            "cancel_requested": 1 if record.get("cancel_requested") else 0,
+            "attempts": int(record.get("attempts") or 0),
+            "checkpoint_path": record.get("checkpoint_path"),
+            "result": None if record.get("result") is None else _dump_json(record.get("result")),
+        }
+        columns = ", ".join(self.JOB_FIELDS)
+        placeholders = ", ".join(f":{name}" for name in self.JOB_FIELDS)
+        updates = ", ".join(
+            f"{name} = :{name}" for name in self.JOB_FIELDS if name != "job_id"
+        )
+        with self.transaction(immediate=True):
+            self.connection.execute(
+                f"INSERT INTO jobs ({columns}) VALUES ({placeholders}) "
+                f"ON CONFLICT(job_id) DO UPDATE SET {updates}",
+                values,
+            )
+        return self.get_job(job_id) or {}
+
+    def insert_job_if_missing(self, kind: str, record: Mapping[str, Any]) -> bool:
+        """Import path: never overwrite a live row (returns True when inserted)."""
+
+        job_id = str(record.get("job_id") or "")
+        if not job_id:
+            return False
+        with self.transaction(immediate=True):
+            cursor = self.connection.execute(
+                """
+                INSERT INTO jobs (job_id, kind, paper_id, document_version, task_params, job_key,
+                                  status, created_at, updated_at, started_at, finished_at, error,
+                                  cancel_requested, attempts, checkpoint_path, result)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO NOTHING
+                """,
+                (
+                    job_id,
+                    str(kind),
+                    str(record.get("paper_id") or ""),
+                    str(record.get("document_version") or ""),
+                    _dump_json(record.get("task_params", {})),
+                    str(record.get("job_key") or ""),
+                    str(record.get("status") or "queued"),
+                    str(record.get("created_at") or now_iso()),
+                    str(record.get("updated_at") or now_iso()),
+                    record.get("started_at"),
+                    record.get("finished_at"),
+                    record.get("error"),
+                    1 if record.get("cancel_requested") else 0,
+                    int(record.get("attempts") or 0),
+                    record.get("checkpoint_path"),
+                    None if record.get("result") is None else _dump_json(record.get("result")),
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT " + ", ".join(self.JOB_FIELDS) + " FROM jobs WHERE job_id = ?",
+            (str(job_id),),
+        ).fetchone()
+        return _job_row_to_dict(row)
+
+    def list_jobs(
+        self,
+        kind: str | None = None,
+        *,
+        statuses: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            parameters.append(str(kind))
+        if statuses is not None:
+            wanted = [str(item) for item in statuses]
+            if not wanted:
+                return []
+            clauses.append(f"status IN ({', '.join('?' for _ in wanted)})")
+            parameters.extend(wanted)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.connection.execute(
+            "SELECT " + ", ".join(self.JOB_FIELDS) + f" FROM jobs{where} ORDER BY created_at, job_id",
+            parameters,
+        ).fetchall()
+        return [_job_row_to_dict(row) for row in rows if row is not None]
+
+    def delete_job(self, job_id: str) -> None:
+        with self.transaction(immediate=True):
+            self.connection.execute("DELETE FROM jobs WHERE job_id = ?", (str(job_id),))
+
+    def count_jobs(self, kind: str | None = None) -> dict[str, int]:
+        if kind is None:
+            rows = self.connection.execute(
+                "SELECT kind, COUNT(*) FROM jobs GROUP BY kind"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                "SELECT kind, COUNT(*) FROM jobs WHERE kind = ? GROUP BY kind", (str(kind),)
+            ).fetchall()
+        counts = {str(row[0]): int(row[1]) for row in rows}
+        counts["total"] = sum(counts.values())
+        return counts
+
+    def save_job_checkpoint(
+        self,
+        job_id: str,
+        paper_id: str,
+        payload: Any,
+        *,
+        status: str = "running",
+        updated_at: str | None = None,
+    ) -> dict[str, Any]:
+        stamp = updated_at or now_iso()
+        with self.transaction(immediate=True):
+            self.connection.execute(
+                """
+                INSERT INTO job_checkpoints (job_id, paper_id, status, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    paper_id = excluded.paper_id,
+                    status = excluded.status,
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (str(job_id), str(paper_id), str(status), _dump_json(payload), stamp),
+            )
+        return {
+            "job_id": str(job_id),
+            "paper_id": str(paper_id),
+            "status": str(status),
+            "payload": payload if isinstance(payload, (dict, list)) else payload,
+            "updated_at": stamp,
+        }
+
+    def get_job_checkpoint(self, job_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT job_id, paper_id, status, payload, updated_at FROM job_checkpoints WHERE job_id = ?",
+            (str(job_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "job_id": str(row["job_id"]),
+            "paper_id": str(row["paper_id"]),
+            "status": str(row["status"]),
+            "payload": _load_json(row["payload"], {}),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def append_job_event(
+        self,
+        job_id: str,
+        event: str,
+        payload: Any = None,
+        *,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Append one ordered event; ``seq`` is the per-job SSE cursor."""
+
+        stamp = created_at or now_iso()
+        with self.transaction(immediate=True):
+            row = self.connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM job_events WHERE job_id = ?",
+                (str(job_id),),
+            ).fetchone()
+            seq = int(row[0])
+            self.connection.execute(
+                "INSERT INTO job_events (job_id, seq, event, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(job_id), seq, str(event), _dump_json(payload if payload is not None else {}), stamp),
+            )
+        return {"job_id": str(job_id), "seq": seq, "event": str(event), "payload": payload, "created_at": stamp}
+
+    def list_job_events(
+        self,
+        job_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT job_id, seq, event, payload, created_at FROM job_events "
+            "WHERE job_id = ? AND seq > ? ORDER BY seq"
+        )
+        parameters: list[Any] = [str(job_id), int(after_seq)]
+        if limit is not None:
+            sql += " LIMIT ?"
+            parameters.append(int(limit))
+        rows = self.connection.execute(sql, parameters).fetchall()
+        return [
+            {
+                "job_id": str(row["job_id"]),
+                "seq": int(row["seq"]),
+                "event": str(row["event"]),
+                "payload": _load_json(row["payload"], {}),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def import_legacy_jobs(
+        self,
+        references_dir: str | os.PathLike[str] | None = None,
+        *,
+        legacy_paths_map: Mapping[str, Mapping[str, Path]] | None = None,
+    ) -> dict[str, Any]:
+        """Import ``references/<kind>_jobs/*.json`` (v1/v2 layout) without overwriting.
+
+        The directories stay on disk untouched; the database becomes the runtime
+        home.  Used once by the runtime (guarded by a meta marker) and by
+        ``paperpilot reindex``/``migrate``.
+        """
+
+        if legacy_paths_map is not None:
+            directories = {str(kind): Path(path) for kind, path in legacy_paths_map.items()}
+        else:
+            base = (
+                Path(references_dir).expanduser()
+                if references_dir is not None
+                else (self.data_root / "references")
+            )
+            directories = (
+                {
+                    directory.name[: -len("_jobs")]: directory
+                    for directory in sorted(base.iterdir())
+                    if directory.is_dir() and directory.name.endswith("_jobs")
+                }
+                if base.is_dir()
+                else {}
+            )
+        report: dict[str, Any] = {"jobs": 0, "checkpoints": 0, "kinds": {}, "issues": []}
+        snapshots: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for kind, directory in directories.items():
+            records: list[tuple[str, dict[str, Any]]] = []
+            for path in sorted(directory.glob("*.json")):
+                if path.name.startswith("."):
+                    continue
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    report["issues"].append(f"{path.name}: {exc}")
+                    continue
+                if not isinstance(payload, dict):
+                    report["issues"].append(f"{path.name}: record is not an object")
+                    continue
+                records.append((path.name, payload))
+            snapshots[kind] = records
+
+        # Jobs first: checkpoints reference their job row (foreign key).
+        for kind, records in snapshots.items():
+            imported = 0
+            for name, payload in records:
+                if name.endswith(".checkpoint.json"):
+                    continue
+                if self.insert_job_if_missing(kind, payload):
+                    imported += 1
+            report["kinds"][kind] = imported
+            report["jobs"] += imported
+
+        for kind, records in snapshots.items():
+            for name, payload in records:
+                if not name.endswith(".checkpoint.json"):
+                    continue
+                job_id = str(payload.get("job_id") or name[: -len(".checkpoint.json")])
+                if self.get_job(job_id) is None:
+                    report["issues"].append(f"{name}: checkpoint for unknown job {job_id}")
+                    continue
+                if self.insert_job_checkpoint_if_missing(job_id, payload):
+                    report["checkpoints"] += 1
+        return report
+
+    def insert_job_checkpoint_if_missing(self, job_id: str, payload: Mapping[str, Any]) -> bool:
+        paper_id = str(payload.get("paper_id") or "")
+        status = str(payload.get("status") or "running")
+        updated_at = str(payload.get("updated_at") or now_iso())
+        body = payload.get("payload", payload.get("checkpoint", {}))
+        with self.transaction(immediate=True):
+            cursor = self.connection.execute(
+                """
+                INSERT INTO job_checkpoints (job_id, paper_id, status, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO NOTHING
+                """,
+                (str(job_id), paper_id, status, _dump_json(body), updated_at),
+            )
+        return cursor.rowcount > 0
 
     def apply_migrations(self, *, target_version: int = SCHEMA_VERSION) -> int:
         """Apply each missing numbered migration exactly once.
@@ -1996,6 +2383,31 @@ def search(
 
 # ----------------------------------------------------------------------
 # Conversion and search helpers
+
+
+def _dump_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _load_json(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _job_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    result = dict(row)
+    result["task_params"] = _load_json(result.get("task_params"), {})
+    result["result"] = _load_json(result.get("result"), None)
+    result["cancel_requested"] = bool(result.get("cancel_requested"))
+    result["attempts"] = int(result.get("attempts") or 0)
+    result["kind"] = str(result.get("kind") or "")
+    return result
 
 
 def _paper_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -21,6 +21,7 @@ from . import llm as llm_mod
 from .asset_audit import asset_record
 from .config import Settings
 from .jobs.base import Job, JobCancelled, JobRunner, JobStatus, make_job_key
+from .jobs.sqlite_store import SqliteJobStore, data_root_for
 from .jobs.full_analysis import (
     DEFAULT_PAGES_PER_CHUNK,
     GENERATOR_VERSION,
@@ -76,8 +77,11 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
         self.jobs_dir = settings.references_dir / "codex_jobs"
         self._llm = llm or llm_mod.chat_once
         self._pages_per_chunk = pages_per_chunk
-        super().__init__(self.jobs_dir, auto_recover=False)
+        self._job_store = SqliteJobStore.for_data_root(data_root_for(settings), "codex")
+        super().__init__(self.jobs_dir, store=self._job_store, kind="codex", auto_recover=False, import_legacy=False)
+        # Shape upgrades first (they win over the raw import), then everything else.
         self._migrate_legacy_records()
+        self._import_legacy_dir()
 
     # -- public API ------------------------------------------------------
 
@@ -360,10 +364,7 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
                 checkpoint_path=legacy.checkpoint_path or str(self.checkpoint_path(legacy.job_id)),
                 result={"target_document": legacy.target_document, "log_path": legacy.log_path, "prompt_path": legacy.prompt_path, "final_message_path": legacy.final_message_path, "exit_code": legacy.exit_code},
             )
-            backup = path.with_name(path.name + ".migrated")
-            if backup.exists():
-                backup = path.with_name(path.name + ".migrated." + uuid.uuid4().hex)
-            path.replace(backup); self._write_job(job)
+            self.import_job(job)
 
     @staticmethod
     def _document_quality_error(path: Path) -> str | None:

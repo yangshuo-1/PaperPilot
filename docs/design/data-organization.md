@@ -50,23 +50,26 @@
 4. 所有写盘走临时文件 + 原子替换；`manifest.json` 记录 SHA-256 与生成器版本。
 5. API 一律拒绝越过本论文/本 Project 目录的路径。
 6. **旧布局只在迁移期可读**：`references/*.json(l)`、`references/*_jobs/`、仓库内 `papers/` 与新布局并存期间只读；一次性 `paperpilot migrate` 完成后，新写入只走新布局。这是"不批量移动历史文件"规则的**一次性例外**，由用户 2026-10-17 决策授权。
-7. **本机已执行迁移（2026-10-17，P0.3）**：仓库内 `papers/`、`references/` 已删除（22 个 tracked 文件随 commit 移除），数据在 `~/.local/share/paperpilot`；旧布局快照留在 `~/.local/share/paperpilot/.legacy-repo-snapshot-20261017.tar.gz`。数据根下的 `references/` 是**过渡性**的导入导出格式 + 旧 job 状态，P0.4 之后只保留导入导出语义。
+7. **本机已执行迁移（2026-10-17，P0.3）**：仓库内 `papers/`、`references/` 已删除（22 个 tracked 文件随 commit 移除），数据在 `~/.local/share/paperpilot`；旧布局快照留在 `~/.local/share/paperpilot/.legacy-repo-snapshot-20261017.tar.gz`。数据根下的 `references/` 只剩**导入导出语义**（v1/v2 的 `*.json(l)` 与旧 `*_jobs/*.json`），运行期一律只读。
 8. **运行态只写 `db.sqlite` 与 `index/`（P0.7）**：用户态索引在每次事务提交/关闭时导出到 `index/`（内容未变则不写盘）；`references/` 的字节属于冻结的迁移输入，运行期禁止改写——迁移相关测试会逐字节校验这一点。
+9. **任务状态只写 `db.sqlite`（P0.4）**：job 状态/checkpoint/事件在 `jobs`/`job_checkpoints`/`job_events` 三张表里；`references/*_jobs/*.json` 只在 runner 启动时被 `import_legacy_jobs()` 以"存在即不改"的方式导入一次，之后 DB 权威，磁盘上的旧文件不再被改名或回写。job 写入用的是 `export_on_write=False` 的独立库句柄——任务状态不属于用户态索引导出，不该触发 `index/` 落盘。
 
 ## 运行态（db.sqlite）
 
 - 单库承载：`paper_index`、`paper_tags`、`paper_folders`、`paper_annotations`、`reading_list`、`projects`/`sessions`/`messages`、**`jobs` + `job_events` + `job_checkpoints`**、FTS5 全文索引。
 - **WAL 模式**开启；FTS5 必须使用 `trigram` tokenizer（默认 `unicode61` 对中文不分词，会导致中文搜索失效），建表 DDL 中写死。
 - `storage/db.py` 是唯一写入口；其他模块只经 domain/store 接口读写。
-- 任务进度：`job_events` 表按 job 追加事件，`GET /api/jobs/{id}/events` 以 SSE 推送；JSON 文件不再是运行态。
+- 任务状态（P0.4）：`jobs`（状态机/`job_key`/attempts/result）、`job_checkpoints`（每 job 一份最新进度）、`job_events`（`seq` 从 1 递增的逐 job 事件流）；`kind` 列区分 codex/translation/takeaway/diagram 四个 runner（此前靠目录区分）。写入只在 `storage/db.py`。
+- 任务进度：状态与 checkpoint 写入时各落一条事件（`created`/`status`/`cancel_requested`/`checkpoint`）；executor 可用 `JobRunner.emit_event()` 打点。`GET /api/jobs/{id}/events` 的 SSE 推送是 P0.5。JSON 文件不再是运行态。
 - 旧的 `paper_index.jsonl` / `paper_tags.json` 降级为**导入导出格式**，只在迁移与显式导出时读写。
-- **可丢弃性（P0.7）**：`db.sqlite` 是缓存。运行期把上表里的用户态数据同步导出到 `<data_dir>/index/`（`papers.jsonl`、`tags.json`、`folders.json`、`annotations.json`、`reading_list.json`），删库后 `paperpilot reindex` 即可重建；`references/` 保持冻结只读。
+- **可丢弃性（P0.7/P0.4）**：`db.sqlite` 是缓存。运行期把上表里的用户态数据同步导出到 `<data_dir>/index/`（`papers.jsonl`、`tags.json`、`folders.json`、`annotations.json`、`reading_list.json`），删库后 `paperpilot reindex` 即可重建；`references/` 保持冻结只读。任务历史不在导出之列（它是过程态而非用户态），但删库后重启服务时会从 `references/*_jobs/` 重新导入；`db.sqlite` 里已有的行永远不会被这些旧文件覆盖。
 
 ### 迁移与重建
 
 - `paperpilot migrate`：探测旧数据根（仓库内 `papers/` + `references/`）→ 建新目录 → 拷贝/移动 + 改名 `<arxiv_id>` → 导入 JSON/JSONL 到 SQLite → 写标记。可重入、有 `--dry-run`、保留旧目录直到用户确认删除。
   `--apply` 时先拷贝旧 `references/paper_valt.db` 到 `<data_dir>/db.sqlite`（保住 JSON 里没有的标注/会话/任务状态），再对空库执行 JSON 导入；最后重写索引、`references/*.json` 与 DB 里的 `local_pdf_path`。落地记录与验证证据见 `docs/design/roadmap.md` 的 P0.3 节。
 - `paperpilot reindex`：删掉 `db.sqlite` 后，从 `index/*.json`（优先）或 `references/*.json`（回退）恢复论文、标签、文件夹、标注、笔记归属、阅读列表，再扫 `papers/<arxiv_id>/`（`manifest.json`、`*_analysis.json`、`source/`、`derived/`、`results/`）补齐只在磁盘上的论文、修复失效的 `local_pdf_path`、取回 `document_version`，最后重建 FTS5。`--dry-run` 只报告不写盘。**这是 M0 验收项**，验收脚本：`bash scripts/acceptance_reindex.sh [data_root]`（删库 → 重建 → 逐项比对 + 真实服务抽查）。
+- 任务恢复（P0.4）：进程被杀时留下的 `running`/`queued` job 在下一次 `paperpilot serve` 启动时由 `JobRunner.recover()` 重新派发（`attempts` 累加，终态落库）；旧 `references/*_jobs/*.json` 在启动时导入一次。**这是 M0 验收项**，验收脚本：`bash scripts/acceptance_jobs.sh`（种一个 `running` 旧 job → 重启服务 → 断言被重跑且旧文件逐字节未变 → 删库后仍可再导入）。
 
 ## git 策略
 

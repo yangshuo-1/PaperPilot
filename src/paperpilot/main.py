@@ -43,6 +43,14 @@ async def lifespan(app: FastAPI):
     app.state.translation_runner.recover()
     app.state.takeaway_runner.recover()
     yield
+    # In-flight jobs stay "running" in db.sqlite; the next start re-dispatches them
+    # via recover().  Closing releases the runners' SQLite handles cleanly.
+    for name in ("codex_runner", "translation_runner", "takeaway_runner", "diagram_runner"):
+        runner = getattr(app.state, name, None)
+        closer = getattr(runner, "close", None)
+        if closer is not None:
+            closer()
+    store.database.close()
 
 
 app = FastAPI(title="paper_valt", version="0.1.0", lifespan=lifespan)

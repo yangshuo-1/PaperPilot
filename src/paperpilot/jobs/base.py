@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
@@ -174,6 +175,28 @@ class Checkpoint:
         )
 
 
+class JobStorage(Protocol):
+    """Persistence seam: SQLite (``jobs/sqlite_store.py``) or the legacy JSON files."""
+
+    def save_job(self, payload: Mapping[str, Any]) -> None: ...
+
+    def insert_job_if_missing(self, payload: Mapping[str, Any]) -> bool: ...
+
+    def load_job(self, job_id: str) -> Mapping[str, Any] | None: ...
+
+    def list_jobs(self) -> list[Mapping[str, Any]]: ...
+
+    def save_checkpoint(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def load_checkpoint(self, job_id: str) -> Mapping[str, Any] | None: ...
+
+    def append_event(self, job_id: str, event: str, payload: Any = None) -> Mapping[str, Any]: ...
+
+    def list_events(
+        self, job_id: str, *, after_seq: int = 0, limit: int | None = None
+    ) -> list[Mapping[str, Any]]: ...
+
+
 class ShouldCancel(Protocol):
     def __call__(self) -> bool: ...
 
@@ -206,17 +229,28 @@ class JobRunner(Generic[ResultT]):
 
     def __init__(
         self,
-        jobs_dir: str | Path,
+        jobs_dir: str | Path | None = None,
         *,
+        store: JobStorage | None = None,
+        kind: str | None = None,
         executor: JobExecutor[ResultT] | None = None,
         auto_recover: bool = False,
+        import_legacy: bool = True,
     ) -> None:
-        self.jobs_dir = Path(jobs_dir)
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        if store is None and jobs_dir is None:
+            raise TypeError("JobRunner needs a jobs_dir or a store")
+        self._store = store
+        self.kind = str(kind or getattr(store, "kind", None) or "default")
+        self.jobs_dir = Path(jobs_dir) if jobs_dir is not None else None
+        if self.jobs_dir is not None and store is None:
+            # Database-backed runners keep the legacy directory read-only.
+            self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self._executor = executor
         self._lock = threading.RLock()
         self._threads: dict[str, threading.Thread] = {}
         self._dispatched: set[str] = set()
+        if import_legacy:
+            self._import_legacy_dir()
         if auto_recover:
             self.recover()
 
@@ -287,15 +321,36 @@ class JobRunner(Generic[ResultT]):
                 document_version=str(document_version),
                 task_params=normalized,
                 job_key=job_key,
-                checkpoint_path=str(self.checkpoint_path(job_id)),
+                checkpoint_path=str(self.checkpoint_path(job_id)) if self.jobs_dir else None,
             )
-            self._write_job(job)
+            self._write_job(job, event="created")
             return job, True
+
+    def _import_legacy_dir(self) -> dict[str, Any]:
+        """Import verbatim records from the legacy jobs directory (insert-only).
+
+        Subclasses run their shape upgrades first and then call this, so a converted
+        record wins over the raw one; ``insert_job_if_missing`` makes it a no-op on
+        every later start.
+        """
+
+        if self._store is None or self.jobs_dir is None:
+            return {}
+        importer = getattr(self._store, "import_legacy_jobs", None)
+        if importer is None:
+            return {}
+        return dict(importer(self.jobs_dir))
 
     def get_job(self, job_id: str) -> Job:
         return self._read_job(job_id)
 
     def _read_job(self, job_id: str) -> Job:
+        if self._store is not None:
+            with self._lock:
+                payload = self._store.load_job(job_id)
+            if payload is None:
+                raise KeyError(job_id)
+            return Job.from_dict(payload)
         path = self.job_path(job_id)
         with self._lock:
             if not path.is_file():
@@ -303,7 +358,17 @@ class JobRunner(Generic[ResultT]):
             return Job.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def list_jobs(self) -> list[Job]:
-        jobs: list[Job] = []
+        if self._store is not None:
+            with self._lock:
+                payloads = self._store.list_jobs()
+            jobs: list[Job] = []
+            for payload in payloads:
+                try:
+                    jobs.append(Job.from_dict(payload))
+                except (TypeError, ValueError, KeyError):
+                    continue
+            return jobs
+        jobs = []
         for path in sorted(self.jobs_dir.glob("*.json")):
             if path.name.endswith(".checkpoint.json") or path.name.startswith("."):
                 continue
@@ -318,14 +383,20 @@ class JobRunner(Generic[ResultT]):
 
     def job_path(self, job_id: str) -> Path:
         self._validate_job_id(job_id)
+        if self.jobs_dir is None:
+            raise RuntimeError("this runner is database-backed and has no job directory")
         return self.jobs_dir / f"{job_id}.json"
 
     def checkpoint_path(self, job_id: str) -> Path:
         self._validate_job_id(job_id)
+        if self.jobs_dir is None:
+            raise RuntimeError("this runner is database-backed and has no checkpoint file")
         return self.jobs_dir / f"{job_id}.checkpoint.json"
 
     def _checkpoint_path_for_job(self, job: Job) -> Path:
         """Resolve a persisted checkpoint path without allowing it outside jobs_dir."""
+        if self.jobs_dir is None:
+            raise RuntimeError("this runner is database-backed and has no checkpoint file")
         default = self.checkpoint_path(job.job_id)
         if not job.checkpoint_path:
             return default
@@ -392,7 +463,7 @@ class JobRunner(Generic[ResultT]):
             job.updated_at = now_iso()
             if job.status == JobStatus.QUEUED:
                 self._transition_locked(job, JobStatus.CANCELLED)
-            self._write_job(job)
+            self._write_job(job, event="cancel_requested")
             return job
 
     def should_cancel(self, job_id: str) -> bool:
@@ -412,12 +483,23 @@ class JobRunner(Generic[ResultT]):
             status=status or job.status.value,
             payload=payload,
         )
-        path = self._checkpoint_path_for_job(job)
-        self._atomic_write_json(path, checkpoint.to_dict())
+        if self._store is not None:
+            self._store.save_checkpoint(checkpoint.to_dict())
+        else:
+            path = self._checkpoint_path_for_job(job)
+            self._atomic_write_json(path, checkpoint.to_dict())
+        self._emit("checkpoint", job, {"status": checkpoint.status})
         return checkpoint
 
     def load_checkpoint(self, job_id: str) -> Checkpoint | None:
         job = self._read_job(job_id)
+        if self._store is not None:
+            raw = self._store.load_checkpoint(job_id)
+            if raw is None:
+                return None
+            if "job_id" in raw and "paper_id" in raw:
+                return Checkpoint.from_dict(raw)
+            return Checkpoint(job_id=job.job_id, paper_id=job.paper_id, payload=raw)
         path = self._checkpoint_path_for_job(job)
         if not path.is_file():
             return None
@@ -507,6 +589,35 @@ class JobRunner(Generic[ResultT]):
             save_checkpoint=save_checkpoint,
         )
 
+    def wait(self, job_id: str, timeout: float = 30.0) -> Job:
+        """Block until ``job_id`` is terminal (or the timeout expires).
+
+        Joins the dispatching thread when this runner owns it, then polls the
+        persisted status so a job launched by another process/runner is covered too.
+        """
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        thread = self._threads.get(job_id)
+        if thread is not None:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        job = self._read_job(job_id)
+        while job.status not in TERMINAL_STATUSES and time.monotonic() < deadline:
+            time.sleep(0.01)
+            job = self._read_job(job_id)
+        return job
+
+    def close(self, timeout: float = 10.0) -> None:
+        """Stop dispatching and release storage handles (application shutdown)."""
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        for thread in list(self._threads.values()):
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self._threads.clear()
+        store = self._store
+        closer = getattr(store, "close", None)
+        if closer is not None:
+            closer()
+
     def recover(self) -> list[Job]:
         recovered = [job for job in self.list_jobs() if job.status in ACTIVE_STATUSES]
         for job in recovered:
@@ -550,8 +661,50 @@ class JobRunner(Generic[ResultT]):
         except (InvalidStateTransition, KeyError):
             pass
 
-    def _write_job(self, job: Job) -> None:
+    def _write_job(self, job: Job, *, event: str = "status") -> None:
+        if self._store is not None:
+            self._store.save_job(job.to_dict())
+            self._emit(event, job)
+            return
         self._atomic_write_json(self.job_path(job.job_id), job.to_dict())
+
+    def import_job(self, job: Job) -> bool:
+        """Adopt an externally created job (legacy import); never overwrites.
+
+        Returns True when the job was stored, False when it already exists.
+        """
+
+        if self._store is not None:
+            return bool(self._store.insert_job_if_missing(job.to_dict()))
+        if self.job_path(job.job_id).is_file():
+            return False
+        self._write_job(job)
+        return True
+
+    def emit_event(self, job_id: str, event: str, payload: Any = None) -> dict[str, Any] | None:
+        """Append one job event (used by executors for fine-grained progress)."""
+
+        if self._store is None:
+            return None
+        return dict(self._store.append_event(job_id, event, payload))
+
+    def list_events(
+        self, job_id: str, *, after_seq: int = 0, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        if self._store is None:
+            return []
+        return [dict(item) for item in self._store.list_events(job_id, after_seq=after_seq, limit=limit)]
+
+    def _emit(self, event: str, job: Job, payload: Any = None) -> None:
+        if self._store is None:
+            return
+        body = {"job_id": job.job_id, "paper_id": job.paper_id, "status": job.status.value}
+        if payload:
+            body.update(payload)
+        try:
+            self._store.append_event(job.job_id, event, body)
+        except Exception:  # pragma: no cover - event log must never break a job
+            pass
 
     @staticmethod
     def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -572,6 +725,7 @@ __all__ = [
     "JobCancelled",
     "JobExecutor",
     "JobRunner",
+    "JobStorage",
     "JobStatus",
     "SaveCheckpoint",
     "ShouldCancel",

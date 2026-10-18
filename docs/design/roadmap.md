@@ -14,7 +14,7 @@
 
 | 阶段 | 状态 | 备注 |
 |---|---|---|
-| M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.7 + P0.8 已完成**；剩余 P0.4/P0.5/P0.6/P0.9。 |
+| M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.4 + P0.7 + P0.8 已完成**；剩余 P0.5/P0.6/P0.9。 |
 | M1 入库与阅读 | ⏳ 功能在旧结构下已可用，待在新结构上做 20 篇成功率统计 | 当前库内仅 2 篇论文，LaTeX 解析稳健性缺数据（最大不确定项）；arXiv 限速/缓存/单连接按风险节 5 落地。 |
 | M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。 |
 | M3 Project | ⏳ 已有 Project/Session/治理/事件骨架；缺项目简报、选论文、工具循环、检索、MCP | 无工具调用、无 MCP；`Project` 只有 name/description/goal，无简报字段。**MCP server 要自己实现**（dsh/Pi 只有 client，见风险节 4）。 |
@@ -42,14 +42,14 @@
 | **P0.1** ✅ | INFRA | 包化与 src 布局：`pyproject.toml` 补 `[project]`（Python ≥3.12、依赖、`[project.scripts]`、package-data、第三方许可证声明）；`git mv backend/app src/paperpilot`；按映射表重命名 `routers→api`、`stores→storage`；`paperpilot serve` / `paperpilot reindex` CLI；删除 `requirements.txt` 与占位 `uv.lock` | `pyproject.toml`、`src/**`、`tests/**`、`scripts/**` | `compileall` + unittest 全绿；`uv build` 产出 wheel；`uv tool install` 后 `paperpilot --help` 可用 |
 | **P0.2** ✅ | WEB | 前端产物进 wheel：`vite build` 输出到 `src/paperpilot/web`；FastAPI 挂载静态站 + SPA fallback（`/api/*` 优先）；`PAPERPOILOT_DEV=1` 时保留 Vite 5173 与 CORS 开发模式 | `vite.config.ts`、`src/paperpilot/web/**`（生成物）、`main.py` 挂载段 | 只装 wheel 的机器上打开页面即可用；`/api/health` 正常；开发模式仍走 Vite |
 | **P0.3** ✅ | DATA | 数据根移出仓库：`PAPERPOILOT_DATA_DIR`（默认 XDG `~/.local/share/paperpilot`）；`config.py` 只解析 `<data_dir>`；一次性迁移器 `paperpilot migrate`（旧 `papers/`+`references/` → `papers/<arxiv_id>/{source,derived,results,exports}` + `db.sqlite`） | `config.py`、`storage/paths.py`、`migrate.py`、测试 | 现有 2 篇论文迁移后索引/标签/标注/笔记可用；路径逃逸测试仍绿；迁移可重入、有 dry-run |
-| P0.4 | JOBS | 任务表：job 状态/checkpoint/事件从 `references/*_jobs/*.json` 迁入 `db.sqlite`（保留 `jobs/base.py` 状态机、`job_key` 幂等、`recover()` 语义） | `jobs/**`、`storage/db.py` DDL、测试 | 重启后 running 任务恢复；幂等重复提交不产生第二个 job；既有 job 契约测试全绿 |
+| **P0.4** ✅ | JOBS | 任务表：job 状态/checkpoint/事件从 `references/*_jobs/*.json` 迁入 `db.sqlite`（保留 `jobs/base.py` 状态机、`job_key` 幂等、`recover()` 语义） | `jobs/**`、`storage/db.py` DDL、测试、`scripts/acceptance_jobs.sh` | 重启后 running 任务恢复；幂等重复提交不产生第二个 job；既有 job 契约测试全绿（真机+CI 验收已通过，见下） |
 | P0.5 | JOBS/WEB | 进度推送：`GET /api/jobs/{id}/events` SSE；前端订阅，断线回退轮询 | `api/jobs.py`、`frontend/src/api`、`frontend/src/hooks` | 真实任务进度逐条到达；断线重连不重复计数；无 SSE 时轮询仍工作 |
 | P0.6 | CONTRACT/JOBS | 设置页：`GET/PUT /api/settings/llm`（base_url/model/api_key），key 只回 mask、永不写日志；连通性测试；env 覆盖优先 | `api/settings.py`、`models.py` 设置模型、`llm/` 配置解析、`frontend/src/pages/SettingsPage` | 页面填 key → 保存 → 测试连接成功；`GET` 不回显明文；env 存在时以 env 为准并在 UI 标注来源 |
 | **P0.7** ✅ | DATA | `paperpilot reindex`：删库后从 `<data_dir>/index/*.json`（回退 `references/`）+ `papers/<arxiv_id>/**`（`manifest.json`/`*_analysis.json`）重建索引、标签、文件夹、笔记归属、FTS5；运行期把用户态索引导出到 `<data_dir>/index/` | CLI、`reindex.py`、`storage/db.py`、`scripts/acceptance_reindex.sh`、测试 | 删除 `db.sqlite` 后 `reindex` 重建，检索/标签/笔记归属与删库前一致（真机验收已通过，见下） |
 | P0.8 | CONTRACT | 文档契约：本文件 + `AGENTS.md` + `code-organization.md` + `data-organization.md` + 开发约束 skill 同步 | `docs/**`、`AGENTS.md`、`.agents/**`、`README.md` | 文档与代码同 commit；旧 roadmap 已归档并登记 |
 | P0.9 | INFRA | CI：ruff + import-linter + `compileall` + unittest + frontend build + **wheel 构建与 `uv tool install` 冒烟** | `.github/workflows/ci.yml`、`pyproject.toml`、`Makefile` | CI 绿；冒烟 job 在纯净环境装 wheel 后能 `paperpilot --version` 并拉起 `/api/health` |
 
-**M0 关键路径**：P0.1 → P0.3 → P0.7 → P0.4 → P0.2/P0.5/P0.6 → P0.9。
+**M0 关键路径**：P0.1 → P0.3 → P0.7 → P0.4 → P0.2/P0.5/P0.6 → P0.9（P0.4 已完成）。
 P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 同 commit 才能保证文档与代码一致。
 
 ### P0.1 落地记录（2026-10-17）
@@ -114,7 +114,39 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 
 测试与静态检查：unittest **278 passed**（新增 `tests/test_reindex.py` 10 条）；`ruff check src tests` 全绿；`lint-imports` 3 契约 KEPT；`make smoke`（wheel + `uv tool install` + 起页 + 断言运行态库落在数据根）通过。CI 的 wheel job 增加同一场景的验收步：建论文目录 → `paperpilot reindex` → 用公开 API 打标签/建文件夹/改阅读状态 → 断言运行期写出了 `index/` → `rm db.sqlite` → `reindex` → 断言 papers/tags/folders/`read_status`/`folder_id`/`document_version`/FTS 全部回来。
 
-**遗留（记入后续）**：论文目录**内部**仍是旧文件名布局（`latex_plain.txt`、`*_analysis.json`、`ai_takeaways.json` 在论文根），`derived/`、`results/analysis/` 的归位要同时改所有读写路径，仍留给后续；`references/*_jobs/` 的旧 job 状态等 P0.4 搬进 `db.sqlite`。
+**遗留（记入后续）**：论文目录**内部**仍是旧文件名布局（`latex_plain.txt`、`*_analysis.json`、`ai_takeaways.json` 在论文根），`derived/`、`results/analysis/` 的归位要同时改所有读写路径，仍留给后续。`references/*_jobs/` 的旧 job 状态已在 P0.4 搬进 `db.sqlite`。
+
+### P0.4 落地记录（2026-10-18）
+
+**问题**：job 生命周期（状态机、`job_key` 幂等、checkpoint、`recover()`）此前把状态写进 `references/*_jobs/*.json`：`references/` 是**冻结的历史导入源**（运行期禁止改写，迁移测试逐字节校验），任务状态却是运行期最活跃的可变状态，两者定位冲突；而且一次任务要写 1 个 job 文件 + 1 个 checkpoint 文件，崩溃/并发下没有事务保证。
+
+**决策**：`db.sqlite` 升到 schema v3，新增三张表（`kind` 区分四个 runner，此前靠目录区分）：
+
+| 表 | 作用 | 关键列 |
+|---|---|---|
+| `jobs` | 一行一个 job（等价于原 `*.json`） | `job_id` PK、`kind`、`paper_id`、`document_version`、`task_params`(JSON)、`job_key`、`status`、`created_at/updated_at/started_at/finished_at`、`error`、`cancel_requested`、`attempts`、`checkpoint_path`、`result`(JSON)；索引 `(kind,status)`、`(kind,job_key)`、`(paper_id,created_at)` |
+| `job_checkpoints` | 每个 job 一份最新 checkpoint（等价于原 `*.checkpoint.json`） | `job_id` PK → `jobs` ON DELETE CASCADE、`paper_id`、`status`、`payload`(JSON)、`updated_at` |
+| `job_events` | 有序事件流，P0.5 的 SSE 游标就是 `seq` | `id` 自增、`job_id`、`seq`（每 job 从 1 递增，`UNIQUE(job_id,seq)`）、`event`、`payload`(JSON)、`created_at` |
+
+`references/*_jobs/` 转为**只读导入源**：runner 构造时 `import_legacy_jobs()` 以 `INSERT ... ON CONFLICT(job_id) DO NOTHING` 导入（**绝不覆盖已有行**），此后 DB 权威；磁盘上的旧文件不再改名、不再回写（此前的 `.migrated` 改名会改写冻结目录，已去掉）。
+
+**实现**：
+- `storage/db.py`：`_migration_3`（`SCHEMA_VERSION = 3`）+ job 仓储方法 `upsert_job` / `insert_job_if_missing` / `get_job` / `list_jobs`（按 kind、状态过滤）/ `count_jobs` / `delete_job` / `save_job_checkpoint` / `get_job_checkpoint` / `append_job_event` / `list_job_events` / `import_legacy_jobs`；`_job_row_to_dict` 负责 JSON 列与 bool 还原。`count_jobs()` 与 `table_counts()` 分开，`table_counts()` 的 6 个键保持不变（P0.3/P0.7 的逐项比对断言依赖它）。
+- `jobs/sqlite_store.py`：`SqliteJobStore`（一个实例一个 `kind`，`load_job` 校验 `kind`，不跨 runner 读）；`for_data_root(..., export_on_write=False)`——job 写入不属于用户态索引导出，不能被 `index/` 导出放大；`data_root_for(settings)` 从 `Settings`（或测试替身）解析数据根，退路是 `references_dir.parent`，**绝不落到环境默认的 XDG 根**。
+- `jobs/base.py`：新增 `JobStorage` Protocol；`JobRunner(jobs_dir=None, *, store=None, kind=None, import_legacy=True, ...)` 在"SQLite 或 JSON 文件"之间切换，**文件模式保留**（单测与嵌入式用法）；`_write_job(job, event=...)` 每次写盘同时落一条事件（`created`/`status`/`cancel_requested`）；新增 `wait()`（等到终态，测试与脚本用）、`close()`（join 线程 + 关存储句柄，应用关停用）、`emit_event()`/`list_events()`（P0.5 的接口）。
+- 四个 runner（`translation_jobs.py`、`takeaway_jobs.py`、`codex_jobs.py`、`jobs/diagram.py`）改为 `SqliteJobStore.for_data_root(...)`；旧的形状升级（v1 记录没有 `task_params`）先跑、再跑原样导入，保证升级后的行赢过原始行。`main.py` lifespan 关停时 `close()` 四个 runner 并关掉共享 store 的库句柄。
+
+**真机验收**：
+1. `bash scripts/acceptance_jobs.sh`（一次性数据根）：种一个 `running` 的旧 job → `paperpilot serve` → job 被导入并**重启后重跑**（`status=failed attempts=3`，translation runner 内部重试 3 次后失败）→ `references/*_jobs/*.json` 逐字节未变 → `db.sqlite` 里 `jobs`/`job_events`（`seq` 连续）有记录 → 删 `db.sqlite` + `reindex` 重启后旧 job 从 `references/` **再次导入**。输出 `P0.4 acceptance PASSED`。
+2. 真机数据根 `~/.local/share/paperpilot`：导入 43 个 job + 41 个 checkpoint（codex 21 / diagram 17 / takeaway 2 / translation 3，issues 0），`references/*_jobs/` 哈希不变；`paperpilot serve` 起来后 `GET /api/papers/qwen3-vl-2511-21631/translation/jobs/c0ff84d8…` → 200 且 `status=succeeded`、`attempts` 与旧文件一致；启动后 `list_jobs(statuses=["queued","running"])` 为空（旧库里的 job 全部是终态，没有被误重跑）。论文行的 `id` 仍是迁移前的 slug（`arxiv_id` 是另一列），所以旧 job 的 `paper_id` 与库里论文天然对得上，UI 的 `latest_*_for_paper` 仍能命中原任务。
+
+测试与静态检查：unittest **290 passed**（新增 `tests/test_jobs_store.py` 6 条 + `tests/test_jobs_recovery.py` 6 条）；`ruff check src tests` 全绿；`lint-imports` 3 契约 KEPT（`jobs → storage` 在新契约内）；`compileall` 通过。CI wheel job 增加 `scripts/acceptance_jobs.sh` 验收步（`PY=python PAPERPOILOT=paperpilot`）。
+
+**过程中抓到的两个真问题**：
+1. **导入顺序**：`ff00.checkpoint.json` 排在 `ff00.json` 之前（`.` < `j`），而 `job_checkpoints.job_id` 是外键 → 单测直接撞 `IntegrityError`。现在 `import_legacy_jobs` 分两趟：先 job，后 checkpoint（未知 job 的 checkpoint 记 issue 跳过）。
+2. **临时目录竞争**：切到 SQLite 后，后台 job 线程仍在写 `<tmp>/db.sqlite-wal` 时测试就 `rmtree` 了临时目录 → `test_jobs.py` 偶发 cleanup 报错。修法是给 runner 加 `wait()`/`close()`，测试与验收脚本在离开临时目录前 join 线程并关句柄。
+
+**遗留（记入后续）**：事件只在"job 行被写"时落一条（P0.4 只做状态/checkpoint 事件），逐条进度要在 P0.5 由 executor 用 `emit_event()` 打点并接 SSE；`job_events` 没有保留期清理（单机规模先不做）。
 
 ### 关键技术决策（冻结，2026-10-17 用户确认）
 

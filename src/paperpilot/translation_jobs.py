@@ -4,13 +4,13 @@ import json
 import hashlib
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
 from . import llm as _llm
 from .asset_audit import asset_record, sha256_file
 from .jobs.base import Job, JobRunner, JobStatus
+from .jobs.sqlite_store import SqliteJobStore, data_root_for
 from .models import TranslationJob
 from .reader import document_version
 from .storage.paper_store import PaperStore
@@ -22,8 +22,12 @@ class TranslationJobRunner(JobRunner[dict[str, Any]]):
     def __init__(self, store: PaperStore) -> None:
         self.store = store
         self.jobs_dir = store.settings.references_dir / "translation_jobs"
-        super().__init__(self.jobs_dir, auto_recover=False)
+        # P0.4: runtime state lives in db.sqlite; the legacy directory is import-only.
+        self._job_store = SqliteJobStore.for_data_root(data_root_for(store.settings), "translation")
+        super().__init__(self.jobs_dir, store=self._job_store, kind="translation", auto_recover=False, import_legacy=False)
+        # Shape upgrades first (they win over the raw import), then everything else.
         self._migrate_legacy_records()
+        self._import_legacy_dir()
         self.recover()
 
     def _launch(self, job: Job) -> None:
@@ -160,11 +164,9 @@ class TranslationJobRunner(JobRunner[dict[str, Any]]):
                 attempts=legacy.attempts,
                 checkpoint_path=legacy.checkpoint_path or str(self.checkpoint_path(legacy.job_id)),
             )
-            backup = path.with_name(path.name + ".migrated")
-            if backup.exists():
-                backup = path.with_name(path.name + ".migrated." + uuid.uuid4().hex)
-            path.replace(backup)
-            self._write_job(job)
+            # The legacy JSON stays where it is (frozen import source); the converted
+            # record is adopted without ever overwriting a live database row.
+            self.import_job(job)
 
 
 __all__ = ["TranslationJobRunner"]

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import hashlib
 import threading
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ from . import llm as _llm
 from . import paper_ai
 from .asset_audit import asset_record, sha256_file
 from .jobs.base import Job, JobRunner, JobStatus
+from .jobs.sqlite_store import SqliteJobStore, data_root_for
 from .models import TakeawayJob
 from .reader import document_version
 from .storage.paper_store import PaperStore
@@ -22,8 +22,11 @@ class TakeawayJobRunner(JobRunner[dict[str, Any]]):
     def __init__(self, store: PaperStore) -> None:
         self.store = store
         self.jobs_dir = store.settings.references_dir / "takeaway_jobs"
-        super().__init__(self.jobs_dir, auto_recover=False)
+        self._job_store = SqliteJobStore.for_data_root(data_root_for(store.settings), "takeaway")
+        super().__init__(self.jobs_dir, store=self._job_store, kind="takeaway", auto_recover=False, import_legacy=False)
+        # Shape upgrades first (they win over the raw import), then everything else.
         self._migrate_legacy_records()
+        self._import_legacy_dir()
         self.recover()
 
     def _launch(self, job: Job) -> None:
@@ -135,11 +138,7 @@ class TakeawayJobRunner(JobRunner[dict[str, Any]]):
                 cancel_requested=legacy.cancel_requested,
                 checkpoint_path=str(self.checkpoint_path(legacy.job_id)),
             )
-            backup = path.with_name(path.name + ".migrated")
-            if backup.exists():
-                backup = path.with_name(path.name + ".migrated." + uuid.uuid4().hex)
-            path.replace(backup)
-            self._write_job(job)
+            self.import_job(job)
 
 
 __all__ = ["TakeawayJobRunner"]

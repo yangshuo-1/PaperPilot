@@ -38,7 +38,7 @@ def _escalate(budget: int, error: Exception) -> int:
 class DiagramJobRunner(JobRunner[dict[str, Any]]):
     def __init__(self, jobs_dir: str | Path, *, paper_root: str | Path,
                  llm: Callable[[str], str], validator: Callable[..., list[Any]] | None = None,
-                 auto_recover: bool = False) -> None:
+                 auto_recover: bool = False, store: Any = None) -> None:
         self.paper_root = Path(paper_root)
         self.llm = llm
         if validator is None:
@@ -50,7 +50,7 @@ class DiagramJobRunner(JobRunner[dict[str, Any]]):
                 self.validator = validate_ir
         else:
             self.validator = validator
-        super().__init__(jobs_dir, auto_recover=auto_recover)
+        super().__init__(jobs_dir, store=store, kind="diagram", auto_recover=auto_recover)
 
     def _call_llm(self, request: str, max_tokens: int) -> str:
         """Call the configured LLM, letting this runner pick the token budget.

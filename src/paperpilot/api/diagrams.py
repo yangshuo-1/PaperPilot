@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from .. import llm as llm_mod
 from ..config import Settings, get_settings
 from ..jobs.diagram import DIAGRAM_MAX_TOKENS, DIAGRAM_TIMEOUT_SECONDS, DiagramJobRunner
+from ..jobs.sqlite_store import SqliteJobStore, data_root_for
 from ..storage.paper_store import PaperStore
 from ..domain.diagram_render import render_html
 from .diagram_context import diagram_excerpt, paper_context, paper_source_text
@@ -69,7 +70,12 @@ def create_diagram_runner(settings: Settings) -> DiagramJobRunner:
     llm = functools.partial(
         llm_mod.chat_once, max_tokens=DIAGRAM_MAX_TOKENS, timeout=DIAGRAM_TIMEOUT_SECONDS, stream=True,
     )
-    return DiagramJobRunner(settings.references_dir / "diagram_jobs", paper_root=settings.data_root, llm=llm)
+    return DiagramJobRunner(
+        settings.references_dir / "diagram_jobs",
+        paper_root=settings.data_root,
+        llm=llm,
+        store=SqliteJobStore.for_data_root(data_root_for(settings), "diagram"),
+    )
 
 def initialize_diagram_runner(settings: Settings) -> DiagramJobRunner:
     runner = create_diagram_runner(settings)

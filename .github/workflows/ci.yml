@@ -194,6 +194,14 @@ jobs:
               print("reindex OK:", counts)
           PY
 
+      # P0.4 acceptance: a job left "running" by a killed process must be re-dispatched
+      # after a restart, its state must live in db.sqlite, and the frozen
+      # references/*_jobs/*.json files must never be rewritten.
+      - name: Recover a running job after a restart
+        run: |
+          export PATH="/tmp/wheelsmoke/bin:$PATH"
+          PY=python PAPERPOILOT=paperpilot bash scripts/acceptance_jobs.sh
+
   # Optional populated-browser acceptance. Enable this only on a runner with Chrome/CDP,
   # running backend and frontend services, and a prepared test case.
   # chrome_acceptance:
