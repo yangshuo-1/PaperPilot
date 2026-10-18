@@ -514,18 +514,26 @@ class RenderTests(unittest.TestCase):
 
 class PromptTests(unittest.TestCase):
     def test_full_analysis_prompt_is_configured_as_a_file(self):
-        prompt = load_prompt("full_analysis")
-        self.assertIn("JSON", prompt)
-        self.assertIn("禁止编造", prompt)
+        writer = load_prompt("full_analysis")
+        self.assertIn("附录 A", writer)
+        self.assertIn("不要写成论文的镜像", writer)
+        planner = load_prompt("full_analysis_plan", "v5")
+        self.assertIn("central_claims", planner)
+        self.assertIn("不要编造", planner)
 
-    def test_v4_prompt_is_the_default_and_demands_readable_layout(self):
-        self.assertEqual(prompt_version("full_analysis"), "v4")
-        prompt = load_prompt("full_analysis", "v4")
-        self.assertIn("narrative", prompt)
-        self.assertIn("页码只写在**段末**", prompt)
-        self.assertIn("表 1", prompt)
-        self.assertIn("章节归属规则", prompt)
-        self.assertIn("最少叙述字数", prompt)
+    def test_v5_is_the_default_writer_and_v4_stays_the_reading_prompt(self):
+        self.assertEqual(prompt_version("full_analysis"), "v5")
+        writer = load_prompt("full_analysis", "v5")
+        self.assertIn("6000", writer)
+        self.assertIn("10000", writer)
+        self.assertIn("[[ASSET:", writer)
+        self.assertIn("不要出现页码", writer)
+        reader = load_prompt("full_analysis", "v4")
+        self.assertIn("narrative", reader)
+        self.assertIn("页码只写在**段末**", reader)
+        self.assertIn("表 1", reader)
+        self.assertIn("章节归属规则", reader)
+        self.assertIn("最少叙述字数", reader)
 
     def test_v3_prompt_stays_loadable_and_keeps_its_topic_vocabulary(self):
         prompt = load_prompt("full_analysis", "v3")

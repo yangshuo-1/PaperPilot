@@ -467,8 +467,16 @@ def short_title(title: str, limit: int = 64) -> str:
     return cut.rstrip(" ,，、") + "…"
 
 
-def render_illustration(illustration: Illustration, *, paper_id: str) -> list[str]:
-    """Markdown lines for one illustration, anchored to its PDF page."""
+def render_illustration(illustration: Illustration, *, paper_id: str, style: str = "v4") -> list[str]:
+    """Markdown lines for one illustration, anchored to its PDF page.
+
+    ``style="v4"`` is the audit-shaped layout: caption, italic provenance line,
+    and a separate bullet repeating the PDF link. ``style="v5"`` is the reading
+    note layout (spec §13): the same provenance folded into that single italic
+    line, because the note already places the asset next to the argument it
+    supports and does not need a link block per asset.
+    """
+    compact = style == "v5"
     label = f"{_KIND_LABEL[illustration.kind]} {illustration.number}"
     #: Equations carry no caption of their own; the label plus section is enough.
     if illustration.kind == "equation" or not illustration.title:
@@ -490,8 +498,10 @@ def render_illustration(illustration: Illustration, *, paper_id: str) -> list[st
     pdf_link = (
         f"[PDF 第 {illustration.page} 页](/api/papers/{paper_id}/pdf#page={illustration.page})"
         if illustration.page
-        else f"[PDF 原文]({_pdf_url(paper_id)})"
+        else f"[在 PDF 中查看]({_pdf_url(paper_id)})"
     )
+    if compact:
+        meta.append(pdf_link)
     lines = [head, ""]
     if meta:
         lines += [f"_{'｜'.join(meta)}_", ""]
@@ -546,6 +556,8 @@ def render_illustration(illustration: Illustration, *, paper_id: str) -> list[st
         math = equation_to_latex(illustration.latex)
         if math:
             lines += ["$$", math, "$$", ""]
+    if compact:
+        return lines
     source_line = (
         f"- 论文原文：{pdf_link}"
         if illustration.page

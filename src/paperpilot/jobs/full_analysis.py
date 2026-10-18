@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from ..domain import analysis_v5
 from ..domain.analysis_layout import (
     citation_key,
     format_pages,
@@ -42,6 +43,18 @@ DEFAULT_CHUNK_ATTEMPTS = 3
 #: so every chunk gets a generous floor and each retry escalates the budget.
 MIN_CHUNK_TOKENS = 16000
 MAX_CHUNK_TOKENS = 24000
+
+#: v5 stage budgets (contract §13.5). The plan stage answers a compact JSON
+#: question over a long input; the draft stage writes a 6–10k-character document
+#: in one go, so it gets the largest budget and the widest escalation.
+MIN_PLAN_TOKENS = 20000
+MAX_PLAN_TOKENS = 40000
+MIN_WRITE_TOKENS = 32000
+MAX_WRITE_TOKENS = 48000
+#: The plan stage also sees the raw page text when it fits; the reading material
+#: pack carries the traced evidence anyway, so a very long paper still plans.
+PLAN_INPUT_MAX_CHARS = 90000
+DEFAULT_V5_ATTEMPTS = 3
 
 
 def chunk_token_budget(pages_in_chunk: int, attempt: int = 0) -> int:
@@ -221,6 +234,99 @@ def _chunk_prompt(
         f"- 用户额外要求：{instructions}\n\n"
         f"## 本片段正文\n{body}\n"
     )
+
+
+def _stage_header(
+    prompt: str,
+    *,
+    title: str,
+    paper_id: str,
+    document_version: str,
+    total_pages: int,
+    extra_instructions: str,
+) -> str:
+    return (
+        f"{prompt}\n\n"
+        f"## 论文元数据\n"
+        f"- 论文标题：{title}\n"
+        f"- paper_id：{paper_id}\n"
+        f"- document_version：{document_version}\n"
+        f"- PDF 总页数：{total_pages}\n"
+        f"- 用户额外要求：{extra_instructions.strip() or '无'}\n"
+    )
+
+
+def plan_request_text(
+    plan_prompt: str,
+    *,
+    title: str,
+    paper_id: str,
+    document_version: str,
+    total_pages: int,
+    extra_instructions: str,
+    materials: str,
+    assets: str,
+    pages: Sequence[PageText] = (),
+) -> str:
+    """Stage-1 request: reading material, asset inventory, and the page text if it fits."""
+    header = _stage_header(
+        plan_prompt, title=title, paper_id=paper_id, document_version=document_version,
+        total_pages=total_pages, extra_instructions=extra_instructions,
+    )
+    body = "\n\n".join(f"===== 第 {page.number} 页 =====\n{page.text}" for page in pages)
+    parts = [
+        header,
+        "## 分片阅读材料包（每条结论都带 PDF 物理页码）\n" + materials,
+        "## 可装配资产清单\n" + assets,
+    ]
+    if body and len(body) <= PLAN_INPUT_MAX_CHARS:
+        parts.append("## 论文全文（PDF 抽取文本）\n" + body)
+    elif body:
+        parts.append(
+            "## 论文全文\n"
+            f"（本请求未附全文：共 {len(body)} 字符，超出可发送上限 {PLAN_INPUT_MAX_CHARS} 字符。）"
+        )
+    return "\n\n".join(parts) + "\n"
+
+
+def write_request_text(
+    write_prompt: str,
+    *,
+    title: str,
+    paper_id: str,
+    document_version: str,
+    total_pages: int,
+    extra_instructions: str,
+    plan: Mapping[str, Any],
+    materials: str,
+    assets: str,
+) -> str:
+    """Stage-2 request: the plan is the spine, the material pack is only material."""
+    header = _stage_header(
+        write_prompt, title=title, paper_id=paper_id, document_version=document_version,
+        total_pages=total_pages, extra_instructions=extra_instructions,
+    )
+    plan_json = json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True)
+    return "\n\n".join(
+        [
+            header,
+            "## 第一阶段阅读计划（JSON）\n```json\n" + plan_json + "\n```",
+            "## 分片阅读材料包\n" + materials,
+            "## 可装配资产清单\n" + assets,
+        ]
+    ) + "\n"
+
+
+def material_pack(outcomes: Sequence[ChunkOutcome]) -> str:
+    """Compact reading record handed to the plan and draft stages."""
+    narratives = [item for outcome in outcomes for item in outcome.narrative]
+    claims = [
+        {"section": block["section"], "text": claim["text"], "page": claim["page"], "quote": claim["quote"]}
+        for outcome in outcomes
+        for block in outcome.blocks
+        for claim in block["claims"]
+    ]
+    return analysis_v5.material_pack(narratives, claims, section_titles=dict(SECTION_TITLES))
 
 
 def _sanitize_claims(block: Any, pages: dict[int, PageText]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -693,6 +799,208 @@ def _page_resolver(pages: Sequence[PageText]) -> Callable[[str], int | None]:
     return resolve
 
 
+def _parse_draft(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        raise LLMContentBudgetExceeded("成文阶段返回空内容（token 预算被推理耗尽）")
+    return text
+
+
+def _stage_call(
+    llm: LLMCall,
+    request: str,
+    *,
+    parse: Callable[[str], Any],
+    label: str,
+    min_tokens: int,
+    max_tokens: int,
+    attempts: int,
+    should_cancel: Callable[[], bool] | None = None,
+    save_checkpoint: Callable[..., Any] | None = None,
+) -> tuple[Any | None, Exception | None]:
+    """One v5 stage call with budget escalation; ``None`` means "gave up"."""
+    budget = min_tokens
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        if should_cancel is not None and should_cancel():
+            raise JobCancelled("Cancellation requested")
+        try:
+            return parse(llm(request, max_tokens=budget)), None
+        except Exception as exc:  # noqa: BLE001 - retried, then reported as degraded
+            last_error = exc
+            # A burned budget or a truncated answer wants more tokens; anything
+            # else (timeout, gateway) would only get slower, so it barely moves.
+            if isinstance(exc, (LLMContentBudgetExceeded, json.JSONDecodeError)):
+                budget = min(max_tokens, max(budget + 8000, int(budget * 1.5)))
+            else:
+                budget = min(max_tokens, max(budget + 2000, int(budget * 1.2)))
+            if save_checkpoint is not None:
+                save_checkpoint(
+                    {"stage": label, "attempt": attempt + 1, "budget": budget, "error": str(exc)[:200]},
+                    status="retrying",
+                )
+    return None, last_error
+
+
+def _v5_document(
+    *,
+    llm: LLMCall,
+    plan_prompt: str,
+    plan_prompt_version: str,
+    write_prompt: str,
+    write_prompt_version: str,
+    read_prompt_version: str,
+    title: str,
+    paper_id: str,
+    document_version: str,
+    model: str,
+    extra_instructions: str,
+    pages: Sequence[PageText],
+    outcomes: Sequence[ChunkOutcome],
+    illustrations: Sequence[Illustration],
+    coverage: dict[str, Any],
+    failed: Sequence[str],
+    notes: list[str],
+    resume: Mapping[str, Any] | None,
+    attempts: int,
+    should_cancel: Callable[[], bool] | None,
+    save_checkpoint: Callable[..., Any] | None,
+    require_resume: bool,
+) -> tuple[str, dict[str, Any], dict[str, Any]] | None:
+    """Plan → draft → assemble → gate (contract §13.5).
+
+    Returns ``(markdown, gate_report, stats)``, or ``None`` when the plan could
+    not be established — the caller then renders the v4 document from the same
+    chunk results instead of failing the run.
+    """
+    page_texts = {page.number: page.text for page in pages}
+    assets = analysis_v5.asset_catalog(illustrations)
+    materials = material_pack(outcomes)
+    resume_map = resume if isinstance(resume, Mapping) else {}
+
+    # -- stage 1: reading plan ------------------------------------------- #
+    plan: dict[str, Any] = {}
+    saved_plan = resume_map.get("plan")
+    if isinstance(saved_plan, Mapping) and saved_plan.get("central_claims"):
+        plan, plan_notes = analysis_v5.sanitize_plan(saved_plan, page_texts)
+        notes.append("阅读计划来自上一次运行的断点，未重复调用模型。")
+    else:
+        request = plan_request_text(
+            plan_prompt, title=title, paper_id=paper_id, document_version=document_version,
+            total_pages=len(pages), extra_instructions=extra_instructions,
+            materials=materials, assets=assets, pages=pages,
+        )
+        payload, error = _stage_call(
+            llm, request, parse=extract_json, label="plan",
+            min_tokens=MIN_PLAN_TOKENS, max_tokens=MAX_PLAN_TOKENS, attempts=attempts,
+            should_cancel=should_cancel, save_checkpoint=save_checkpoint,
+        )
+        if payload is None:
+            notes.append(
+                f"阅读计划阶段失败（{type(error).__name__ if error else '未知错误'}），本次降级为 v4 文档形态"
+            )
+            return None
+        plan, plan_notes = analysis_v5.sanitize_plan(payload, page_texts)
+    notes.extend(plan_notes)
+    if save_checkpoint is not None:
+        save_checkpoint({"plan": plan, "stage": "plan"}, status="running")
+    if not analysis_v5.plan_is_usable(plan):
+        notes.append(
+            "阅读计划校验未通过（可溯源断言或机制—结果对应不足），本次降级为 v4 文档形态"
+        )
+        return None
+
+    # -- stage 2: write the note in one go ------------------------------- #
+    draft = resume_map.get("draft")
+    if isinstance(draft, str) and draft.strip():
+        notes.append("成文结果来自上一次运行的断点，未重复调用模型。")
+    else:
+        if require_resume:
+            raise RuntimeError("复用失败：来源任务没有保存成文结果，未调用模型；请重新运行全文解析")
+        request = write_request_text(
+            write_prompt, title=title, paper_id=paper_id, document_version=document_version,
+            total_pages=len(pages), extra_instructions=extra_instructions,
+            plan=plan, materials=materials, assets=assets,
+        )
+        draft, error = _stage_call(
+            llm, request, parse=_parse_draft, label="draft",
+            min_tokens=MIN_WRITE_TOKENS, max_tokens=MAX_WRITE_TOKENS, attempts=attempts,
+            should_cancel=should_cancel, save_checkpoint=save_checkpoint,
+        )
+        if draft is None:
+            raise RuntimeError(
+                f"全文解析未完成：成文阶段失败（{type(error).__name__ if error else '未知错误'}: {str(error)[:180]}）"
+            )
+        if save_checkpoint is not None:
+            save_checkpoint({"plan": plan, "draft": draft, "stage": "draft"}, status="running")
+
+    # -- deterministic assembly + gates ---------------------------------- #
+    coverage_lines = _v5_coverage_lines(coverage, outcomes, failed, illustrations)
+    provenance_lines = [
+        f"paper_id：{paper_id}",
+        f"文档版本（PDF SHA-256）：{document_version}",
+        f"解析引擎：OpenAI 兼容 chat completions（{model or '未配置'}）",
+        f"prompt 版本：计划 {plan_prompt_version} ／ 阅读 {read_prompt_version} ／ 成文 {write_prompt_version}",
+        f"generator：{analysis_v5.GENERATOR_VERSION}",
+        f"生成时间：{_now()}",
+        f"阅读计划：{len(plan.get('central_claims') or [])} 条可溯源断言、"
+        f"{len(plan.get('mechanism_result_map') or [])} 条机制—结果对应",
+        f"分片阅读：{len(outcomes)} 个页片段（失败 {len(failed)} 个）",
+    ]
+    markdown, stats = analysis_v5.assemble_document(
+        draft,
+        illustrations=illustrations,
+        paper_id=paper_id,
+        page_texts=page_texts,
+        plan=plan,
+        coverage_lines=coverage_lines,
+        provenance_lines=provenance_lines,
+        reader_notes=(),
+    )
+    report = analysis_v5.gate(
+        note=stats["note"], system=stats["system"], page_texts=page_texts, plan=plan
+    )
+    final = (
+        stats["note"]
+        + "\n"
+        + stats["system"]
+        + analysis_v5.gate_marker(report, prompt_version=write_prompt_version)
+        + "\n"
+    )
+    return final, report, {**stats, "plan": plan}
+
+
+def _v5_coverage_lines(
+    coverage: Mapping[str, Any],
+    outcomes: Sequence[ChunkOutcome],
+    failed: Sequence[str],
+    illustrations: Sequence[Illustration],
+) -> list[str]:
+    empty = coverage.get("empty_pages") or []
+    counts = {
+        kind: len([item for item in illustrations if item.kind == kind])
+        for kind in ("figure", "table", "equation")
+    }
+    gaps = [
+        f"第 {outcome.first_page}-{outcome.last_page} 页：{_CHUNK_SELF_REFERENCE.sub('该页范围', gap)}"
+        for outcome in outcomes
+        for gap in outcome.gaps
+    ]
+    return [
+        f"PDF 总页数 {coverage['page_count']}，成功抽取文本 {coverage['extracted_pages']} 页"
+        + (f"，空文本或抽取失败页：{'、'.join(f'第 {n} 页' for n in empty)}" if empty else "，无空页"),
+        f"图表与公式：已装配 {counts['figure']} 张图、{counts['table']} 个表、{counts['equation']} 个公式；"
+        "取自论文 LaTeX 源码、未经模型改写（能定位页码的标页码，否则标源码行号）；"
+        "图内文字与未支持的排版仍需以 PDF 原文为准",
+        f"分片阅读：{len(outcomes)} 个页片段成功、{len(failed)} 个失败",
+        "未确认信息："
+        + ("；".join(gaps) if gaps else "无（全部页片段未报告缺口）")
+        + (f"；第 {'、'.join(failed)} 页片段解析失败，未纳入本文档" if failed else ""),
+        "论文未在正文中明确给出的内容一律标注为缺失，未做常识补充；"
+        "证据索引中的每一条引文都已在 PDF 抽取文本中逐字回查",
+    ]
+
+
 def analyze_pdf(
     pdf_path: Path,
     *,
@@ -712,6 +1020,10 @@ def analyze_pdf(
     reading_blocks: Sequence[Mapping[str, Any]] | None = None,
     has_diagrams: bool = False,
     require_resume: bool = False,
+    plan_prompt: str = "",
+    plan_prompt_version: str = "",
+    write_prompt: str = "",
+    write_prompt_version: str = "",
 ) -> dict[str, Any]:
     """Analyze every page and return the assembled Markdown plus coverage.
 
@@ -799,6 +1111,58 @@ def analyze_pdf(
                 },
                 status="running",
             )
+    if plan_prompt and write_prompt:
+        produced = _v5_document(
+            llm=llm,
+            plan_prompt=plan_prompt,
+            plan_prompt_version=plan_prompt_version,
+            write_prompt=write_prompt,
+            write_prompt_version=write_prompt_version,
+            read_prompt_version=prompt_version,
+            title=title,
+            paper_id=paper_id,
+            document_version=document_version,
+            model=model,
+            extra_instructions=extra_instructions,
+            pages=pages,
+            outcomes=outcomes,
+            illustrations=illustrations,
+            coverage=coverage,
+            failed=failed,
+            notes=notes,
+            resume=resume,
+            attempts=chunk_attempts,
+            should_cancel=should_cancel,
+            save_checkpoint=save_checkpoint,
+            require_resume=require_resume,
+        )
+        if produced is not None:
+            markdown, report, stats = produced
+            return {
+                "markdown": markdown,
+                "coverage": coverage,
+                "mode": "v5",
+                "generator_version": analysis_v5.GENERATOR_VERSION,
+                "gate": report,
+                "gate_passed": bool(report.get("passed")),
+                "claims": sum(len(block["claims"]) for outcome in outcomes for block in outcome.blocks),
+                "narrative_paragraphs": sum(len(outcome.narrative) for outcome in outcomes),
+                "chunks": len(outcomes),
+                "plan": stats.get("plan") or {},
+                "plan_claims": len((stats.get("plan") or {}).get("central_claims") or []),
+                "evidence_entries": stats.get("evidence_entries", 0),
+                "evidence_source": stats.get("evidence_source", ""),
+                "assets_inline": stats.get("assets_inline") or [],
+                "assets_appendix": stats.get("assets_appendix") or [],
+                "illustrations": {
+                    "figures": len([item for item in illustrations if item.kind == "figure"]),
+                    "tables": len([item for item in illustrations if item.kind == "table"]),
+                    "equations": len([item for item in illustrations if item.kind == "equation"]),
+                },
+                "unverified_quotes": len([note for note in notes if "引用未逐字命中" in note]),
+                "notes": notes,
+                "generated_at": _now(),
+            }
     markdown = render_markdown(
         title=title, paper_id=paper_id, document_version=document_version, model=model,
         prompt_version=prompt_version, coverage=coverage, outcomes=outcomes,
@@ -817,6 +1181,8 @@ def analyze_pdf(
     return {
         "markdown": markdown,
         "coverage": coverage,
+        "mode": "v4",
+        "generator_version": GENERATOR_VERSION,
         "claims": claim_count,
         "narrative_paragraphs": narrative_count,
         "section_chars": depth,

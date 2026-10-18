@@ -16,7 +16,7 @@
 |---|---|---|
 | M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.4 + P0.7 + P0.8 已完成**；剩余 P0.5/P0.6/P0.9。 |
 | M1 入库与阅读 | ⏳ 功能在旧结构下已可用，待在新结构上做 20 篇成功率统计 | 当前库内仅 2 篇论文，LaTeX 解析稳健性缺数据（最大不确定项）；arXiv 限速/缓存/单连接按风险节 5 落地。 |
-| M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。**全文解析 v5 契约与示例已完成（P2.1）**，引擎改造（P2.2–P2.5）未开工。 |
+| M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。**全文解析 v5 契约与示例（P2.1）与引擎改造（P2.2–P2.4）已完成**，剩 P2.5 重跑对照。 |
 | M3 Project | ⏳ 已有 Project/Session/治理/事件骨架；缺项目简报、选论文、工具循环、检索、MCP | 无工具调用、无 MCP；`Project` 只有 name/description/goal，无简报字段。**MCP server 要自己实现**（dsh/Pi 只有 client，见风险节 4）。 |
 | M4 代码 agent | ⏸ 未开工 | 实验代码在本机（用户确认）。默认只读，在副本或 git worktree 上跑。 |
 | M5 增强 | ⏸ 未开工 | 翻译已存在；引文悬浮卡片、高亮、Obsidian 导出、生图按需取舍。 |
@@ -151,14 +151,14 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 ## M2 任务清单：全文解析 v5（2026-10-18 评审通过）
 
 契约：`docs/full-paper-analysis-spec.md` §13（读者视角精读笔记 + 8 条 rubric 硬门禁 + plan-first 两阶段）；示例：`docs/reading-note-example.md`。
-现状：v4 引擎（4 页分片各自成章 → 拼接）产出的是论文结构镜像，实测正文 99 处页码钉、证据折叠块 14 个、资产章节占全文 48%；v5 契约已定但引擎未改造。
+现状：v4 引擎（4 页分片各自成章 → 拼接）产出的是论文结构镜像，实测正文 99 处页码钉、证据折叠块 14 个、资产章节占全文 48%；v5 契约已定，**引擎已换 v5（P2.2–P2.4）**：plan → draft 两阶段、资产就近、H1–H8 门禁先判后写。
 
 | # | owner | 任务 | 写盘范围 | 验收 |
 |---|---|---|---|---|
 | **P2.1** ✅ | CONTRACT | 输出契约 v5 + 完整示例：spec §13（形态/行文/证据边界/门禁/plan-first）、示例文档、索引登记 | `docs/full-paper-analysis-spec.md`、`docs/reading-note-example.md`、`docs/README.md`、本文件 | 契约与示例同 commit；示例附录 A 引文 27/27 逐字命中 PDF 文本；正文页号钉 0、中英混排 0 |
-| P2.2 | ANALYZE | plan-first 两阶段 + `llm/prompts/full_analysis.v5.md`：第一遍只读产出全局计划（中心断言、proves/does_not_prove、机制→结果对应、边界问题、资产清单），计划校验通过后第二遍成文 | `jobs/full_analysis.py`、`llm/prompts/full_analysis.v5.md` | 计划缺失或校验不过时明确降级 v4 并在文档标注；计划解析有单测；prompt 只从 `llm/prompts/*.md` 加载 |
-| P2.3 | ANALYZE | 资产就近装配：取消集中「图表与公式」章节，按资产编号插入对应小节，每图/表附"这张图怎么读" | `domain/illustration.py`、`domain/analysis_layout.py`、渲染器与测试 | 编号与论文一致；位置断言测试；无可就近资产时回退 v4 布局，不丢内容 |
-| P2.4 | JOBS | rubric 硬门禁替换 `SECTION_MIN_CHARS`；**先判后写**：门禁不过不得覆盖既有文档（修 `codex_jobs.py` 先写后判的顺序） | `jobs/full_analysis.py`、`codex_jobs.py`、`tests/**` | 构造不过门禁的产物 → 磁盘上旧文档逐字节不变；门禁报告（H1–H8 逐条）落 job 事件与文档元数据 |
+| **P2.2** ✅ | ANALYZE | plan-first 两阶段：`full_analysis_plan.v5.md`（只读规划，产出中心断言/机制→结果对应/边界问题/资产清单）→ `full_analysis.v5.md`（一次成文，骨架+行文硬规则）；计划逐条回查 PDF 页文本，不合格降级 v4 | `domain/analysis_v5.py`、`jobs/full_analysis.py`、`codex_jobs.py`、`llm/prompts/full_analysis_plan.v5.md`、`llm/prompts/full_analysis.v5.md` | 计划缺失/校验不过/调用失败三种情形都明确降级 v4 并写进 notes；`tests/test_analysis_v5.py` 29 例覆盖计划校验、降级、断点复用；prompt 只从 `llm/prompts/*.md` 加载（v4 仍是读取 prompt，双版本号记录在 task_params 与文档元数据） |
+| **P2.3** ✅ | ANALYZE | 资产就近装配：取消集中「图表与公式」章节，`[[ASSET:id]]` 占位符由模型写在论证段后，渲染时替换为论文原图/原表/公式（`style="v5"` 把 PDF 链接折进图注单行），未放置资产进附录 B | `domain/analysis_v5.py`、`domain/illustration.py`、`jobs/full_analysis.py` | 编号与论文一致（`table3`/`equation2`/`figure1`）；未知占位符被删除并记 note；无可就近资产时进附录 B 不丢内容；`test_analysis_v5.py` 覆盖替换/未知 id/附录 B/图注样式 |
+| **P2.4** ✅ | JOBS | rubric 硬门禁（H1–H8）替换 `SECTION_MIN_CHARS`；**先判后写**：门禁不过不得覆盖既有文档 | `domain/analysis_v5.py`、`codex_jobs.py`、`jobs/full_analysis.py`、`tests/**` | `test_jobs.py::test_failed_v5_gate_never_overwrites_the_existing_document` 断言旧文档逐字节不变且报错含"未写入文档"；门禁报告（H1–H8 逐条 + 指标）写进 `<!-- paper_valt:gate … -->` 与 job run 记录；标定：已批准示例 8/8 全绿，v3/v4 旧产物在 H1/H3/H4/H5/H7 被拦 |
 | P2.5 | ANALYZE | EmbeddingGemma（arXiv 2509.20354）重跑对照：新旧文档并列指标（页号钉/中英混排/资产占比/逐字命中率）+ 可读性人工与视觉复核 | `scripts/**`、`tests/**` | 对照表可复现；H1–H8 全绿；可视化与文档排版经截图 + 多模态复核 |
 
 **执行顺序**：P2.2 → P2.3 → P2.4 → P2.5（P2.3 与 P2.4 可并行，写盘范围不重叠）。

@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from paperpilot.codex_jobs import ANALYSIS_TIMEOUT_SECONDS, DOC_SUFFIX, CodexJobRunner
+from paperpilot.codex_jobs import ANALYSIS_TIMEOUT_SECONDS, DOC_SUFFIX, CodexJobRunner, analysis_task_params
 from paperpilot import llm
 from paperpilot.jobs.base import Job, JobStatus, make_job_key
 from paperpilot.jobs.diagram import DiagramJobRunner
@@ -100,7 +100,9 @@ class JobReliabilityTests(unittest.TestCase):
             store = SimpleNamespace(get_paper=lambda paper_id: paper)
             runner = _runner(root, store)
             with patch("paperpilot.codex_jobs.document_version", return_value="sha256:paper-v1"):
-                params = {"extra_instructions": "", "prompt_version": prompt_version("full_analysis")}
+                params = analysis_task_params(
+                    extra_instructions="", version=prompt_version("full_analysis")
+                )
                 runner._write_job(Job(
                     job_id="a" * 32, paper_id="paper-1", document_version="sha256:paper-v1",
                     task_params=params, job_key=make_job_key("paper-1", "sha256:paper-v1", params),
@@ -254,6 +256,69 @@ class JobReliabilityTests(unittest.TestCase):
             path = Path(temp) / "analysis.md"
             path.write_text(self._depth_document("v2", {"abstract": 10}), encoding="utf-8")
             self.assertIsNone(runner._document_quality_error(path))
+
+    def test_failed_v5_gate_never_overwrites_the_existing_document(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            paper = Paper(id="paper-1", title="Paper", local_pdf_path=str(pdf))
+            store = SimpleNamespace(get_paper=lambda paper_id: paper)
+            runner = _runner(root, store)
+            job = Job(
+                job_id="f" * 32, paper_id="paper-1", document_version="sha256:paper-v1",
+                task_params=analysis_task_params(extra_instructions="", version="v4"),
+                job_key="k", status=JobStatus.RUNNING,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            )
+            runner._write_job(job)
+            target = Path(runner._job_to_public(job).target_document)
+            target.write_text("旧文档", encoding="utf-8")
+            failing = {
+                "markdown": "# New\n\n## 摘要\n\n第 1 页 Figure 1\n",
+                "coverage": {"pdf_path": str(pdf), "page_count": 1, "extracted_pages": 1, "empty_pages": []},
+                "mode": "v5",
+                "gate": {
+                    "passed": False, "metrics": {},
+                    "items": [{"id": "H1", "name": "文档形态", "passed": False, "detail": "缺章节：创新点"}],
+                },
+                "claims": 0, "narrative_paragraphs": 0, "chunks": 1, "unverified_quotes": 0,
+            }
+            with patch("paperpilot.codex_jobs.analyze_pdf", return_value=failing):
+                with self.assertRaises(RuntimeError) as ctx:
+                    runner.run_job(
+                        job,
+                        checkpoint=SimpleNamespace(payload=None),
+                        should_cancel=lambda: False,
+                        save_checkpoint=lambda *_args, **_kwargs: None,
+                    )
+            self.assertIn("门禁", str(ctx.exception))
+            self.assertIn("未写入文档", str(ctx.exception))
+            self.assertEqual(target.read_text(encoding="utf-8"), "旧文档")
+
+    def test_reuse_runs_the_current_pipeline_on_the_reused_reading(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf = root / "paper.pdf"
+            pdf.write_bytes(b"%PDF-test")
+            paper = Paper(id="paper-1", title="Paper", local_pdf_path=str(pdf))
+            store = SimpleNamespace(get_paper=lambda paper_id: paper)
+            runner = _runner(root, store)
+            source = Job(
+                job_id="c" * 32, paper_id="paper-1", document_version="sha256:paper-v1",
+                task_params={"extra_instructions": "", "prompt_version": "v4"},
+                job_key="k", status=JobStatus.SUCCEEDED,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            )
+            runner._write_job(source)
+            with patch.object(CodexJobRunner, "_resumable_job", return_value=source), patch.object(
+                CodexJobRunner, "_launch"
+            ), patch("paperpilot.codex_jobs.document_version", return_value="sha256:paper-v1"):
+                public = runner.start_analysis("paper-1", reuse_chunks=True)
+            started = next(job for job in runner.list_jobs() if job.job_id == public.job_id)
+            self.assertEqual(started.task_params["prompt_version"], prompt_version("full_analysis"))
+            self.assertEqual(started.task_params["read_prompt_version"], "v4")
+            self.assertEqual(started.task_params["resume_job_id"], "c" * 32)
 
     def test_timeout_budget_is_declared_for_the_api_call(self):
         self.assertEqual(ANALYSIS_TIMEOUT_SECONDS, 600)

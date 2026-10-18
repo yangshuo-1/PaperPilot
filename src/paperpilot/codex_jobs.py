@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping
 from . import llm as llm_mod
 from .asset_audit import asset_record
 from .config import Settings
+from .domain import analysis_v5
 from .jobs.base import Job, JobCancelled, JobRunner, JobStatus, make_job_key
 from .jobs.sqlite_store import SqliteJobStore, data_root_for
 from .jobs.full_analysis import (
@@ -35,6 +36,11 @@ from .reader import document_version
 from .storage.paper_store import PaperStore
 
 PROMPT_NAME = "full_analysis"
+#: The v5 contract (spec §13) splits the run into a reading plan and a writer.
+#: Both live in ``llm/prompts``; the chunked *reading* pass stays on the previous
+#: major version, because it is a material extractor rather than a writer.
+PLAN_PROMPT_NAME = "full_analysis_plan"
+V5_READ_PROMPT_VERSION = "v4"
 #: Depth marker written by the renderer; the gate reads the renderer's own
 #: numbers instead of re-parsing Markdown prose.
 _DEPTH_MARKER = re.compile(r"<!--\s*paper_valt:depth\s+(\{.*?\})\s*-->", re.DOTALL)
@@ -46,6 +52,44 @@ DEPTH_ENFORCED_FROM = "v3"
 def _prompt_rank(version: str) -> int:
     match = re.fullmatch(r"v(\d+)", str(version).strip())
     return int(match.group(1)) if match else 0
+
+
+def _prompt_available(name: str, version: str) -> bool:
+    try:
+        load_prompt(name, version)
+    except PromptNotConfigured:
+        return False
+    return True
+
+
+def analysis_task_params(
+    *,
+    extra_instructions: str,
+    version: str,
+    resume_job_id: str = "",
+    read_version: str | None = None,
+) -> dict[str, str]:
+    """Job identity for one analysis run.
+
+    A v5 run records both prompt majors (plan/writer plus the reading pass that
+    produced its material); the pair is part of ``job_key``, so a resumed or
+    repeated submission only reuses a job that ran the same pipeline.
+    """
+    if not _prompt_available(PLAN_PROMPT_NAME, version):
+        # No plan stage for this prompt major: the pipeline is the single-prompt
+        # one, so the newest reading prompt is also the writer.
+        if read_version:
+            version, read_version = read_version, ""
+        elif _prompt_available(PROMPT_NAME, V5_READ_PROMPT_VERSION):
+            version, read_version = V5_READ_PROMPT_VERSION, ""
+    elif read_version is None:
+        read_version = V5_READ_PROMPT_VERSION
+    params = {"extra_instructions": extra_instructions.strip(), "prompt_version": version}
+    if read_version and read_version != version:
+        params["read_prompt_version"] = read_version
+    if resume_job_id:
+        params["resume_job_id"] = resume_job_id
+    return params
 
 
 def _completed_payload(payload: Any) -> Mapping[str, Any] | None:
@@ -95,12 +139,12 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
     ) -> CodexAnalysisJob:
         """Start a full-paper analysis job.
 
-        ``reuse_chunks`` re-renders the document from a previous job's chunk
-        payloads instead of calling the model again. Renderer and layout
-        upgrades (figures/tables wiring, citation normalisation) are
-        deterministic, so paying for a fresh analysis just to restyle a document
-        is waste; the reused chunks keep their original prompt version in the
-        metadata so the document never claims a prompt it was not written with.
+        ``reuse_chunks`` reuses a previous job's page readings instead of paying
+        for them again; the plan and the writing stage still run on the current
+        prompts, so a reused run is comparable to a fresh one (only the reading
+        material is shared). The reading prompt version is carried over from the
+        source job and recorded in the document metadata, so the document never
+        claims a reading pass it was not built from.
         """
         paper = self.store.get_paper(paper_id)
         pdf_path = self._require_pdf(paper)
@@ -112,16 +156,21 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
             ) from exc
         self._migrate_legacy_records()
         resume_job_id = ""
+        read_version: str | None = None
         if reuse_chunks:
             source = self._resumable_job(paper_id)
             if source is None:
                 raise ValueError("没有可复用的分片结果：请先完整跑一次全文解析，再选择重渲染")
-            version = str(source.task_params.get("prompt_version") or version)
             resume_job_id = source.job_id
+            source_version = str(source.task_params.get("prompt_version") or "")
+            read_version = str(source.task_params.get("read_prompt_version") or source_version) or None
         document = document_version(pdf_path)
-        task_params = {"extra_instructions": extra_instructions.strip(), "prompt_version": version}
-        if resume_job_id:
-            task_params["resume_job_id"] = resume_job_id
+        task_params = analysis_task_params(
+            extra_instructions=extra_instructions,
+            version=version,
+            resume_job_id=resume_job_id,
+            read_version=read_version,
+        )
         key = make_job_key(paper_id, document, task_params)
         legacy_key = hashlib.sha256(f"{paper_id}|{document}|{extra_instructions.strip()}".encode()).hexdigest()
         matching = [job for job in self.list_jobs() if job.paper_id == paper_id and job.job_key in {key, legacy_key}]
@@ -158,12 +207,19 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
         public = self._job_to_public(job)
         target = Path(public.target_document)
         version = str(job.task_params.get("prompt_version") or "") or _prompt_version_or_default()
+        read_version = str(job.task_params.get("read_prompt_version") or "")
+        plan_prompt = write_prompt = ""
         try:
-            prompt = load_prompt(PROMPT_NAME, version)
+            if read_version:
+                prompt = load_prompt(PROMPT_NAME, read_version)
+                plan_prompt = load_prompt(PLAN_PROMPT_NAME, version)
+                write_prompt = load_prompt(PROMPT_NAME, version)
+            else:
+                prompt = load_prompt(PROMPT_NAME, version)
         except PromptNotConfigured as exc:
             raise RuntimeError(f"{exc}；全文解析已降级停止，未产生任何文档") from exc
         Path(public.prompt_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(public.prompt_path).write_text(prompt, encoding="utf-8")
+        Path(public.prompt_path).write_text(write_prompt or prompt, encoding="utf-8")
         if should_cancel():
             raise JobCancelled("Cancellation requested")
         resume_job_id = str(job.task_params.get("resume_job_id") or "")
@@ -189,22 +245,39 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
             reading_blocks=self._reading_blocks(job.paper_id),
             has_diagrams=self._has_diagrams(job.paper_id),
             require_resume=bool(resume_job_id),
+            plan_prompt=plan_prompt,
+            plan_prompt_version=version if plan_prompt else "",
+            write_prompt=write_prompt,
+            write_prompt_version=version if write_prompt else "",
         )
         if should_cancel():
             raise JobCancelled("Cancellation requested")
+        # Gate first, write second: a document that fails the contract must never
+        # replace the good document already on disk (v5 §13.4, H1–H8).
+        report = result.get("gate") if isinstance(result.get("gate"), dict) else None
+        if report is not None:
+            if not report.get("passed"):
+                raise RuntimeError(
+                    "解析质量门禁失败：" + analysis_v5.gate_summary(report) + "；未写入文档，已有文档保持不变"
+                )
+        else:
+            quality_error = self._document_quality_error_from_text(result["markdown"])
+            if quality_error is not None:
+                raise RuntimeError(quality_error)
         _atomic_write_text(target, result["markdown"])
         Path(public.final_message_path).write_text(result["markdown"], encoding="utf-8")
-        quality_error = self._document_quality_error(target)
-        if quality_error is not None:
-            raise RuntimeError(quality_error)
         input_version = job.document_version or document_version(pdf_path)
+        generator_version = str(result.get("generator_version") or GENERATOR_VERSION)
         self.store._record_assets(
             job.paper_id,
-            [asset_record(target, target.parent, role="result", generated_by=GENERATOR_VERSION, input_document_version=input_version)],
-            generator_version=GENERATOR_VERSION,
+            [asset_record(target, target.parent, role="result", generated_by=generator_version, input_document_version=input_version)],
+            generator_version=generator_version,
             run={
                 "stage": "full_analysis",
                 "prompt_version": version,
+                "read_prompt_version": read_version or None,
+                "mode": result.get("mode", "v4"),
+                "gate_passed": result.get("gate_passed"),
                 "input_document_version": input_version,
                 "outputs": [target.name],
                 "status": "completed",
@@ -227,6 +300,8 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
             "chunks": result["chunks"],
             "unverified_quotes": result["unverified_quotes"],
             "prompt_version": version,
+            "mode": result.get("mode", "v4"),
+            "gate_passed": result.get("gate_passed"),
         }
 
     # -- helpers ---------------------------------------------------------
