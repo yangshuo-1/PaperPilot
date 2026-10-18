@@ -17,7 +17,8 @@
 
 | 文档 | 内容 | 注意 |
 |---|---|---|
-| `full-paper-analysis-spec.md` | 全文解析输出契约（12 章节、覆盖率） | **被代码引用**（M0 后为 `analyze/` 全文解析），改名/移动必须同步改代码 |
+| `full-paper-analysis-spec.md` | 全文解析输出契约（12 章节、覆盖率；§13 为已评审的目标契约 v5「读者视角精读笔记」） | **被代码引用**（M0 后为 `analyze/` 全文解析），改名/移动必须同步改代码；v5 契约的引擎改造见 `design/roadmap.md` M2 |
+| `reading-note-example.md` | 契约 v5 的完整示例（EmbeddingGemma / arXiv 2509.20354） | 示例文档，不是新契约；契约正文在同行的 spec §13 |
 | `data-assets.md` | 数据字典：各文件 schema 与入 git 理由 | "目录约定"一节已被 `design/data-organization.md` 取代，schema 部分仍有效 |
 | `scholaread-feature-design.md` | 产品设计参照（Library/Reader/AI/Project/Session 分层） | 功能设计的上游依据 |
 | `paper-understanding-ui-design.md` | UI 设计参照（产品/UI 意图有效） | **后端结构描述是历史快照**（`workflow/`、`routers/`、`PAPER_VAULT_*` 均已废弃）；含历史 TODO 勾选，现状看 `design/code-organization.md` |
