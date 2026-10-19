@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,42 @@ def _section(title: str, chars: int, lead: str = "") -> str:
     return f"## {title}\n\n{lead}{_prose(chars)}\n\n"
 
 
+def _thin(draft: str, ratio: float) -> str:
+    """Shorten every paragraph of `draft` while keeping the skeleton intact.
+
+    Slicing the tail off would drop whole `##` sections (H1) instead of writing
+    a real-but-short note (H8); the tests that need a thin draft want the latter.
+    """
+    kept = []
+    for line in draft.splitlines():
+        if line.startswith(("#", ">", "|", "$")) or line.lstrip()[:2] in ("- ", "* ") or line.lstrip()[:2].rstrip(".").isdigit():
+            kept.append(line)
+        else:
+            kept.append(line[: max(24, int(len(line) * ratio))])
+    return "\n".join(kept)
+
+
+def _part_draft(prompt: str) -> str:
+    """`_draft()` restricted to the sections this request asked for.
+
+    The engine writes the note in ``analysis_v5.WRITE_PARTS`` calls because the
+    provider caps one response below the H8 floor; a fake that ignored the
+    requested sections would answer every call with the whole document.
+    """
+    requested = re.findall(r"^- `## (.+?)`$", prompt, re.M)
+    if not requested:
+        return _draft()
+    blocks = re.split(r"(?m)^(?=## )", _draft())
+    # Only the opening call owns the H1 title and the metadata list.
+    keeps_preamble = requested and requested[0] == v5.SKELETON[0]
+    kept = [blocks[0]] if keeps_preamble and blocks and not blocks[0].startswith("## ") else []
+    for block in blocks:
+        title = block.split("\n", 1)[0].removeprefix("## ").strip()
+        if any(title.startswith(item) for item in requested):
+            kept.append(block)
+    return "".join(kept)
+
+
 def _draft(*, entries: int = 6) -> str:
     parts = [
         "# 测试论文：一个可读的笔记标题\n\n",
@@ -45,11 +82,13 @@ def _draft(*, entries: int = 6) -> str:
         _section("创新点", 570),
         _section("研究问题", 570),
         _section("数据与任务定义", 570),
-        "## 方法主线\n\n" + _prose(570) + "\n\n### 机制流程\n\n1. 组装输入。\n2. 编码。\n3. 池化与投影。\n\n",
+        # Sizes mirror the §13.4 budget: the method section is the longest, so
+        # every write part clears the per-part sanity floor on its own.
+        "## 方法主线\n\n" + _prose(1900) + "\n\n### 机制流程\n\n1. 组装输入。\n2. 编码。\n3. 池化与投影。\n\n",
         _section("关键结果", 570),
         _section(
             "深度分析",
-            660,
+            1000,
             "机制与结果的对应关系是：该设计带来可观测提升。论文没有证明它在别的数据分布上成立；"
             "隐藏假设是教师模型足够强；论文也未报告学习率与数据配比。\n\n",
         ),
@@ -223,6 +262,32 @@ class GateTests(unittest.TestCase):
         report = v5.gate(note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
         self.assertFalse(next(item for item in report["items"] if item["id"] == "H7")["passed"])
 
+    def test_two_backtick_slips_pass_but_three_fail_readability(self):
+        """H7 guards systematic unreadability, not one missing pair of backticks.
+
+        Measured: the v3/v4 audit documents carried 104 mixed-language spots; a
+        7,600-character note with two of them is a typo, and the gate still
+        prints the count and the examples.
+        """
+        markdown, stats = _assembled()
+        slips = ["model card", "prompt instructions", "future work"]
+
+        def readability(count: int) -> dict:
+            note = stats["note"].replace(
+                "这一段说明该设计的原因",
+                "这一段提到 " + "、".join(slips[:count]) + " 说明该设计的原因",
+                1,
+            )
+            report = v5.gate(note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
+            return next(item for item in report["items"] if item["id"] == "H7")
+
+        allowed = readability(2)
+        self.assertTrue(allowed["passed"], allowed["detail"])
+        self.assertIn("中英混排 2 处", allowed["detail"])
+        refused = readability(3)
+        self.assertFalse(refused["passed"])
+        self.assertIn("容差 2", refused["detail"])
+
     def test_fabricated_number_in_backticks_fails_fact_check(self):
         """The house style backticks every number, so H2 must look inside them."""
         markdown, stats = _assembled()
@@ -269,9 +334,28 @@ class GateTests(unittest.TestCase):
         r"\end{tabular}"
     )
 
+    def test_a_clause_naming_an_unknown_model_is_not_a_wrong_column_claim(self):
+        """Measured draft: it renamed `mE5 Large Instruct` as `BasemE5 Large`.
+
+        The number was that model's own 63.22, so the honest finding is a naming
+        mistake — carrying the previous sentence's subject over would have
+        reported "63.22 belongs to the Qwen3 column".
+        """
+        illustration = self._table_illustration(self._COLUMN_TABLE)
+        renamed = (
+            "结论：`EmbeddingGemma` 为 `61.15`；`Gecko` 为 `53.47`，"
+            "`BasemE5 Large` 为 `53.47`。"
+        )
+        self.assertEqual(v5.numeric_attribution(renamed, [illustration]), [])
+        # The same number attributed to a *known* wrong column is still caught.
+        wrong = "结论：`Gecko` 的均值为 `61.15`。"
+        violations = v5.numeric_attribution(wrong, [illustration])
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("61.15", violations[0])
+
     def test_number_from_another_models_column_fails_fact_check(self):
         note = _assembled()[1]["note"].replace(
-            "这一段说明该设计的原因", "这一段 `EmbeddingGemma` 的 `Mean(Task)` 为 `53.47`。"
+            "这一段说明该设计的原因", "这一段 `EmbeddingGemma` 的均值为 `53.47`。"
         )
         report = v5.gate(
             note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload(),
@@ -314,8 +398,11 @@ class GateTests(unittest.TestCase):
 
     def test_thin_deep_analysis_fails_depth(self):
         markdown, stats = _assembled()
-        note = stats["note"].replace(_prose(600), "太短。", 1)
-        report = v5.gate(note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
+        shallow = re.sub(
+            r"(?ms)^## 深度分析\n.*?(?=^## )", "## 深度分析\n\n太短。\n\n", stats["note"]
+        )
+        self.assertNotEqual(shallow, stats["note"])
+        report = v5.gate(note=shallow, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
         self.assertFalse(next(item for item in report["items"] if item["id"] == "H5")["passed"])
 
     def test_missing_coverage_block_fails_honesty(self):
@@ -409,7 +496,7 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
             if "## 本片段正文" in prompt:
                 return _chunk_payload()
             if "## 第一阶段阅读计划（JSON）" in prompt:
-                return draft if draft is not None else _draft()
+                return draft if draft is not None else _part_draft(prompt)
             return json.dumps(plan if plan is not None else _plan_payload(), ensure_ascii=False)
 
         return call
@@ -444,8 +531,9 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
         self.assertIn("解析覆盖率与未确认信息（系统生成）", markdown)
         self.assertIn("<!-- paper_valt:gate ", markdown)
         self.assertIn("prompt 版本：计划 v5 ／ 阅读 v4 ／ 成文 v5", markdown)
-        # reading chunk → plan → draft
-        self.assertEqual(len(self.prompts), 3)
+        # reading chunk → plan → one call per write part
+        self.assertEqual(len(self.prompts), 2 + len(v5.WRITE_PARTS))
+        self.assertIn("本次只写这些小节", self.prompts[2])
         self.assertIn("## 可装配资产清单", self.prompts[1])
 
     def test_unusable_plan_degrades_to_the_v4_document(self):
@@ -487,13 +575,163 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
             if "## 第一阶段阅读计划（JSON）" in prompt:
                 budgets.append(kwargs["max_tokens"])
                 attempts += 1
-                return "太短了，远不到篇幅下限。" if attempts == 1 else _draft()
+                return "空稿。" if attempts == 1 else _part_draft(prompt)
             return json.dumps(_plan_payload(), ensure_ascii=False)
 
         result = self._analyze(call)
-        self.assertEqual(len(budgets), 2)
-        self.assertGreater(budgets[1], budgets[0])
+        self.assertGreaterEqual(len(budgets), 2)
+        self.assertGreater(max(budgets), min(budgets))
         self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
+
+    def test_a_thin_but_real_draft_goes_to_the_gate_instead_of_failing_the_run(self):
+        """A short draft must reach the repair round, not die as "truncated".
+
+        Measured run: the model answered 4,781 Chinese characters three times in
+        a row. The old 5,200-character guard called that truncation, so the run
+        failed *before* the gate and the repair round could ask for more.
+        """
+        writers: list[str] = []
+
+        def call(prompt: str, **_kwargs) -> str:
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                writers.append(prompt)
+                # A *real* but thin draft: above the sanity floor, below H8.
+                thin = _thin(_part_draft(prompt), 0.7)
+                return thin if len(writers) <= len(v5.WRITE_PARTS) else _part_draft(prompt)
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        result = self._analyze(call)
+        self.assertEqual(len(writers), 2 * len(v5.WRITE_PARTS), "首稿字数不足时应当进入修稿轮，而不是直接失败")
+        self.assertIn("H8", writers[-1])
+        self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
+
+    def test_a_failed_draft_attempt_keeps_the_plan_in_the_checkpoint(self):
+        checkpoints: list[dict] = []
+        drafts = 0
+
+        def call(prompt: str, **_kwargs) -> str:
+            nonlocal drafts
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                drafts += 1
+                return "空稿。" if drafts < 3 else _part_draft(prompt)
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        result = self._analyze(call, save_checkpoint=lambda payload, *, status: checkpoints.append(payload))
+        self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
+        retries = [entry for entry in checkpoints if str(entry.get("stage") or "").startswith("draft1-")]
+        self.assertTrue(retries, "失败的成文尝试也要留下检查点")
+        for entry in retries:
+            self.assertTrue(entry.get("plan"), "检查点必须保留已经付费的计划")
+            self.assertEqual(entry["chunks_done"], 1)
+
+    def test_latin_phrases_get_their_backticks_deterministically(self):
+        """H7's backtick rule is typographic, so assembly applies it, not the model.
+
+        Measured drafts missed it 1–4 times each (the repair round either fixed
+        them or not); the gate then failed on a presentation rule the pipeline can
+        satisfy by itself.
+        """
+        draft = _draft().replace(
+            "这一段说明该设计的原因",
+            "这一段 batch size 取 512，量化用 mixed-precision per-channel，结果 "
+            "substantially improves performance；其中 $d_M=768$ 与 `mean pooling` 保持不变。",
+            1,
+        )
+        markdown, stats = _assembled(draft)
+        self.assertIn("`batch size`", markdown)
+        self.assertIn("`mixed-precision per-channel`", markdown)
+        self.assertIn("`substantially improves performance`", markdown)
+        report = v5.gate(
+            note=stats["note"], system=stats["system"], page_texts=PAGES, plan=_plan_payload()
+        )
+        self.assertEqual(v5._mixed_language(stats["note"]), [])
+        self.assertTrue(next(item for item in report["items"] if item["id"] == "H7")["passed"])
+        # Inline math and existing code spans are left alone (no double ticks).
+        self.assertIn("$d_M=768$", markdown)
+        self.assertEqual(markdown.count("`mean pooling`"), 1)
+        self.assertNotIn("``mean pooling``", markdown)
+
+    def test_a_prose_name_glued_from_a_rotated_header_is_aligned_to_the_table(self):
+        """The PDF text of a rotated header glues columns: ``mE5 Large Instruct``
+        extracts as ``BasemE5 LargeInstruct``, and drafts write ``BasemE5 Large``
+        right above a table that renders the real header."""
+        note = (
+            "## 关键结果\n\n"
+            '<div class="noteTableScroll"><table><tr><th></th><th>mE5 Large<br>Instruct</th>'
+            "<th>BGE-M3</th></tr>"
+            "<tr><td>Mean (Task)</td><td>63.22</td><td>62.7</td></tr></table></div>\n\n"
+            "同表里 `BasemE5 Large` 为 63.22，`InstructBGE-M3` 紧随其后，"
+            "`mean pooling` 是方法名不是列头。\n"
+        )
+        out = v5.align_model_names(note)
+        self.assertIn("`mE5 Large Instruct`", out)
+        self.assertIn("`BGE-M3`", out)
+        self.assertNotIn("BasemE5", out)
+        self.assertNotIn("InstructBGE-M3", out)
+        self.assertIn("`mean pooling`", out)
+
+    def test_a_backticked_placeholder_does_not_wrap_the_caption_in_a_code_span(self):
+        """House style backticks Latin text, so `[[ASSET:table1]]` arrives ticked.
+
+        Substituting in place left an unmatched backtick on the caption line, and
+        H7 then counted the paper's own English caption ("Comparison of popular
+        embedding models…") as mixed-language prose.
+        """
+        illustration = v5.Illustration(
+            kind="table", number=3, title="Pooling ablation", section="Method", page=2
+        )
+        draft = "结论见 `[[ASSET:table3]]` 的列头。"
+        text, placed, notes, unplaced = v5.substitute_assets(
+            draft, [illustration], paper_id="paper-1"
+        )
+        self.assertIn("**表 3｜Pooling ablation**", text)
+        # The wrapping ticks are consumed with the placeholder: none left glued
+        # to the caption head, which H7 would read as prose. (The LaTeX fence
+        # inside <details> keeps its own ticks.)
+        self.assertNotIn("`**", text)
+        self.assertNotIn("**表 3｜Pooling ablation**`", text)
+        self.assertEqual(placed, {"table3"})
+        self.assertEqual(notes, [])
+        self.assertEqual(unplaced, [])
+
+        markdown, stats = _assembled()
+        note = stats["note"].replace(
+            "这一段说明该设计的原因",
+            "这一段对比见 `**表 1｜Comparison of popular embedding models**`",
+            1,
+        )
+        report = v5.gate(note=note, system="覆盖率 未确认", page_texts=PAGES, plan=_plan_payload())
+        self.assertTrue(next(item for item in report["items"] if item["id"] == "H7")["passed"])
+
+    def test_each_write_call_is_given_its_own_character_target(self):
+        """A single per-call total is followed; a twelve-row table is not."""
+        targets = [v5.part_target_chars(part) for part in v5.WRITE_PARTS]
+        self.assertTrue(all(target >= 1000 for target in targets), targets)
+        self.assertGreaterEqual(sum(targets), v5.MIN_NOTE_CHARS)
+        self.assertLessEqual(sum(targets), v5.MAX_NOTE_CHARS)
+        covered = {title for part in v5.WRITE_PARTS for title in part}
+        self.assertEqual(covered, set(v5.SKELETON))
+        for title in covered:
+            self.assertGreater(v5.SECTION_TARGET_CHARS.get(title, 0), 0, title)
+
+        writers: list[str] = []
+
+        def call(prompt: str, **_kwargs) -> str:
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                writers.append(prompt)
+                return _part_draft(prompt)
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        self._analyze(call)
+        self.assertEqual(len(writers), len(v5.WRITE_PARTS))
+        for prompt, target in zip(writers, targets, strict=True):
+            self.assertIn(f"合计目标 ≈ {target} 中文字", prompt)
 
     def test_reused_reading_without_a_draft_still_writes_the_note(self):
         """`reuse_chunks` reuses the reading, not the writing (P2.5 upgrade path)."""
@@ -503,10 +741,10 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
         def call(prompt: str, **_kwargs) -> str:
             is_writer = "## 第一阶段阅读计划（JSON）" in prompt
             calls.append("draft" if is_writer else "plan")
-            return _draft() if is_writer else json.dumps(_plan_payload(), ensure_ascii=False)
+            return _part_draft(prompt) if is_writer else json.dumps(_plan_payload(), ensure_ascii=False)
 
         result = self._analyze(call, resume=saved, require_resume=True)
-        self.assertEqual(calls, ["plan", "draft"])
+        self.assertEqual(calls, ["plan"] + ["draft"] * len(v5.WRITE_PARTS))
         self.assertEqual(result["mode"], "v5")
         self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
 
@@ -519,11 +757,31 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
         result = self._analyze(self._llm(), save_checkpoint=save)
         self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
         stage_saves = [entry for entry in checkpoints if "plan" in entry or "draft" in entry]
-        self.assertEqual(len(stage_saves), 2)
+        self.assertEqual(len(stage_saves), 1 + len(v5.WRITE_PARTS))
         for entry in stage_saves:
             self.assertEqual(entry["chunks_done"], 1)
             self.assertEqual(entry["completed"][0]["first_page"], 1)
             self.assertEqual(entry["completed"][0]["last_page"], 3)
+
+    def test_a_short_draft_gets_a_per_section_growth_plan(self):
+        writers: list[str] = []
+
+        def call(prompt: str, **_kwargs) -> str:
+            if "## 本片段正文" in prompt:
+                return _chunk_payload()
+            if "## 第一阶段阅读计划（JSON）" in prompt:
+                writers.append(prompt)
+                return (_thin(_part_draft(prompt), 0.7)
+                        if "上一稿的门禁结论" not in prompt else _part_draft(prompt))
+            return json.dumps(_plan_payload(), ensure_ascii=False)
+
+        self._analyze(call)
+        self.assertEqual(len(writers), 2 * len(v5.WRITE_PARTS))
+        repair = writers[-1]
+        self.assertIn("未通过 H8 篇幅", repair)
+        self.assertIn("篇幅处方", repair)
+        self.assertIn("缺口约", repair)
+        self.assertRegex(repair, r"补约 \d+ 字")
 
     def test_failed_first_round_triggers_a_repair_round(self):
         calls: list[str] = []
@@ -534,12 +792,15 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
                 return _chunk_payload()
             if "## 第一阶段阅读计划（JSON）" in prompt:
                 first = len([item for item in calls if "## 第一阶段阅读计划（JSON）" in item]) == 1
-                return _draft().replace("这一段说明该设计的原因", "这一段 rich encoder design 说明原因") if first else _draft()
+                # H2, not H7: the backtick rule is normalised by assembly, so it
+                # can no longer be the failure that triggers a repair round.
+                mixed = _part_draft(prompt).replace("这一段说明该设计的原因", "这一段把分数推到 `99.99` 说明原因")
+                return mixed if first else _part_draft(prompt)
             return json.dumps(_plan_payload(), ensure_ascii=False)
 
         result = self._analyze(call)
         writers = [item for item in calls if "## 第一阶段阅读计划（JSON）" in item]
-        self.assertEqual(len(writers), 2)
+        self.assertEqual(len(writers), 2 * len(v5.WRITE_PARTS), "两段 × 两轮")
         self.assertIn("## 上一稿的门禁结论", writers[-1])
         self.assertIn("H7", writers[-1])
         self.assertTrue(result["gate"]["passed"], result["gate"]["items"])
@@ -550,7 +811,7 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
             if "## 本片段正文" in prompt:
                 return _chunk_payload()
             if "## 第一阶段阅读计划（JSON）" in prompt:
-                mixed = _draft().replace("这一段说明该设计的原因", "这一段 rich encoder design 说明原因")
+                mixed = _draft().replace("这一段说明该设计的原因", "这一段把分数推到 `99.99` 说明原因")
                 # round 1 also loses a skeleton section; round 2 only mixes language
                 return mixed.replace("## 我的笔记", "## 备注", 1) if "上一稿的门禁结论" not in prompt else mixed
             return json.dumps(_plan_payload(), ensure_ascii=False)
@@ -558,7 +819,7 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
         result = self._analyze(call)
         self.assertFalse(result["gate"]["passed"])
         self.assertEqual(
-            [item["id"] for item in result["gate"]["items"] if not item["passed"]], ["H7"]
+            [item["id"] for item in result["gate"]["items"] if not item["passed"]], ["H2"]
         )
 
     def test_tie_keeps_the_newest_draft(self):
@@ -572,13 +833,13 @@ class AnalysisV5EndToEndTests(unittest.TestCase):
                 drafts += 1
                 if drafts == 1:
                     return _draft().replace("## 我的笔记", "## 备注", 1)
-                return _draft().replace("这一段说明该设计的原因", "这一段 rich encoder design 说明原因")
+                return _draft().replace("这一段说明该设计的原因", "这一段把分数推到 `99.99` 说明原因")
             return json.dumps(_plan_payload(), ensure_ascii=False)
 
         result = self._analyze(call)
-        self.assertEqual(drafts, 2)
+        self.assertEqual(drafts, 2 * len(v5.WRITE_PARTS))
         self.assertEqual(
-            [item["id"] for item in result["gate"]["items"] if not item["passed"]], ["H7"]
+            [item["id"] for item in result["gate"]["items"] if not item["passed"]], ["H2"]
         )
 
     def test_resume_reuses_the_saved_plan_and_draft_without_model_calls(self):

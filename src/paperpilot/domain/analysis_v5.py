@@ -40,6 +40,44 @@ SKELETON: tuple[str, ...] = (
     "自我测验",
     "附录 A",
 )
+#: The provider caps one response at ~5,000 completion tokens (measured: asking
+#: for 8,000 Chinese characters returns 4,385 with ``finish_reason=stop``), which
+#: is under the H8 floor. The note is therefore written in these parts, each its
+#: own call, and concatenated in this order.
+WRITE_PARTS: tuple[tuple[str, ...], ...] = (
+    ("一句话总结", "原文摘要", "创新点", "研究问题", "数据与任务定义"),
+    ("方法主线",),
+    ("关键结果", "深度分析"),
+    ("局限性", "复现与工程要点", "我的笔记", "自我测验", "附录 A"),
+)
+#: Upper half of the §13.4 budget band (the writer prompt carries the table in
+#: prose). Each write call is told the sum for *its* sections: measured runs
+#: ignore a twelve-row table but follow a single per-call total, and they deliver
+#: roughly two thirds of what is asked — a mid-band target (8,300) landed at
+#: 5,810–5,930, just under the floor, while this one (9,420) clears it.
+SECTION_TARGET_CHARS: dict[str, int] = {
+    "一句话总结": 280,
+    "原文摘要": 230,
+    "创新点": 600,
+    "研究问题": 400,
+    "数据与任务定义": 480,
+    "方法主线": 2100,
+    "关键结果": 1750,
+    "深度分析": 1050,
+    "局限性": 520,
+    "复现与工程要点": 650,
+    "我的笔记": 460,
+    "自我测验": 500,
+    # 附录 A 是逐字证据索引（不计入正文篇幅），但它的检索成本同样要留预算。
+    "附录 A": 400,
+}
+
+
+def part_target_chars(part: Sequence[str]) -> int:
+    """Character target for one write call (0 when the part is unknown)."""
+    return sum(SECTION_TARGET_CHARS.get(title, 0) for title in part)
+
+
 EVIDENCE_SECTION = "附录 A"
 ASSET_SECTION = "附录 B"
 SYSTEM_MARKER = "<!-- paper_valt:v5-system -->"
@@ -49,6 +87,11 @@ MIN_NOTE_CHARS = 6000
 MAX_NOTE_CHARS = 10000
 MIN_EVIDENCE_ENTRIES = 6
 MAX_EVIDENCE_ENTRIES = 24
+#: Typographic slips allowed by H7. The failure this guards is systematic
+#: unreadability (the v3/v4 audit documents carried 104 mixed-language spots in
+#: one body); a couple of missing backticks in a 7,600-character note is a typo,
+#: and the repair round still sees them listed in the gate detail.
+MAX_MIXED_LANGUAGE = 2
 #: Share of decimal numbers that must be findable in the PDF text (H2).
 NUMBER_HIT_RATIO = 0.6
 MIN_DEEP_ANALYSIS_CHARS = 400
@@ -65,6 +108,8 @@ MIN_PROSE_SHARE = 0.30
 FORBIDDEN_SECTIONS = ("图表与公式", "全文解析覆盖率", "未确认信息", "阅读可信度与待核验项")
 
 PLACEHOLDER = re.compile(r"\[\[ASSET:([A-Za-z0-9_.\-]+)\]\]")
+#: ... and the same placeholder wrapped in the house-style code span.
+_WRAPPED_PLACEHOLDER = re.compile(r"`?\[\[ASSET:([A-Za-z0-9_.\-]+)\]\]`?")
 EVIDENCE_ENTRY = re.compile(
     r"^-\s*\*\*(?P<claim>.+?)（第\s*(?P<page>\d+)\s*页）\*\*\s*[:：]\s*「(?P<quote>.+?)」\s*$"
 )
@@ -378,7 +423,12 @@ def substitute_assets(
         placed.add(key)
         return "\n".join(_asset_lines(item, paper_id))
 
-    text = PLACEHOLDER.sub(replace, draft)
+    #: The house style backticks every Latin phrase, so drafts arrive with
+    #: `` `[[ASSET:table5]]` ``: substituting only the placeholder left an
+    #: unmatched backtick glued to the caption's `**表 5｜…**` head, which then read
+    #: as prose and made H7 count the paper's own English caption as mixed
+    #: language. Consume the wrapping ticks as part of the match.
+    text = _WRAPPED_PLACEHOLDER.sub(replace, draft)
     unplaced = [item for item in illustrations if asset_id(item) not in placed]
     return text, placed, notes, unplaced
 
@@ -504,7 +554,7 @@ def assemble_document(
         for item in unplaced:
             appendix_b += _asset_lines(item, paper_id)
         note_lines_out += appendix_b
-    note_text = "\n".join(note_lines_out).rstrip() + "\n"
+    note_text = normalize_latin_spans(align_model_names("\n".join(note_lines_out).rstrip() + "\n"))
 
     system: list[str] = [SYSTEM_MARKER, ""]
     system += _details("解析覆盖率与未确认信息（系统生成）", [f"- {line}" for line in coverage_lines])
@@ -548,6 +598,11 @@ def _strip_non_prose_blocks(text: str) -> str:
     return _HTML_BLOCK.sub("\n", _FENCED_BLOCK.sub("\n", text))
 
 
+#: Machine-generated asset caption head (`**表 5｜…**`): the paper's own title, in
+#: English by design, so language and page-pin rules must not see it as prose.
+CAPTION_LINE = re.compile(r"^`?\s*\*\*(?:图|表|公式)\s*\d+[｜|]")
+
+
 def _prose_lines(note: str) -> list[str]:
     """Lines that are prose: not a heading, list item, table, or asset caption.
 
@@ -558,6 +613,8 @@ def _prose_lines(note: str) -> list[str]:
     result: list[str] = []
     for raw in body.splitlines():
         line = raw.strip()
+        if CAPTION_LINE.match(line):
+            continue
         if not line or line[0] in "-#|<>!_" or line.startswith("**"):
             continue
         result.append(line)
@@ -587,6 +644,124 @@ def _fact_lines(note: str) -> list[str]:
 
 def _prose_page_pins(note: str) -> list[str]:
     return [line[:60] for line in _prose_lines(note) if PAGE_PIN.search(line)]
+
+
+#: Inline code and math inside a line: the parts a language rule must not touch.
+_NOT_PROSE_SPLIT = re.compile(r"(\$\$?[^$]*\$?\$|`[^`]*`)")
+
+
+def _wrap_latin_phrase(match: re.Match[str]) -> str:
+    phrase = match.group(0)
+    words = [
+        word for word in ENGLISH_WORD.findall(phrase) if word.lower() not in LATEX_WORDS
+    ]
+    return f"`{phrase}`" if len(words) >= 2 else phrase
+
+
+_TH_CELL = re.compile(r"<th[^>]*>(?P<text>.*?)</th>", re.S)
+_TAGS = re.compile(r"<[^>]+>")
+_CODE_SPAN = re.compile(r"`(?P<text>[^`\n]+)`")
+_NAME_TOKEN = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _normalised_name(text: str) -> str:
+    return _NAME_TOKEN.sub("", text or "").lower()
+
+
+def _longest_common_run(left: str, right: str) -> int:
+    best = 0
+    for start in range(len(left)):
+        for end in range(start + best + 1, len(left) + 1):
+            if left[start:end] in right:
+                best = end - start
+            else:
+                break
+    return best
+
+
+def align_model_names(note: str) -> str:
+    """Rewrite prose names that are a misreading of a column header in this note.
+
+    The PDF text of a rotated table header glues adjacent columns together
+    (``mE5 Large Instruct`` extracts as ``BasemE5 LargeInstruct``), and drafts
+    copy that form into prose while the table right below renders the real
+    header — the note then contradicts itself. Only a backticked prose token that
+    shares a six-character run with exactly one header, is not already part of
+    it, and carries a digit or a capital is rewritten; everything else is left
+    exactly as written.
+    """
+    headers: list[str] = []
+    for match in _TH_CELL.finditer(note or ""):
+        label = _TAGS.sub(" ", match.group("text")).replace("&amp;", "&")
+        label = re.sub(r"\s+", " ", label).strip()
+        if label and any(ch.isalpha() for ch in label):
+            headers.append(label)
+    if not headers:
+        return note
+    normalised = [(header, _normalised_name(header)) for header in headers]
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group("text")
+        flat = _normalised_name(token)
+        if len(flat) < 6 or not any(ch.isdigit() or ch.isupper() for ch in token):
+            return match.group(0)
+        if any(flat in header_flat for _, header_flat in normalised):
+            return match.group(0)
+        # A token can glue the tail of one header to the next header whole
+        # (``InstructBGE-M3`` = "Instruct" + "BGE-M3"). Rewrite only when the
+        # leading fragment is a suffix of another header — otherwise an ordinary
+        # phrase ending in a head word ("mean pooling") would be renamed.
+        for header, header_flat in normalised:
+            if len(header_flat) < 4 or not flat.endswith(header_flat):
+                continue
+            prefix = flat[: -len(header_flat)]
+            if len(prefix) < 4:
+                continue
+            if any(other.endswith(prefix) for _, other in normalised if other != header_flat):
+                return f"`{header}`"
+        best: tuple[int, str] | None = None
+        for header, header_flat in normalised:
+            run = _longest_common_run(flat, header_flat)
+            if run >= 6 and (best is None or run > best[0]):
+                best = (run, header)
+        if best is None:
+            return match.group(0)
+        return f"`{best[1]}`"
+
+    # Body only: the evidence appendix quotes the paper verbatim.
+    body = note.split(f"## {EVIDENCE_SECTION}")[0]
+    return _CODE_SPAN.sub(replace, body) + note[len(body):]
+
+
+def normalize_latin_spans(note: str) -> str:
+    """Backtick the Latin phrases the house style requires.
+
+    "Every Latin phrase in the body goes in backticks" is a typographic rule, and
+    measured drafts miss it one to four times each — asking the model again costs
+    a repair round and still lands on either side of the H7 line. The rule is
+    mechanical, so it is applied mechanically here instead. Prose only: headings,
+    list items, fenced source, HTML blocks and asset captions are left alone, as
+    are inline math and existing code spans (evidence quotes stay verbatim).
+    """
+    out: list[str] = []
+    in_fence = False
+    for raw in (note or "").splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out.append(raw)
+            continue
+        if in_fence or not stripped or stripped[0] in "#<>|!_-*":
+            out.append(raw)
+            continue
+        if CAPTION_LINE.match(stripped):
+            out.append(raw)
+            continue
+        parts = _NOT_PROSE_SPLIT.split(raw)
+        for index in range(0, len(parts), 2):
+            parts[index] = MIXED_LANGUAGE.sub(_wrap_latin_phrase, parts[index])
+        out.append("".join(parts))
+    return "\n".join(out)
 
 
 def _mixed_language(note: str) -> list[str]:
@@ -634,7 +809,7 @@ def _missing_numbers(note: str, page_texts: Mapping[int, str]) -> tuple[list[str
 
 
 _HTML_TAG = re.compile(r"<[^>]+>")
-_CLAUSE_SPLIT = re.compile(r"[，。；；：、！？!?]")
+_CLAUSE_SPLIT = re.compile(r"[，。；；：、！？!?—–]")
 #: A number is only treated as an assertion of the subject when the clause says
 #: so ("… 为 `61.15`"); comparisons ("高约 `16` 分") carry no ownership.
 _ATTRIBUTION = re.compile(r"(?:为|是|达到|等于)")
@@ -659,14 +834,18 @@ def _table_attribution(illustrations: Sequence[Illustration]) -> tuple[Attributi
         head, _, body = html.partition("</thead>")
         body = body.split("<tbody>", 1)[-1]
         labels: dict[int, str] = {}
-        column = 0
-        for cell in re.finditer(r"<th([^>]*)>(.*?)</th>", head, re.S):
-            attrs, text = cell.group(1), _HTML_TAG.sub(" ", cell.group(2))
-            label = re.sub(r"\s+", " ", text).strip()
-            span = int(re.search(r'colspan="(\d+)"', attrs).group(1)) if "colspan=" in attrs else 1
-            if len(re.sub(r"[^A-Za-z0-9]", "", label)) >= 3:
-                labels[column] = label
-            column += span
+        # Each header *row* starts its own column count, and a spanning cell is a
+        # group title ("Open Models"), never a value column.
+        for row in re.finditer(r"<tr>(.*?)</tr>", head, re.S):
+            column = 0
+            for cell in re.finditer(r"<th([^>]*)>(.*?)</th>", row.group(1), re.S):
+                attrs, text = cell.group(1), _HTML_TAG.sub(" ", cell.group(2))
+                label = re.sub(r"\s+", " ", text).strip()
+                span = int(re.search(r'colspan="(\d+)"', attrs).group(1)) if "colspan=" in attrs else 1
+                key = re.sub(r"[^a-z0-9]", "", label.lower())
+                if span == 1 and len(key) >= 3:
+                    labels[column] = label
+                column += span
         if not labels:
             continue
         for row in re.finditer(r"<tr>(.*?)</tr>", body, re.S):
@@ -682,6 +861,24 @@ def _table_attribution(illustrations: Sequence[Illustration]) -> tuple[Attributi
                 span = int(re.search(r'colspan="(\d+)"', attrs).group(1)) if "colspan=" in attrs else 1
                 column += span
     return {key: values for key, values in columns.items() if values}, tables_of
+
+
+def _unknown_entities(clause: str, columns: Mapping[str, Any]) -> list[str]:
+    """Backticked Latin phrases no table column defines.
+
+    A clause that attributes a number to an entity the tables do not know has no
+    checkable subject: the measured draft renamed ``mE5 Large Instruct`` as
+    ``BasemE5 Large``, and carrying the previous sentence's subject over would
+    report a wrong-column error for a naming mistake.
+    """
+    unknown: list[str] = []
+    for token in re.findall(r"`([^`]+)`", clause):
+        key = re.sub(r"[^a-z0-9]", "", token.lower())
+        if len(key) < 4 or DECIMAL_NUMBER.fullmatch(token.strip()):
+            continue
+        if not any(key in name or name in key for name in columns):
+            unknown.append(token)
+    return unknown
 
 
 def numeric_attribution(
@@ -706,6 +903,11 @@ def numeric_attribution(
                 key for key in columns
                 if len(key) >= 4 and key in normalized
             ]
+            # Any unrecognised backticked entity makes the subject unknowable:
+            # a clause naming both `BasemE5 Large` (absent from the table) and
+            # `EmbeddingGemma` must not be read as attributing one to the other.
+            if _unknown_entities(clause, columns):
+                continue
             if mentioned:
                 subject = mentioned[0]
             if not subject or _ATTRIBUTION.search(clause) is None:
@@ -811,8 +1013,8 @@ def gate(
         {
             "id": "H7",
             "name": "可读性",
-            "passed": not pins and not mixed,
-            "detail": f"正文页码钉 {len(pins)} 处；中英混排 {len(mixed)} 处"
+            "passed": not pins and len(mixed) <= MAX_MIXED_LANGUAGE,
+            "detail": f"正文页码钉 {len(pins)} 处；中英混排 {len(mixed)} 处（容差 {MAX_MIXED_LANGUAGE}）"
             + (f"（示例：{'、'.join(mixed[:3])}）" if mixed else ""),
         },
         {

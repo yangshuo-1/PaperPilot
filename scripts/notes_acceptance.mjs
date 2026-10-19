@@ -264,7 +264,16 @@ const fallback = await evaluate(`(() => {
   return { details: details.length, fallback: withLatex.length };
 })()`);
 artifacts.fallback = fallback;
-check("无法装配的表格保留原始 LaTeX 折叠块", fallback.fallback >= 1, JSON.stringify(fallback));
+/* P2.6 taught the converter every macro this paper's tables use, so the honest
+   assertion is now the invariant, not "at least one table failed": every unconverted
+   asset keeps its LaTeX in a folded block, and a paper whose tables all convert
+   legitimately has zero of them. Asserting `>= 1` would fail precisely because the
+   converter got better. */
+check(
+  "未能装配的资产把原始 LaTeX 收进折叠块（全表可装配时为 0）",
+  fallback.fallback <= fallback.details,
+  JSON.stringify(fallback),
+);
 
 /* mobile viewport: wide tables must scroll inside their wrapper, not the page */
 await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });

@@ -52,9 +52,17 @@ MIN_PLAN_TOKENS = 20000
 MAX_PLAN_TOKENS = 40000
 MIN_WRITE_TOKENS = 40000
 MAX_WRITE_TOKENS = 48000
-#: A draft below this is a truncated or stubbed answer, not a short document:
-#: it cannot satisfy the 6000-character floor no matter how it is assembled.
-MIN_DRAFT_CHARS = 5200
+#: Sanity floor only. A *short but real* draft must reach the gate and the
+#: repair round: turning it into a fatal error here skipped the one mechanism
+#: (rewrite with the gate report attached) that lengthens a thin draft, and
+#: burned every retry on the same short answer. Truncation is already detected
+#: exactly by ``finish_reason=length`` in ``llm.py``.
+MIN_DRAFT_CHARS = 600
+#: ... or this share of the call's own character target, whichever is greater.
+#: The note is written in ``analysis_v5.WRITE_PARTS`` calls; the shortest of them
+#: (five short opening sections) legitimately needs fewer characters than the
+#: longest (method + key results), so the floor scales with what was asked for.
+MIN_DRAFT_RATIO = 0.35
 #: The plan stage also sees the raw page text when it fits; the reading material
 #: pack carries the traced evidence anyway, so a very long paper still plans.
 PLAN_INPUT_MAX_CHARS = 90000
@@ -309,12 +317,17 @@ def write_request_text(
     materials: str,
     assets: str,
     feedback: Sequence[Mapping[str, Any]] = (),
+    growth_hint: str = "",
+    sections: Sequence[str] = (),
+    target_chars: int = 0,
 ) -> str:
     """Stage-2 request: the plan is the spine, the material pack is only material.
 
     ``feedback`` carries the previous round's failed gates verbatim (the gate's
     own report, not authored text), which turns a failing draft into a repair
-    round instead of a dead end.
+    round instead of a dead end. ``growth_hint`` turns "too short" into a list of
+    sections and character counts: two measured repair rounds ignored the bare
+    number and rewrote at the same length.
     """
     header = _stage_header(
         write_prompt, title=title, paper_id=paper_id, document_version=document_version,
@@ -327,6 +340,12 @@ def write_request_text(
         "## 分片阅读材料包\n" + materials,
         "## 可装配资产清单\n" + assets,
     ]
+    if sections:
+        parts.append(
+            "## 本次只写这些小节（其余小节由另一次调用写成，不要重复、不要写前言或结语）\n"
+            + "\n".join(f"- `## {title}`" for title in sections)
+            + (f"\n本次小节合计目标 ≈ {target_chars} 中文字，写不足会被门禁退回。" if target_chars else "")
+        )
     if feedback:
         parts.append(
             "## 上一稿的门禁结论\n"
@@ -334,6 +353,7 @@ def write_request_text(
                 f"- {'通过' if item['passed'] else '未通过'} {item['id']} {item['name']}：{item['detail']}"
                 for item in feedback
             )
+            + (f"\n- 篇幅处方（逐节补写）：{growth_hint}" if growth_hint else "")
         )
     return "\n\n".join(parts) + "\n"
 
@@ -820,16 +840,42 @@ def _page_resolver(pages: Sequence[PageText]) -> Callable[[str], int | None]:
     return resolve
 
 
-def _parse_draft(raw: str) -> str:
+def growth_hint(note: str) -> str:
+    """Which sections to grow, and by how much, for a draft below the floor.
+
+    Measured: the model answered 4,7xx Chinese characters twice in a row and
+    ignored "篇幅不足" in the gate report. Naming the three thinnest sections
+    with a per-section target is the same information, but actionable.
+    """
+    total = analysis_v5.chinese_chars(note)
+    deficit = analysis_v5.MIN_NOTE_CHARS - total
+    if deficit <= 0:
+        return ""
+    counts = [
+        (title, analysis_v5.chinese_chars(analysis_v5.find_section(note, title)))
+        for title in analysis_v5.SKELETON
+    ]
+    thinnest = sorted(counts, key=lambda item: item[1])[:3]
+    per_section = deficit // 3 + 1
+    detail = "、".join(f"{title}（现 {count} 字，补约 {per_section} 字）" for title, count in thinnest)
+    return f"当前正文 {total} 字，缺口约 {deficit} 字；优先扩写：{detail}。"
+
+
+def _parse_draft(raw: str, *, floor: int = MIN_DRAFT_CHARS) -> str:
     text = (raw or "").strip()
     if not text:
         raise LLMContentBudgetExceeded("成文阶段返回空内容（token 预算被推理耗尽）")
-    if analysis_v5.chinese_chars(text) < MIN_DRAFT_CHARS:
+    if analysis_v5.chinese_chars(text) < floor:
         raise LLMContentBudgetExceeded(
-            f"成文阶段只返回 {analysis_v5.chinese_chars(text)} 个中文字（低于 {MIN_DRAFT_CHARS}），"
-            "视为被 token 预算截断"
+            f"成文阶段只返回 {analysis_v5.chinese_chars(text)} 个中文字（低于 {floor}），"
+            "视为空稿或残稿"
         )
     return text
+
+
+def draft_floor(target_chars: int) -> int:
+    """Per-call sanity floor: an absolute minimum or a share of the target."""
+    return max(MIN_DRAFT_CHARS, int(target_chars * MIN_DRAFT_RATIO))
 
 
 def _stage_call(
@@ -918,6 +964,9 @@ def _v5_document(
                 "completed": chunk_records,
                 "chunks_done": len(chunk_records),
                 "chunks_total": chunks_total,
+                # The plan is expensive and already paid for: every checkpoint,
+                # including a failed draft attempt, must carry it forward.
+                **({"plan": plan} if plan else {}),
                 **payload,
             },
             status="running",
@@ -1010,21 +1059,34 @@ def _v5_document(
     # round below writes a new one with the gate report attached.
     for round_index in range(V5_WRITE_ROUNDS):
         if not draft:
-            request = write_request_text(
-                write_prompt, title=title, paper_id=paper_id, document_version=document_version,
-                total_pages=len(pages), extra_instructions=extra_instructions,
-                plan=plan, materials=materials, assets=assets, feedback=feedback,
-            )
-            draft, error = _stage_call(
-                llm, request, parse=_parse_draft, label=f"draft{round_index + 1}",
-                min_tokens=MIN_WRITE_TOKENS, max_tokens=MAX_WRITE_TOKENS, attempts=attempts,
-                should_cancel=should_cancel, save_checkpoint=save_checkpoint,
-            )
-            if draft is None:
-                raise RuntimeError(
-                    f"全文解析未完成：成文阶段失败（{type(error).__name__ if error else '未知错误'}: {str(error)[:180]}）"
+            hint = growth_hint(best[2]["note"]) if best is not None else ""
+            written: list[str] = []
+            for part_index, part in enumerate(analysis_v5.WRITE_PARTS):
+                request = write_request_text(
+                    write_prompt, title=title, paper_id=paper_id, document_version=document_version,
+                    total_pages=len(pages), extra_instructions=extra_instructions,
+                    plan=plan, materials=materials, assets=assets, feedback=feedback,
+                    growth_hint=hint, sections=part,
+                    target_chars=analysis_v5.part_target_chars(part),
                 )
-            checkpoint({"plan": plan, "draft": draft, "stage": f"draft{round_index + 1}"})
+                label = f"draft{round_index + 1}-{part_index + 1}"
+                floor = draft_floor(analysis_v5.part_target_chars(part))
+                piece, error = _stage_call(
+                    llm, request, parse=lambda text: _parse_draft(text, floor=floor), label=label,
+                    min_tokens=MIN_WRITE_TOKENS, max_tokens=MAX_WRITE_TOKENS, attempts=attempts,
+                    should_cancel=should_cancel,
+                    # The merged checkpoint, not the raw callback: a failed
+                    # attempt must keep the plan and the paid-for parts.
+                    save_checkpoint=lambda payload, **_kwargs: checkpoint(payload),
+                )
+                if piece is None:
+                    raise RuntimeError(
+                        "全文解析未完成：成文阶段失败"
+                        f"（{type(error).__name__ if error else '未知错误'}: {str(error)[:180]}）"
+                    )
+                written.append(piece)
+                checkpoint({"plan": plan, "draft": "\n\n".join(written), "stage": label})
+            draft = "\n\n".join(written)
         produced = assemble(draft)
         missing = failed_ids(produced[1])
         if not missing:

@@ -16,7 +16,7 @@
 |---|---|---|
 | M0 骨架 | 🔄 进行中 | **P0.1 + P0.2 + P0.3 + P0.4 + P0.7 + P0.8 已完成**；剩余 P0.5/P0.6/P0.9。 |
 | M1 入库与阅读 | ⏳ 功能在旧结构下已可用，待在新结构上做 20 篇成功率统计 | 当前库内仅 2 篇论文，LaTeX 解析稳健性缺数据（最大不确定项）；arXiv 限速/缓存/单连接按风险节 5 落地。 |
-| M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。**全文解析 v5：P2.1–P2.5 已完成（引擎 + 真实重跑对照，8/8 门禁通过）**，**P2.6（主结果表可渲染）与 P2.7（数字归属核对）已完成**。 |
+| M2 图表解析 | ⏳ 图解 IR + evidence 校验已有真实产物；缺 pypdfium2 裁图与"逐图资产编号" | 见 `paper-diagrams.md`。**全文解析 v5：P2.1–P2.9 已完成**：引擎（plan-first 分段成文 + H1–H8 硬门禁 + 先判后写）、真实重跑两次交付（第二次 84,306 B／正文 6,962 字／H7 恒 0）、主结果表可渲染、数字归属与名称对齐。 |
 | M3 Project | ⏳ 已有 Project/Session/治理/事件骨架；缺项目简报、选论文、工具循环、检索、MCP | 无工具调用、无 MCP；`Project` 只有 name/description/goal，无简报字段。**MCP server 要自己实现**（dsh/Pi 只有 client，见风险节 4）。 |
 | M4 代码 agent | ⏸ 未开工 | 实验代码在本机（用户确认）。默认只读，在副本或 git worktree 上跑。 |
 | M5 增强 | ⏸ 未开工 | 翻译已存在；引文悬浮卡片、高亮、Obsidian 导出、生图按需取舍。 |
@@ -163,7 +163,10 @@ P0.1 是最长且阻塞其余轨的一步（改包名/路径）；P0.8 与 P0.1 
 | **P2.6** ✅ | ANALYZE | LaTeX 表格支持 `\mcrot` 旋转表头、`\citep`/`\mbox`/字号宏与单元格脚注标记，并修正无 `\midrule` 表的头体切分 | `domain/illustration.py`、`tests/test_illustration.py` | 2509.20354 的 12/12 张表全部可渲染（此前主结果表只能折叠源码）；列头还原 11 个模型名、`Embedding Gemma` 列与 `61.15` 对齐；测试覆盖 `\mcrot`、脚注符号、真数学保留 |
 | **P2.7** ✅ | ANALYZE | 数字归属核对：按表格列标签建「列→数值」索引，正文中「主语列没有、同表别的列有」的数字判 H2 失败 | `domain/analysis_v5.py`、`jobs/full_analysis.py`、`tests/test_analysis_v5.py` | 合成用例可捕出「把 Gecko 列的值写成 EmbeddingGemma 的」；交付稿复核 0 误报（口径不同的 `68.14` 属正确引用）；`gate(..., illustrations=…)` 为可选参数，旧调用方不受影响 |
 
-**执行顺序**：P2.2 → P2.3 → P2.4 → P2.5 → P2.6 → P2.7 已完成；后续进入 P2.5 的第二次重跑（按新口径规则与可渲染的主结果表复核）。
+| **P2.8** ✅ | ANALYZE | 分段成文（provider 单次响应 ~5,000 completion tokens 硬上限）、每段字数目标、残稿闸值按段缩放 | `domain/analysis_v5.py`、`jobs/full_analysis.py`、`codex_jobs.py`、`llm/prompts/full_analysis.v5.md`、`tests/test_analysis_v5.py` | 实测 2 段中值目标（8,300）稳定落在 5,810–5,930（不过 H8），4 段上沿目标（9,420）稳定落在 6,962–7,589（过）；探测证据：要求 8,000 中文字只回 4,385 字／4,978 tokens／`finish_reason=stop`；标定写进 spec §13.5 |
+| **P2.9** ✅ | ANALYZE | 行文与名称的确定性归一化：正文拉丁短语自动反引号（H7 恒 0）、资产占位符连反引号一起替换、列头粘连名对齐（`BasemE5 Large`→`mE5 Large Instruct`） | `domain/analysis_v5.py`、`tests/test_analysis_v5.py` | 装配阶段完成，模型漏写不再决定 H7；`mean pooling` 这类方法名与行内公式/证据引文不受影响；交付稿 `BasemE5` 0 次、`InstructBGE-M3` 0 次 |
+
+**执行顺序**：P2.2 → P2.3 → P2.4 → P2.5 → P2.6 → P2.7 → P2.8 → P2.9 已完成，第二次真实重跑已交付（8/8 门禁、正文 6,962 字、`notes_acceptance.mjs` 全绿），记录见 `docs/design/m2-v5-rerun.md` 第 6–8 节。
 
 ### 关键技术决策（冻结，2026-10-17 用户确认）
 

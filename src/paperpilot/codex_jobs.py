@@ -309,24 +309,20 @@ class CodexJobRunner(JobRunner[dict[str, Any]]):
     def _resume_payload(self, job_id: str) -> Mapping[str, Any] | None:
         """What a reused run starts from.
 
-        Page readings are always reusable. The plan and the draft are only
-        reusable while they never became a document: replaying a delivered draft
-        would make re-running a no-op, so a note that already passed could never
-        be improved with a better prompt.
+        Page readings and the reading plan are reusable: both are reading
+        artifacts, validated against the same page text, and the plan is the most
+        expensive stage. The draft is the product, so a reused run always writes
+        a new one — replaying a delivered draft would make re-running a no-op
+        (a note that already passed could never improve), and replaying a failed
+        draft only anchors the repair round on the same short text.
         """
         payload = self._previous_payload(job_id)
-        if payload is None or not self._job_succeeded(job_id):
+        if payload is None:
             return payload
         return {
             key: value for key, value in payload.items()
-            if key not in {"plan", "draft", "stage"}
+            if key not in {"draft", "stage"}
         }
-
-    def _job_succeeded(self, job_id: str) -> bool:
-        for job in self.list_jobs():
-            if job.job_id == job_id:
-                return job.status == JobStatus.SUCCEEDED
-        return False
 
     def _resumable_job(self, paper_id: str) -> Job | None:
         """Newest job whose checkpoint can seed the next run.
