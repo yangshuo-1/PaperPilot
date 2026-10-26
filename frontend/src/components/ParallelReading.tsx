@@ -80,9 +80,9 @@ export function ParallelReading({ paperId, onJump }: { paperId: string; onJump?:
     requestAnimationFrame(() => { syncing.current = false; });
   }, [syncScroll]);
 
-  if (loading) return <section className="parallelReading"><div className="empty">正在加载原文与译文…</div></section>;
+  if (loading) return <section className="parallelReading"><div className="empty" role="status" aria-live="polite">正在加载原文与译文…</div></section>;
   const activeJob = Boolean(job && ["queued", "running"].includes(job.status));
-  if (error) return <section className="parallelReading"><div className="errorBanner">对照阅读加载失败：{error}<button type="button" className="quietBtn" onClick={() => void generateTranslation()}>重试翻译</button></div></section>;
+  if (error) return <section className="parallelReading"><div className="errorBanner" role="alert">对照阅读加载失败：{error}<button type="button" className="quietBtn" onClick={() => void generateTranslation()}>重试翻译</button></div></section>;
   const translatedCount = translation?.translated_count || 0;
   const totalCount = translation?.total_count || blocks.length;
   const column = (side: "left" | "right") => <div ref={side === "left" ? leftRef : rightRef} className={cls("parallelColumn", side === "right" && "parallelTranslated")} key={side} onScroll={() => handleScroll(side)}>
@@ -90,7 +90,7 @@ export function ParallelReading({ paperId, onJump }: { paperId: string; onJump?:
     <div className="parallelBlocks">{blocks.map((block) => <Block block={block} translated={side === "right"} narrow={false} onJump={onJump} key={`${side}-${block.block_id}`} />)}</div>
   </div>;
   return <section className="parallelReading">
-    <header className="parallelHeader"><div><strong>原文 / 译文对照</strong><span className="muted">{translatedCount} / {totalCount} 个文本块已翻译 · {reading?.quality_tier || "未知解析质量"}{translation?.stale ? " · 译文版本已失效" : ""}</span></div><div className="parallelHeaderActions"><span className="muted">{activeJob ? (job?.status === "queued" ? "翻译排队中" : "翻译进行中") : job?.status === "failed" ? "上次翻译失败" : ""}</span>{!narrow && <label><input type="checkbox" checked={syncScroll} onChange={(event) => setSyncScroll(event.target.checked)} /> 同步滚动</label>}{activeJob ? <button type="button" className="quietBtn" onClick={() => void cancelTranslation()}>取消翻译</button> : <button type="button" className="quietBtn" disabled={translatedCount >= totalCount} onClick={() => void generateTranslation()}>继续翻译</button>}</div></header>
+    <header className="parallelHeader"><div><strong>原文 / 译文对照</strong><span className="muted">{translatedCount} / {totalCount} 个文本块已翻译 · {reading?.quality_tier || "未知解析质量"}{translation?.stale ? " · 译文版本已失效" : ""}</span></div><div className="parallelHeaderActions"><span className="muted" role="status" aria-live="polite">{activeJob ? (job?.status === "queued" ? "翻译排队中" : "翻译进行中") : job?.status === "failed" ? "上次翻译失败" : ""}</span>{!narrow && <label className="parallelSyncToggle"><input type="checkbox" checked={syncScroll} onChange={(event) => setSyncScroll(event.target.checked)} /> 同步滚动</label>}{activeJob ? <button type="button" className="quietBtn" onClick={() => void cancelTranslation()}>取消翻译</button> : <button type="button" className="quietBtn" disabled={translatedCount >= totalCount} onClick={() => void generateTranslation()}>继续翻译</button>}</div></header>
     {reading?.warnings.map((warning) => <div className="notice" key={warning}>{warning}</div>)}
     {/* Only one layout is mounted: rendering the stacked mobile copy next to the
         two desktop columns tripled the DOM and re-sanitised every block. */}

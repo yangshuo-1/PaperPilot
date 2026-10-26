@@ -16,7 +16,7 @@ export function useLibrary() {
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [tagCounts, setTagCounts] = useState<Record<string, number>>({});
-  const [importValue, setImportValue] = useState("2511.21631");
+  const [importValue, setImportValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [view, setView] = useState<LibraryView>("all");
@@ -49,7 +49,11 @@ export function useLibrary() {
     }
   }
 
-  useEffect(() => { void load(); }, [query, selectedTags.join("|")]);
+  // Debounce the search reload: a controlled input must not fire a request per keystroke.
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query, selectedTags.join("|")]);
 
   async function refresh() {
     await api.refresh();
@@ -126,7 +130,10 @@ export function useLibrary() {
   function replacePaper(updated: Paper) { setPapers((current) => current.map((paper) => paper.id === updated.id ? updated : paper)); }
   async function createFolder() { const name = newFolder.trim(); if (!name) return; try { await api.createFolder(name, selectedFolder); setNewFolder(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }
   async function renameFolder(folder: Folder, name: string) { try { await api.updateFolder(folder.id, { name }); setFolderEditing(null); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }
-  async function deleteFolder(folder: Folder) { try { await api.deleteFolder(folder.id); if (selectedFolder === folder.id) setSelectedFolder(null); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }
+  async function deleteFolder(folder: Folder) {
+    if (!window.confirm(`确认删除文件夹“${folder.name}”？文件夹内的论文不会被删除。`)) return;
+    try { await api.deleteFolder(folder.id); if (selectedFolder === folder.id) setSelectedFolder(null); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
 
   const visible = currentPapers();
   const viewCounts: Record<LibraryView, number> = { all: papers.length, reading: filterByView(papers, "reading").length, starred: filterByView(papers, "starred").length, recent: filterByView(papers, "recent").length };

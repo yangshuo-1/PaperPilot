@@ -125,7 +125,7 @@ frontend/src/        React 前端（main.tsx 挂载入口，页面/组件/hooks/
 docs/                文档（README.md 为总索引；design/ 现行设计；legacy/ 归档）
 scripts/             chrome_acceptance.mjs 等验收脚本
 tests/               unittest，真实文件系统 + 临时目录
-.agents/skills/      开发约束 skill（所有 agent 统一遵守）
+.agents/skills/      agent skills（paperpilot-dev-constraints 开发约束 + web-design-guidelines UI 审查，均须遵守）
 ```
 
 ## 数据契约要点
